@@ -1,5 +1,5 @@
 --!strict
-local Host = require("../lib/host")
+local Host = require("../../lib/host")
 local game_state = Host.game_state
 local widget = Host.widget
 local npcs = Host.npcs
@@ -14,28 +14,28 @@ type Npc = Host.Npc
 type Loc = Host.Loc
 type Tile = Host.Tile
 type ClientState = Host.ClientState
-local GameState = require("../lib/main/game_state")
-local Login = require("../lib/main/interfaces/login/login")
-local WorldSwitcher = require("../lib/main/interfaces/gametabs/worldswitcher")
-local Wornitems = require("../lib/main/interfaces/gametabs/wornitems")
-local Inventory = require("../lib/main/interfaces/gametabs/inventory")
-local Clickbox = require("../lib/main/clickbox")
-local Npcs = require("../lib/main/entities/npcs")
-local Objects = require("../lib/main/entities/objects")
-local Walker = require("../lib/main/walker")
-local Player = require("../lib/main/player")
-local Position = require("../lib/main/position")
-local Minimenu = require("../lib/main/interfaces/minimenu")
-local Biometrics = require("../lib/main/antiban/biometrics")
-local Antiban = require("../lib/main/antiban/antiban")
-local AntibanTasks = require("../lib/main/antiban/antiban_tasks")
-local Ticks = require("../lib/utils/ticks")
-local Log = require("../lib/utils/log")
-local Random = require("../lib/utils/math/random")
-local Varbits = require("../lib/main/varbits")
-local Stats = require("../lib/main/interfaces/gametabs/stats")
-local StatsReport = require("../lib/utils/stats_report")
-local ChatOptions = require("../lib/main/interfaces/chatbox/chat_options")
+local GameState = require("../../lib/main/game_state")
+local Login = require("../../lib/main/interfaces/login/login")
+local WorldSwitcher = require("../../lib/main/interfaces/gametabs/worldswitcher")
+local Wornitems = require("../../lib/main/interfaces/gametabs/wornitems")
+local Inventory = require("../../lib/main/interfaces/gametabs/inventory")
+local Clickbox = require("../../lib/main/clickbox")
+local Npcs = require("../../lib/main/entities/npcs")
+local Objects = require("../../lib/main/entities/objects")
+local Walker = require("../../lib/main/walker")
+local Player = require("../../lib/main/player")
+local Position = require("../../lib/main/position")
+local Minimenu = require("../../lib/main/interfaces/minimenu")
+local Biometrics = require("../../lib/main/antiban/biometrics")
+local Antiban = require("../../lib/main/antiban/antiban")
+local AntibanTasks = require("../../lib/main/antiban/antiban_tasks")
+local Ticks = require("../../lib/utils/ticks")
+local Log = require("../../lib/utils/log")
+local Random = require("../../lib/utils/math/random")
+local Varbits = require("../../lib/main/varbits")
+local Stats = require("../../lib/main/interfaces/gametabs/stats")
+local StatsReport = require("../../lib/utils/stats_report")
+local ChatOptions = require("../../lib/main/interfaces/chatbox/chat_options")
 
 local CONST = {
 	-- NPCs: north and south side single spot ids
@@ -62,8 +62,8 @@ local CONST = {
 	WEST_MASTS = { [41352] = true, [40996] = true },
 	EAST_MASTS = { [41353] = true, [40997] = true },
 
-	-- progress report, see CONFIG.report_minutes
-	REPORT = { started_at = 0, last_at = 0, start_xp = {} :: { [string]: number } },
+	-- the last totals sent to the loader's XP tracker
+	REPORT = { counters_key = "" },
 
 	-- how long a cannon shock stuns us
 	STUN_MS = 5000,
@@ -147,8 +147,6 @@ local CONFIG = {
 	max_games = 0,
 	-- the script stops when stuck: no xp, fish or cooked fish for idle_minutes, this many losses in a row
 	timeouts = { idle_minutes = 5, max_losses = 4 },
-	-- minutes between progress reports
-	report_minutes = 5,
 	antiban = true,
 	antiban_departure = 30,
 }
@@ -2134,65 +2132,20 @@ function Loop.watch_progress(s: ClientState)
 	S.last_xp, S.last_fish, S.last_cooked = xp, fish, cooked
 end
 
--- one multi-line entry with the rates since the script started
-function Loop.report_progress(s: ClientState)
-	local elapsed = time() - CONST.REPORT.started_at
-	local played = stats.wins + stats.losses
-	local function per_game(n: number): number
-		return if played > 0 then n / played else 0
+-- what the loader's XP tracker shows next to the skills: the totals, it works out the rates itself
+function Loop.report_counters()
+	local key = `{stats.wins}/{stats.losses}/{stats.points}/{stats.permits}`
+	if key == CONST.REPORT.counters_key then
+		return
 	end
-
-	local rows: { Log.Row } = {
-		{ label = "Running", value = Log.duration(elapsed) },
-		{ label = "Games", value = `{played} ({stats.wins} won, {stats.losses} lost)` },
-		{ label = "Win rate", value = if played > 0 then `{Log.number(stats.wins * 100 / played)}%` else "-" },
-		{ label = "Wins/hour", value = Log.number(Log.per_hour(stats.wins, elapsed)) },
-		{
-			label = "Points",
-			value = `{Log.number(per_game(stats.points))}/game, {Log.number(Log.per_hour(stats.points, elapsed))}/hour`,
-		},
-		{
-			label = "Permits",
-			value = `{Log.number(per_game(stats.permits))}/game, {Log.number(Log.per_hour(stats.permits, elapsed))}/hour`,
-		},
-	}
-
-	local gains: { { name: string, xp: number } } = {}
-	for _, skill in ipairs(s.skills or {}) do
-		local start = CONST.REPORT.start_xp[skill.name]
-		if start ~= nil and skill.xp > start then
-			table.insert(gains, { name = skill.name, xp = skill.xp - start })
-		end
-	end
-	table.sort(gains, function(a, b)
-		return a.xp > b.xp
-	end)
-	if #gains > 0 then
-		table.insert(rows, { label = "XP (total, per game, per hour)" })
-		for _, g in ipairs(gains) do
-			table.insert(rows, {
-				label = g.name,
-				value = `{Log.number(g.xp)}, {Log.number(per_game(g.xp))}/game, {Log.number(
-					Log.per_hour(g.xp, elapsed)
-				)}/hour`,
-			})
-		end
-	end
-	Log.block("Report", "Progress", rows)
-end
-
--- reports every CONFIG.report_minutes
-function Loop.check_report(s: ClientState)
-	-- the first skills read after login are the baseline
-	if next(CONST.REPORT.start_xp) == nil then
-		for _, skill in ipairs(s.skills or {}) do
-			CONST.REPORT.start_xp[skill.name] = skill.xp
-		end
-	end
-	if time() - CONST.REPORT.last_at >= CONFIG.report_minutes * 60000 then
-		CONST.REPORT.last_at = time()
-		Loop.report_progress(s)
-	end
+	CONST.REPORT.counters_key = key
+	Host.report_counters({
+		{ id = "games", label = "Games", value = stats.wins + stats.losses },
+		{ id = "wins", label = "Wins", value = stats.wins, percent_of = "games" },
+		{ id = "losses", label = "Losses", value = stats.losses, percent_of = "games" },
+		{ id = "points", label = "Points", value = stats.points, per = "games" },
+		{ id = "permits", label = "Permits", value = stats.permits, per = "games" },
+	})
 end
 
 -- stops the script when it hasn't progressed or keeps losing
@@ -2516,7 +2469,7 @@ function Loop.get_state(): State
 		return "LOADING"
 	end
 	Loop.watch_progress(s)
-	Loop.check_report(s)
+	Loop.report_counters()
 	Chat.read_chat()
 	S.in_game = Read.on_island()
 	S.hud_up = S.in_game and Read.hud_percent(HUD.ENERGY) ~= nil
@@ -2864,7 +2817,6 @@ function Loop.run()
 	Log.log("Tempoross", "Tempoross started")
 	Game.setup()
 	S.last_progress_at, S.losses_in_row = time(), 0
-	CONST.REPORT.started_at, CONST.REPORT.last_at = time(), time()
 	Loop.hook_antiban_timeouts()
 
 	while not S.finished do
