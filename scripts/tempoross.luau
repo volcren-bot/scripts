@@ -34,6 +34,7 @@ local Log = require("../lib/utils/log")
 local Random = require("../lib/utils/math/random")
 local Varbits = require("../lib/main/varbits")
 local Stats = require("../lib/main/interfaces/gametabs/stats")
+local StatsReport = require("../lib/utils/stats_report")
 local ChatOptions = require("../lib/main/interfaces/chatbox/chat_options")
 
 local CONST = {
@@ -2119,8 +2120,12 @@ type Plan = {
 
 local plan: Plan = {}
 
--- resets the idle timeout on xp, a new fish or a newly cooked fish
+-- gains go to Volcren once a minute
+local report = StatsReport.new()
+
+-- resets the idle timeout on xp, a new fish or a newly cooked fish, and reports the xp
 function Loop.watch_progress(s: ClientState)
+	StatsReport.update(report, s.skills)
 	local xp = Stats.total_experience(s.skills) or S.last_xp
 	local fish, cooked = Read.fish_count(), Read.item_count(Items.COOKED_FISH)
 	if xp > S.last_xp or fish > S.last_fish or cooked > S.last_cooked then
