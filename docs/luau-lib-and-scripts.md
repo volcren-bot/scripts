@@ -15,10 +15,10 @@ Everything is strict Luau (`--!strict`).
 Each is one standalone file that `require`s the lib by relative path, so anything specific to a script lives in it. Run from the loader or with:
 
 ```sh
-injector run --script scripts/<name>.luau <pid> < scripts/<name>.luau
+injector run --script scripts/<name>.luau --lib ../lib <pid> < scripts/<name>.luau
 ```
 
-`--script` lets `require` read the lib from disk; without it, the lib embedded in the injector is used. Typical shape:
+`--script` lets `require` read the lib from disk; without it, the lib embedded in the injector is used. When developing, point the script at your own lib checkout with `--lib <dir>` (in the loader: Settings → "lib folder"): the script's `require("../lib/...")` then reads from that folder instead of from beside the script file. Store scripts ignore this and always use the downloaded lib. Typical shape:
 
 ```luau
 --!strict
