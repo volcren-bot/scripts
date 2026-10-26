@@ -1,0 +1,28 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths: ["lib/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python3 tools/docgen/gen_docs.py --base "${{ github.event.before }}"
+      - name: Commit and push
+        run: |
+          if [ -n "$(git status --porcelain docs)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add docs
+            git commit -m "docs: sync docs/lib with lib [skip ci]"
+            git push
+          fi
