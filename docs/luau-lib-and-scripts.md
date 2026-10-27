@@ -35,8 +35,8 @@ Scripts keep their settings in a `CONFIG` table at the top (e.g. `scripts/tempor
 
 A script is published as a revision: a set of files uploaded on the script's page on the website, or by CI. The newest published revision is the live one, and the loader runs it. Old revisions are only kept as history.
 
-- **Entry file:** the loader starts `main.luau`. A revision without one can't run.
-- **Several files:** a revision can have up to 50 files of at most 5 MB each. Put them next to `main.luau` and `require("./util")` them. Use flat names (letters, digits, `_`, `.`, `-`), no folders: the loader refuses file names with a `/`.
+- **Entry file:** the file the loader starts, of any name. With one file, that file is the entry. With several, name it: pick it on the upload form, or send an `entry` field in CI.
+- **Several files:** a revision can have up to 50 files of at most 5 MB each. Put them next to the entry file and `require("./util")` them. Use flat names (letters, digits, `_`, `.`, `-`), no folders: the loader refuses file names with a `/`.
 - **The lib:** `require("../lib/host")` and the other `../lib/...` modules work in a store run, because the loader keeps the newest lib it can run next to the script folders. You don't upload it.
 - **CI:** create a deploy token on the script's page, keep it as a secret, and upload the files after each push:
 
@@ -44,7 +44,7 @@ A script is published as a revision: a set of files uploaded on the script's pag
 curl -fsS \
   -H "Authorization: Bearer $DEPLOY_TOKEN" \
   -H "Origin: https://volcren.com" \
-  -F files=@main.luau -F files=@util.luau \
+  -F files=@main.luau -F files=@util.luau -F entry=main.luau \
   "https://volcren.com/api/scripts/<script-id>/revisions"
 ```
 
