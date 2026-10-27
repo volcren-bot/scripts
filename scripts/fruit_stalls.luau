@@ -4,7 +4,8 @@
 -- per state does the work, Loop.run() repeats that until S.finished.
 --
 -- Start inside the stall house, or anywhere near it. With run energy it steals from whichever stall
--- is ready, walking between the two; without, it sits next to one and waits for it. A full inventory
+-- is ready, walking between the two; without, it sits next to one and waits for it. With another
+-- player in the house it stays on the one stall it is nearest to. A full inventory
 -- drops the cheap fruit and fills baskets with strawberries; when nothing is left to make room it
 -- banks everything, takes 5 empty baskets and walks back.
 local Host = require("../../lib/host")
@@ -83,6 +84,8 @@ local CONST = {
 	-- Strawberries(5) is a full basket
 	BASKET_PARTIAL = "Strawberries(1..4)",
 	BASKET_FULL = 5,
+	-- how long "Fill" can take to show in the inventory
+	BASKET_FILL_MS = 2400,
 	JUNK = {
 		"Cooking apple",
 		"Banana",
@@ -109,6 +112,8 @@ local CONFIG = {
 	run_resume = { 25, 60 },
 	-- with another player in the house, stay on one stall instead of running between the two
 	stick_when_crowded = true,
+	-- keep to that stall until the house has been empty of others this many seconds
+	crowd_linger_s = 30,
 	-- the script stops when stuck: no xp for idle_minutes, this many failures in a row
 	timeouts = { idle_minutes = 5, max_failures = 12 },
 	antiban = true,
@@ -128,6 +133,8 @@ type RunState = {
 	run_checked_at: number,
 	-- the stall we stay on while another player is stealing, nil when alone
 	sticky: Tile?,
+	-- when we last saw another player in the house
+	crowded_at: number,
 	-- states to ignore for one loop
 	skip: { [string]: boolean },
 }
@@ -142,6 +149,7 @@ local S: RunState = {
 	run_resume_at = 0,
 	run_checked_at = 0,
 	sticky = nil,
+	crowded_at = 0,
 	skip = {},
 }
 
@@ -161,6 +169,8 @@ type Snapshot = {
 	loose_strawberries: { number },
 	-- slot of the basket a strawberry should go in, the fullest one that isn't full
 	fill_target: number?,
+	-- whether that basket already holds a strawberry, so its own "Fill" option only takes strawberries
+	fill_started: boolean,
 	-- everything but baskets
 	to_bank: number,
 	east: Stall,
@@ -172,7 +182,7 @@ local snap: Snapshot = nil :: any
 type State = "LOADING" | "LOGIN" | "STEAL" | "FILL" | "DROP" | "BANK" | "RETURN"
 
 -- what get_state found that its handlers need
-type Plan = { fill: { from: number, to: number }? }
+type Plan = { fill: { from: number, to: number, direct: boolean }? }
 
 local plan: Plan = {}
 
@@ -220,12 +230,24 @@ function Read.closed_door(tile: Tile): Loc?
 	return nil
 end
 
+-- slots of the strawberries not in a basket
+function Read.loose_strawberries(): { number }
+	local slots = {}
+	for _, item in ipairs(Inventory.items() or {}) do
+		if string.lower(item.name or "") == "strawberry" then
+			table.insert(slots, item.slot)
+		end
+	end
+	return slots
+end
+
 -- sorts the inventory into what the handlers work with
 function Read.inventory(snapshot: Snapshot)
 	local items = Inventory.items() or {}
 	snapshot.items = items
 	snapshot.free = 28 - #items
 	snapshot.junk, snapshot.loose_strawberries, snapshot.fill_target, snapshot.to_bank = {}, {}, nil, 0
+	snapshot.fill_started = false
 
 	local best_fill, empty_basket = 0, nil
 	for _, item in ipairs(items) do
@@ -245,6 +267,7 @@ function Read.inventory(snapshot: Snapshot)
 			end
 		end
 	end
+	snapshot.fill_started = snapshot.fill_target ~= nil
 	snapshot.fill_target = snapshot.fill_target or empty_basket
 end
 
@@ -656,7 +679,7 @@ function Loop.get_state(): State
 
 	local can_fill = #snap.loose_strawberries > 0 and snap.fill_target ~= nil and not skipped["FILL"]
 	if can_fill then
-		plan.fill = { from = snap.loose_strawberries[1], to = snap.fill_target :: number }
+		plan.fill = { from = snap.loose_strawberries[1], to = snap.fill_target :: number, direct = snap.fill_started }
 	end
 	if snap.free == 0 then
 		if #snap.junk > 0 and not skipped["DROP"] then
@@ -682,14 +705,24 @@ end
 function Handler.pick_stall(): Stall?
 	local east, west = snap.east, snap.west
 	-- with company, keep to one stall: the one we are nearest to when the other player shows up
-	if CONFIG.stick_when_crowded and Read.crowded() then
+	local crowded = CONFIG.stick_when_crowded and Read.crowded()
+	if crowded then
+		S.crowded_at = time()
+	end
+	-- someone stepping out for a moment doesn't free the other stall
+	if crowded or (S.sticky ~= nil and time() - S.crowded_at < CONFIG.crowd_linger_s * 1000) then
 		if S.sticky == nil then
 			local function dist(t: Tile): number
 				return math.max(math.abs(t.x - snap.pos.x), math.abs(t.y - snap.pos.y))
 			end
-			local nearest = if dist(CONST.STALL.EAST) <= dist(CONST.STALL.WEST) then CONST.STALL.EAST else CONST.STALL.WEST
+			local nearest = if dist(CONST.STALL.EAST) <= dist(CONST.STALL.WEST)
+				then CONST.STALL.EAST
+				else CONST.STALL.WEST
 			S.sticky = nearest
-			Log.log(NAME, `Another player is stealing, staying on the {if nearest == CONST.STALL.EAST then "east" else "west"} stall`)
+			Log.log(
+				NAME,
+				`Another player is stealing, staying on the {if nearest == CONST.STALL.EAST then "east" else "west"} stall`
+			)
 		end
 		local stall = if S.sticky == CONST.STALL.EAST then east else west
 		if stall.ready and stall.loc then
@@ -773,6 +806,23 @@ function Handler.steal(stall: Stall)
 	S.failures_in_row = 0
 end
 
+-- "Fill" on a basket already holding strawberries; true once strawberries left the inventory
+function Handler.fill_basket(slot: number): boolean
+	local before = #Read.loose_strawberries()
+	if not Inventory.interact_slot(slot, "Fill") then
+		return false
+	end
+	local waited = 0
+	while waited < CONST.BASKET_FILL_MS do
+		sleep(CONST.STALL.POLL_MS)
+		waited += CONST.STALL.POLL_MS
+		if #Read.loose_strawberries() < before then
+			return true
+		end
+	end
+	return false
+end
+
 function Handler.idle()
 	Game.ensure_run()
 	if CONFIG.antiban and S.antiban_ready then
@@ -838,8 +888,11 @@ Handler.states = {
 		end
 	end,
 	FILL = function()
-		local fill = plan.fill :: { from: number, to: number }
-		if not Inventory.combine_slots(fill.from, fill.to) then
+		local fill = plan.fill :: { from: number, to: number, direct: boolean }
+		-- "Fill" on a basket that has a strawberry in it takes up to 4 more in one click
+		if fill.direct and Handler.fill_basket(fill.to) then
+			Log.log(NAME, "Basket filled")
+		elseif not Inventory.combine_slots(fill.from, fill.to) then
 			S.skip["FILL"] = true
 			Game.deselect()
 		else
