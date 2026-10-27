@@ -8,6 +8,7 @@ name: deploy
 # Each script needs a repository secret named DEPLOY_TOKEN_<FOLDER> (upper case, other characters as _), e.g.
 # DEPLOY_TOKEN_TEMPOROSS, and the repository variable SITE_URL (e.g. https://volcren.com) must be set.
 # Only the flat .luau files of a folder are uploaded, and a subfolder fails the job.
+# The tokens are secrets of the `production` environment (restrict it to the main branch in the repo settings).
 # Run it by hand to publish every script in deploy.json, changed or not.
 on:
   push:
@@ -23,24 +24,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  # No secrets here: the third-party action and the lint tools never see a deploy token
+  lint:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+
+      - run: tools/lint.sh
+
+  publish:
+    needs: lint
+    runs-on: ubuntu-latest
+    # The deploy tokens are secrets of this environment, which is limited to the main branch
+    environment: production
     env:
       SITE_URL: ${{ vars.SITE_URL }}
-      ALL_SECRETS: ${{ toJSON(secrets) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-
-      - uses: jdx/mise-action@v2
-
-      - name: Lint
-        run: tools/lint.sh
 
       - name: Upload changed scripts
         env:
           BEFORE: ${{ github.event.before }}
+          ALL_SECRETS: ${{ toJSON(secrets) }}
         run: |
           SITE_URL="$(printf %s "$SITE_URL" | tr -d '[:space:]')"
           if [ -z "$SITE_URL" ]; then
