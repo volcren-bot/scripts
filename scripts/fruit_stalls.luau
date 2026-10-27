@@ -23,6 +23,7 @@ local Interact = require("../../lib/main/interact")
 local Clickbox = require("../../lib/main/clickbox")
 local Objects = require("../../lib/main/entities/objects")
 local Player = require("../../lib/main/player")
+local Players = require("../../lib/main/entities/players")
 local Walker = require("../../lib/main/walker")
 local Bankmain = require("../../lib/main/interfaces/mainscreen/bankmain")
 local Inventory = require("../../lib/main/interfaces/gametabs/inventory")
@@ -106,6 +107,8 @@ local CONFIG = {
 	min_run_energy = 8,
 	-- turn run back on once the energy is back up to a value rolled between these
 	run_resume = { 25, 60 },
+	-- with another player in the house, stay on one stall instead of running between the two
+	stick_when_crowded = true,
 	-- the script stops when stuck: no xp for idle_minutes, this many failures in a row
 	timeouts = { idle_minutes = 5, max_failures = 12 },
 	antiban = true,
@@ -123,6 +126,8 @@ type RunState = {
 	failures_in_row: number,
 	run_resume_at: number,
 	run_checked_at: number,
+	-- the stall we stay on while another player is stealing, nil when alone
+	sticky: Tile?,
 	-- states to ignore for one loop
 	skip: { [string]: boolean },
 }
@@ -136,6 +141,7 @@ local S: RunState = {
 	failures_in_row = 0,
 	run_resume_at = 0,
 	run_checked_at = 0,
+	sticky = nil,
 	skip = {},
 }
 
@@ -257,6 +263,17 @@ function Read.refresh_snapshot(state: ClientState): boolean
 	} :: any
 	Read.inventory(snap)
 	return true
+end
+
+-- whether another player is in the stall house with us
+function Read.crowded(): boolean
+	local me = game_state().player_name
+	for _, player in ipairs(Players.find() or {}) do
+		if player.name ~= me and Read.in_house(player) then
+			return true
+		end
+	end
+	return false
 end
 
 -- whether we can run from one stall to the other: running and energy to spare
@@ -664,6 +681,26 @@ end
 -- the stall to steal from now, nil when there is none ready
 function Handler.pick_stall(): Stall?
 	local east, west = snap.east, snap.west
+	-- with company, keep to one stall: the one we are nearest to when the other player shows up
+	if CONFIG.stick_when_crowded and Read.crowded() then
+		if S.sticky == nil then
+			local function dist(t: Tile): number
+				return math.max(math.abs(t.x - snap.pos.x), math.abs(t.y - snap.pos.y))
+			end
+			local nearest = if dist(CONST.STALL.EAST) <= dist(CONST.STALL.WEST) then CONST.STALL.EAST else CONST.STALL.WEST
+			S.sticky = nearest
+			Log.log(NAME, `Another player is stealing, staying on the {if nearest == CONST.STALL.EAST then "east" else "west"} stall`)
+		end
+		local stall = if S.sticky == CONST.STALL.EAST then east else west
+		if stall.ready and stall.loc then
+			return stall
+		end
+		return nil
+	elseif S.sticky ~= nil then
+		S.sticky = nil
+		Log.log(NAME, "Alone again, using both stalls")
+	end
+
 	local alternate = Read.can_alternate()
 	local candidates: { Stall } = {}
 	for _, stall in ipairs({ east, west }) do
@@ -705,7 +742,7 @@ end
 -- moves the mouse onto the stall we are leaving, where the screen will show it once we stand next to
 -- the one just clicked: the camera follows the player, so that is not where it is drawn now
 function Handler.pre_hover(clicked: Stall, other: Stall)
-	if other.loc == nil or not Read.can_alternate() then
+	if other.loc == nil or S.sticky ~= nil or not Read.can_alternate() then
 		return
 	end
 	local side = if clicked == snap.east then CONST.STALL.EAST_SIDE else CONST.STALL.WEST_SIDE
