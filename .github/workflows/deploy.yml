@@ -1,0 +1,101 @@
+name: deploy
+
+# Publishes a script as a new revision on the site when its folder changes on `main`, using the script's deploy token
+# (created on the script's page). A revision goes live as soon as the upload finishes.
+#
+# deploy.json maps a folder under scripts/ to its script:
+#   { "tempoross": { "id": "<script uuid>", "entry": "tempoross.luau" } }
+# Each script needs a repository secret named DEPLOY_TOKEN_<FOLDER> (upper case, other characters as _), e.g.
+# DEPLOY_TOKEN_TEMPOROSS, and the repository variable SITE_URL (e.g. https://volcren.com) must be set.
+# Only the flat .luau files of a folder are uploaded, and a subfolder fails the job.
+# Run it by hand to publish every script in deploy.json, changed or not.
+on:
+  push:
+    branches: [main]
+    paths: ["scripts/**", "deploy.json", ".github/workflows/deploy.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      SITE_URL: ${{ vars.SITE_URL }}
+      ALL_SECRETS: ${{ toJSON(secrets) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: jdx/mise-action@v2
+
+      - name: Lint
+        run: tools/lint.sh
+
+      - name: Upload changed scripts
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          SITE_URL="$(printf %s "$SITE_URL" | tr -d '[:space:]')"
+          if [ -z "$SITE_URL" ]; then
+            echo "Set the SITE_URL repository variable." >&2
+            exit 1
+          fi
+
+          failed=0
+          for dir in $(jq -r 'keys[]' deploy.json); do
+            id="$(jq -r --arg d "$dir" '.[$d].id' deploy.json)"
+            entry="$(jq -r --arg d "$dir" '.[$d].entry // empty' deploy.json)"
+            folder="scripts/$dir"
+            [ -d "$folder" ] || { echo "::error::$folder doesn't exist"; failed=1; continue; }
+
+            # Only a push to main skips untouched scripts; a new branch or a manual run uploads everything
+            if [ "$GITHUB_EVENT_NAME" = push ] && ! [[ "$BEFORE" =~ ^0+$ ]] \
+              && git diff --quiet "$BEFORE" HEAD -- "$folder" 2>/dev/null; then
+              echo "$dir: unchanged"
+              continue
+            fi
+
+            secret="DEPLOY_TOKEN_$(printf %s "$dir" | tr 'a-z' 'A-Z' | tr -c 'A-Z0-9\n' '_')"
+            # A token pasted with a trailing newline would break the request headers
+            token="$(jq -r --arg k "$secret" '.[$k] // empty' <<<"$ALL_SECRETS" | tr -d '[:space:]')"
+            if [ -z "$token" ]; then
+              echo "::error::Missing the $secret secret for $dir"
+              failed=1
+              continue
+            fi
+
+            # Revisions are flat: the site refuses names with a "/", so a subfolder can't be uploaded
+            if [ -n "$(find "$folder" -mindepth 1 -type d -print -quit)" ]; then
+              echo "::error::$folder has a subfolder; revisions can only hold flat .luau files"
+              failed=1
+              continue
+            fi
+            args=()
+            for file in "$folder"/*.luau; do
+              [ -f "$file" ] && args+=(-F "files=@$file")
+            done
+            if [ ${#args[@]} -eq 0 ]; then
+              echo "::error::$folder has no .luau files"
+              failed=1
+              continue
+            fi
+            [ -n "$entry" ] && args+=(-F "entry=$entry")
+
+            status="$(curl -sS -o response.json -w '%{http_code}' \
+              -H "Authorization: Bearer $token" -H "Origin: $SITE_URL" \
+              "${args[@]}" "$SITE_URL/api/scripts/$id/revisions")"
+            if [ "$status" = 201 ]; then
+              echo "$dir: published revision $(jq -r .revision response.json)"
+            else
+              echo "::error::$dir: upload failed with HTTP $status: $(head -c 500 response.json)"
+              failed=1
+            fi
+          done
+          exit $failed
