@@ -1,7 +1,7 @@
 {
-  "fruit_stalls": {
+  "stall_thiever": {
     "id": "ab73f393-f509-48d1-8393-1f58e1cce1dd",
-    "entry": "fruit_stalls.luau"
+    "entry": "stall_thiever.luau"
   },
   "tempoross": {
     "id": "25cba578-b254-43af-8424-c6d165013f0f",
