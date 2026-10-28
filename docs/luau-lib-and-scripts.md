@@ -18,12 +18,12 @@ Each is one standalone file that `require`s the lib by relative path, so anythin
 injector run --script scripts/<name>.luau --lib ../lib <pid> < scripts/<name>.luau
 ```
 
-`--script` lets `require` read the lib from disk; without it, the lib embedded in the injector is used. When developing, point the script at your own lib checkout with `--lib <dir>` (in the loader: Settings → "lib folder"): the script's `require("../lib/...")` then reads from that folder instead of from beside the script file. Store scripts ignore this and always use the downloaded lib. Typical shape:
+`--script` lets `require` read the lib from disk; `@lib` is an alias for the `lib` folder beside the scripts repo (set in `.luaurc` for the analyzer, built into the injector); without it, the lib embedded in the injector is used. When developing, point the script at your own lib checkout with `--lib <dir>` (in the loader: Settings → "lib folder"): the script's `require("@lib/...")` then reads from that folder instead of from beside the script file. Store scripts ignore this and always use the downloaded lib. Typical shape:
 
 ```luau
 --!strict
-local Host = require("../lib/host")
-local Login = require("../lib/main/interfaces/login/login")
+local Host = require("@lib/host")
+local Login = require("@lib/main/interfaces/login/login")
 
 local ok = Login.sign_in()
 assert(ok, "couldn't sign in")
@@ -37,7 +37,7 @@ A script is published as a revision: a set of files uploaded on the script's pag
 
 - **Entry file:** the file the loader starts, of any name. With one file, that file is the entry. With several, name it: pick it on the upload form, or send an `entry` field in CI.
 - **Several files:** a revision can have up to 50 files of at most 5 MB each. Put them next to the entry file and `require("./util")` them. Use flat names (letters, digits, `_`, `.`, `-`), no folders: the loader refuses file names with a `/`.
-- **The lib:** `require("../lib/host")` and the other `../lib/...` modules work in a store run, because the loader keeps the newest lib it can run next to the script folders. You don't upload it.
+- **The lib:** `require("@lib/host")` and the other `@lib/...` modules work in a store run, because the loader keeps the newest lib it can run next to the script folders. You don't upload it.
 - **CI:** create a deploy token on the script's page, keep it as a secret, and upload the files after each push:
 
 ```sh

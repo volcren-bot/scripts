@@ -4,7 +4,24 @@
 #   tools/lint.sh --fix     format in place first
 #   tools/lint.sh --types   also report type errors (noisy: the sandbox's API is not known to luau-analyze)
 set -euo pipefail
-cd "$(dirname "$0")/.."
+
+# Resolve the script directory before changing cwd.
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# Locate the StyLua config in the same directory as this script.
+config_file=""
+for candidate in "stylua.toml" ".stylua.toml"; do
+	if [[ -f "$script_dir/$candidate" ]]; then
+		config_file="$script_dir/$candidate"
+		break
+	fi
+done
+if [[ -z "$config_file" ]]; then
+	echo "error: no stylua.toml or .stylua.toml found in $script_dir" >&2
+	exit 1
+fi
+
+cd "$script_dir/.."
 
 dirs=(scripts)
 fix=0 types=0
@@ -17,9 +34,9 @@ for arg in "$@"; do
 done
 
 if ((fix)); then
-	stylua "${dirs[@]}"
+	stylua --config-path "$config_file" "${dirs[@]}"
 else
-	stylua --check "${dirs[@]}"
+	stylua --config-path "$config_file" --check "${dirs[@]}"
 fi
 
 out=$(luau-analyze "${dirs[@]}" 2>&1 || true)

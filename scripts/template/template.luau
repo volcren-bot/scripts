@@ -2,20 +2,20 @@
 -- Script template: copy to <name>.luau and fill in the TODOs.
 -- Structure (same as tempoross.luau): get_state() reads the client and picks a state, a handler
 -- per state does the work, Loop.run() repeats that until S.finished.
-local Host = require("../../lib/host")
+local Host = require("@lib/host")
 local game_state = Host.game_state
 local sleep = Host.sleep
 local time = Host.time
 type ClientState = Host.ClientState
-local GameState = require("../../lib/main/game_state")
-local Login = require("../../lib/main/interfaces/login/login")
-local Biometrics = require("../../lib/main/antiban/biometrics")
-local Antiban = require("../../lib/main/antiban/antiban")
-local AntibanTasks = require("../../lib/main/antiban/antiban_tasks")
-local Log = require("../../lib/utils/log")
-local Random = require("../../lib/utils/math/random")
-local Stats = require("../../lib/main/interfaces/gametabs/stats")
-local StatsReport = require("../../lib/utils/stats_report")
+local Antiban = require("@lib/main/antiban/antiban")
+local AntibanTasks = require("@lib/main/antiban/antiban_tasks")
+local Biometrics = require("@lib/main/antiban/biometrics")
+local GameState = require("@lib/main/game_state")
+local Log = require("@lib/utils/log")
+local Login = require("@lib/main/interfaces/login/login")
+local Random = require("@lib/utils/math/random")
+local Stats = require("@lib/main/interfaces/gametabs/stats")
+local StatsReport = require("@lib/utils/stats_report")
 
 local NAME = "Template" -- TODO: script name, used as the log prefix
 
