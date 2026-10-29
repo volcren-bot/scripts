@@ -813,6 +813,11 @@ function Loop.get_state(): State
 	Loop.watch_progress(s)
 	Loop.report_counters()
 
+	-- a full inventory is dropped, filled or banked from its tab, which antiban may have switched away from
+	if snap.free == 0 and not Inventory.is_open() then
+		SidePanels.open("Inventory")
+	end
+
 	if PROFILE == "bakers" then
 		return Bakers.pick_state(skipped)
 	elseif PROFILE == "port_roberts" then
