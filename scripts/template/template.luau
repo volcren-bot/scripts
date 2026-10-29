@@ -1,7 +1,5 @@
 --!strict
--- Script template: copy to <name>.luau and fill in the TODOs.
--- Structure (same as tempoross.luau): get_state() reads the client and picks a state, a handler
--- per state does the work, Loop.run() repeats that until S.finished.
+-- Script template: copy to <name>.luau and fill in the TODOs (structure as in tempoross.luau).
 local Host = require("@lib/host")
 local game_state = Host.game_state
 local sleep = Host.sleep

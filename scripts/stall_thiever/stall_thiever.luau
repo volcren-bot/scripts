@@ -23,9 +23,11 @@ local Objects = require("@lib/main/entities/objects")
 local Player = require("@lib/main/player")
 local Players = require("@lib/main/entities/players")
 local Random = require("@lib/utils/math/random")
+local SidePanels = require("@lib/main/interfaces/gametabs/side_panels")
 local Stats = require("@lib/main/interfaces/gametabs/stats")
 local StatsReport = require("@lib/utils/stats_report")
 local Walker = require("@lib/main/walker")
+local Wornitems = require("@lib/main/interfaces/gametabs/wornitems")
 
 -- the stall being worked, set once chosen (see Loop.choose_stall)
 local NAME = "Stall thiever"
@@ -94,6 +96,75 @@ local CONST = {
 		FOOD_OPTION = "Eat",
 		EAT_MS = 1800,
 	},
+	TEA = {
+		STALL = {
+			NAME = "Tea stall",
+			-- any other id is the stall after it was stolen from
+			READY_ID = 635,
+			-- the stall covers 3269..3270, 3410..3411
+			TILE = { x = 3269, y = 3410 },
+			OPTION = "Steal-from",
+			RESULT_MS = 2400,
+			WALK_MS = 3000,
+			POLL_MS = 70,
+		},
+		-- the tile we steal from
+		STAND = { x = 3268, y = 3410 },
+		THIEVING = 5,
+		JUNK = { "Cup of tea" },
+	},
+	PORT_ROBERTS = {
+		-- best first: the stall after the one worked is where to go while a guard is at it
+		STALLS = {
+			"Cannonball stall",
+			"Ore stall",
+			"Gem stall",
+			"Spice stall",
+			"Silver stall",
+			"Fish stall",
+			"Fur stall",
+			"Silk stall",
+			"Veg stall",
+		},
+		OPTION = "Steal-from",
+		GUARD = "Market Guard",
+		-- the tile a guard stands on in front of each stall, and we stand on to steal from it
+		STOPS = {
+			["Cannonball stall"] = { x = 1867, y = 3295 },
+			["Ore stall"] = { x = 1863, y = 3294 },
+			["Gem stall"] = { x = 1869, y = 3290 },
+			["Spice stall"] = { x = 1864, y = 3290 },
+			["Silver stall"] = { x = 1866, y = 3290 },
+			["Fish stall"] = { x = 1863, y = 3292 },
+			["Fur stall"] = { x = 1869, y = 3292 },
+			["Silk stall"] = { x = 1869, y = 3295 },
+			["Veg stall"] = { x = 1865, y = 3295 },
+		},
+		-- the guards walk round the edge of this rectangle, east along the top first from `start`
+		LOOP = { x1 = 1863, y1 = 3290, x2 = 1869, y2 = 3295, start = { x = 1867, y = 3295 } },
+		PLAZA = { x1 = 1858, y1 = 3284, x2 = 1874, y2 = 3299 },
+		-- the amulet that teleports out of the cell, worn or in the inventory (item names, not case sensitive)
+		AMULET = { name = "sailors' amulet", option = "Port Roberts", TELEPORT_MS = 8000 },
+		-- locked in: fewer than this many tiles reachable around us, none on the area's edge
+		JAIL_SCAN = 14,
+		JAIL_MAX_TILES = 60,
+		DOOR = { name = "Cell door", option = "Picklock", TRY_MS = 5000, TRIES = 8, OUT = { x = 1886, y = 3273 } },
+		CAUGHT_TEXT = "under arrest",
+		PICKED_TEXT = "succeed",
+		STEAL_TEXT = "you steal",
+		-- ticks a guard stays at a stall
+		DWELL = 8,
+		-- leave a stall this many ticks before the guard before it would move on to it
+		LEAD = 2,
+		-- no xp for this long while stealing: the steal stopped, click again
+		STALE_MS = 12000,
+		-- bank when the inventory is nearly full: the booths northeast of the plaza are at 1881..1884,3316
+		BANK = { name = "Bank booth", options = { "Bank", "Use" }, stand = { x = 1882, y = 3315 } },
+		FULL_FREE = 1,
+		-- how long the lock picking animation can take
+		PICK_MS = 5000,
+		POLL_MS = 100,
+	},
 	-- item names (not case sensitive)
 	BASKET = "Basket",
 	STRAWBERRY = "Strawberry",
@@ -113,7 +184,7 @@ local CONST = {
 	},
 }
 
-local Read, Game, Loop, Handler, Bakers = {}, {}, {}, {}, {}
+local Read, Game, Loop, Handler, Bakers, Port = {}, {}, {}, {}, {}, {}
 
 -- what the user can change
 local CONFIG = {
@@ -141,14 +212,16 @@ local CONFIG = {
 	eat_at_hitpoints = 20,
 }
 
--- the stall being worked: "fruit" or "bakers", chosen at the start
+-- the stall being worked: "fruit", "bakers", "tea" or "port_roberts", chosen at the start
 local PROFILE = "fruit"
 -- the stall's own values (ids, option, timings) and the items to drop
 local STALL = CONST.STALL
 local JUNK: { string } = CONST.JUNK
+-- Port Roberts: the stall picked on the second form
+local PORT_STALL = ""
 
 -- counters shown next to the skills in the loader's XP tracker
-local stats = { trips = 0, steals = 0, failures = 0, lures = 0 }
+local stats = { trips = 0, steals = 0, failures = 0, lures = 0, arrests = 0 }
 
 type RunState = {
 	finished: boolean,
@@ -170,6 +243,12 @@ type RunState = {
 	chat_uid: number,
 	lures_in_row: number,
 	steals_since_lure: number,
+	-- Port Roberts: the stall being stolen from (nil when standing), when it was clicked, and whether we are in jail
+	port_at: string?,
+	port_clicked_at: number,
+	in_jail: boolean,
+	-- Port Roberts: whether the amulet was tried since we were put in the cell
+	amulet_tried: boolean,
 }
 
 local S: RunState = {
@@ -188,6 +267,10 @@ local S: RunState = {
 	chat_uid = 0,
 	lures_in_row = 0,
 	steals_since_lure = 0,
+	port_at = nil,
+	port_clicked_at = 0,
+	in_jail = false,
+	amulet_tried = false,
 }
 
 type Stall = { loc: Loc?, ready: boolean }
@@ -205,6 +288,7 @@ type Snapshot = {
 	-- Baker's stalls: whether we stand on the safe tile, and the stall
 	at_safe: boolean,
 	baker: Stall,
+	tea: Stall,
 	items: { Slot },
 	free: number,
 	-- inventory by kind
@@ -224,7 +308,7 @@ type Snapshot = {
 
 local snap: Snapshot = nil :: any
 
-type State = "LOADING" | "LOGIN" | "STEAL" | "FILL" | "DROP" | "BANK" | "RETURN" | "LURE" | "EAT"
+type State = "LOADING" | "LOGIN" | "PORT" | "JAIL" | "STEAL" | "FILL" | "DROP" | "BANK" | "RETURN" | "LURE" | "EAT"
 
 -- what get_state found that its handlers need
 type Plan = { fill: { from: number, to: number, direct: boolean }? }
@@ -336,7 +420,9 @@ function Read.refresh_snapshot(state: ClientState): boolean
 	} :: any
 	if PROFILE == "fruit" then
 		snap.east, snap.west = Read.stall_at(CONST.STALL.EAST), Read.stall_at(CONST.STALL.WEST)
-	else
+	elseif PROFILE == "tea" then
+		snap.tea = Read.stall_at(CONST.TEA.STALL.TILE)
+	elseif PROFILE == "bakers" then
 		snap.baker = Read.stall_at(CONST.BAKER.STALL.TILE)
 	end
 	Read.inventory(snap)
@@ -501,7 +587,11 @@ function Game.setup()
 		sleep(100)
 	end
 
-	local needed = if PROFILE == "fruit" then 25 else CONST.BAKER.THIEVING
+	local needed = if PROFILE == "fruit"
+		then 25
+		elseif PROFILE == "tea" then CONST.TEA.THIEVING
+		elseif PROFILE == "port_roberts" then 0
+		else CONST.BAKER.THIEVING
 	for _, skill in ipairs(snap.state.skills or {}) do
 		if skill.name == "Thieving" and skill.real_level < needed then
 			Log.log(NAME, `Thieving {skill.real_level} is below {needed}, {NAME} need {needed}`)
@@ -509,7 +599,10 @@ function Game.setup()
 		end
 	end
 
-	if PROFILE == "bakers" then
+	if PROFILE == "port_roberts" then
+		-- messages from before don't count
+		Bakers.combat_message()
+	elseif PROFILE == "bakers" then
 		-- messages from before we started don't count
 		Bakers.combat_message()
 		S.hitpoints = Player.hitpoints() or 0
@@ -525,7 +618,9 @@ end
 -- Banking
 
 function Game.bank_kinds(): { string }
-	if PROFILE == "bakers" then
+	if PROFILE == "port_roberts" then
+		return { "PORT" }
+	elseif PROFILE == "bakers" then
 		return { "BAKER" }
 	elseif CONFIG.bank == "chest" then
 		return { "CHEST", "BOOTH" }
@@ -539,7 +634,10 @@ end
 
 -- walks to the bank of that kind and opens it
 function Game.open_bank(kind: string): boolean
-	local bank = if kind == "BAKER" then CONST.BAKER.BANK else (CONST.BANK :: any)[kind]
+	local bank = if kind == "BAKER"
+		then CONST.BAKER.BANK
+		elseif kind == "PORT" then CONST.PORT_ROBERTS.BANK
+		else (CONST.BANK :: any)[kind]
 	Log.log(NAME, `Walking to the {string.lower(bank.name)}`)
 	-- the booths are on another floor: the walker takes the stairs
 	if not Walker.walk(bank.stand, { near = 2, plane = bank.plane }) then
@@ -645,7 +743,7 @@ end
 
 -- what the loader's XP tracker shows next to the skills: the totals, it works out the rates itself
 function Loop.report_counters()
-	local key = `{stats.steals}/{stats.trips}/{stats.failures}/{stats.lures}`
+	local key = `{stats.steals}/{stats.trips}/{stats.failures}/{stats.lures}/{stats.arrests}`
 	if key == CONST.REPORT.counters_key then
 		return
 	end
@@ -657,6 +755,9 @@ function Loop.report_counters()
 	}
 	if PROFILE == "bakers" then
 		table.insert(counters, { id = "lures", label = "Guards lured", value = stats.lures })
+	end
+	if PROFILE == "port_roberts" then
+		table.insert(counters, { id = "arrests", label = "Arrests", value = stats.arrests })
 	end
 	Host.report_counters(counters)
 end
@@ -714,6 +815,10 @@ function Loop.get_state(): State
 
 	if PROFILE == "bakers" then
 		return Bakers.pick_state(skipped)
+	elseif PROFILE == "port_roberts" then
+		return Port.pick_state(skipped)
+	elseif PROFILE == "tea" then
+		return if snap.free == 0 and not skipped["DROP"] then "DROP" else "STEAL"
 	end
 
 	-- outside the house we are on a bank trip: bank whatever we carry, then go back
@@ -816,8 +921,7 @@ function Handler.wait_stolen(stall: Stall, before: number): boolean
 	return false
 end
 
--- moves the mouse onto the stall we are leaving, where the screen will show it once we stand next to
--- the one just clicked: the camera follows the player, so that is not where it is drawn now
+-- moves the mouse onto the stall we are leaving, where it will be drawn once we stand next to the other
 function Handler.pre_hover(clicked: Stall, other: Stall)
 	if other.loc == nil or S.sticky ~= nil or not Read.can_alternate() then
 		return
@@ -944,9 +1048,7 @@ function Bakers.combat_message(): boolean
 	return found
 end
 
--- the guard that has seen us, if one has. A guard that sees us walks up and attacks, which shows as the
--- game refusing the steal ("during combat"), our hitpoints dropping, or a guard next to the safe tile swinging.
--- Guards walking around further off don't count: they roam the market all the time without seeing us.
+-- the guard that has seen us, if any: it refuses the steal, drops our hitpoints or swings at us
 function Bakers.spotted(): Guard?
 	local guards = Bakers.guards()
 	local nearest = guards[1]
@@ -1065,8 +1167,7 @@ function Handler.lure()
 	if not Walker.walk(CONST.BAKER.LURE, { near = 1, plane = 0 }) then
 		Log.log(NAME, "Couldn't walk south")
 	end
-	-- go back once the guard is on the south side of the stall and close behind: it walks straight at us
-	-- and gets stuck against the stall while we are on the other side. It hits us for as long as it is next to us.
+	-- go back once the guard is south of the stall and close behind, where it gets stuck
 	local south = CONST.BAKER.STALL.TILE.y - 1
 	local waited = 0
 	Game.ensure_run()
@@ -1100,6 +1201,443 @@ function Handler.return_to_safe()
 	S.failures_in_row += 1
 end
 
+---------------------------------------------------------------------------------------------------
+-- Port Roberts
+
+-- the tiles the guards walk, in the order they walk them, and where each stall's tile is in it
+local LOOP_TILES: { Tile } = {}
+local LOOP_INDEX: { [number]: number } = {}
+-- per stall: where in the loop its guard stop is, and the stops before it
+local STOP_INDEX: { [string]: number } = {}
+local STOP_BEFORE: { [string]: { number } } = {}
+
+local function tile_key(x: number, y: number): number
+	return x * 10000 + y
+end
+
+do
+	local r = CONST.PORT_ROBERTS.LOOP
+	local function add(x: number, y: number)
+		table.insert(LOOP_TILES, { x = x, y = y })
+		LOOP_INDEX[tile_key(x, y)] = #LOOP_TILES - 1
+	end
+	for x = r.start.x, r.x2 do
+		add(x, r.y2)
+	end
+	for y = r.y2 - 1, r.y1, -1 do
+		add(r.x2, y)
+	end
+	for x = r.x2 - 1, r.x1, -1 do
+		add(x, r.y1)
+	end
+	for y = r.y1 + 1, r.y2 do
+		add(r.x1, y)
+	end
+	for x = r.x1 + 1, r.start.x - 1 do
+		add(x, r.y2)
+	end
+
+	local order: { string } = {}
+	for name, stop in pairs(CONST.PORT_ROBERTS.STOPS) do
+		STOP_INDEX[name] = LOOP_INDEX[tile_key(stop.x, stop.y)]
+		table.insert(order, name)
+	end
+	table.sort(order, function(a, b)
+		return STOP_INDEX[a] < STOP_INDEX[b]
+	end)
+	-- the indexes of the stops before each stall's, nearest first
+	for position, name in ipairs(order) do
+		local before = {}
+		for back = 1, 2 do
+			local other = order[(position - 1 - back) % #order + 1]
+			table.insert(before, STOP_INDEX[other])
+		end
+		STOP_BEFORE[name] = before
+	end
+end
+
+type GuardTrack = { x: number, y: number, since: number, seen: number }
+
+-- each guard's tile, and the tick it last moved (the earliest it could have when we looked away)
+local guards: { [number]: GuardTrack } = {}
+
+local function ahead(from: number, to: number): number
+	return (to - from) % #LOOP_TILES
+end
+
+-- follows the guards: where they are, and how long each has stood still
+function Port.track()
+	local tick = Read.current_tick(game_state())
+	for _, npc in ipairs(Npcs.find(CONST.PORT_ROBERTS.GUARD) or {}) do
+		local seen = guards[npc.index]
+		if seen == nil then
+			guards[npc.index] = { x = npc.x, y = npc.y, since = tick - CONST.PORT_ROBERTS.DWELL, seen = tick }
+		else
+			if seen.x ~= npc.x or seen.y ~= npc.y then
+				seen.x, seen.y = npc.x, npc.y
+				-- if we missed ticks, it moved as early as it could have: it is the safer guess
+				seen.since = if tick - seen.seen > 1 then seen.seen + 1 else tick
+			end
+			seen.seen = tick
+		end
+	end
+end
+
+-- the guards as loop position:ticks stood still, for the log
+function Port.guards_text(): string
+	local tick = Read.current_tick(game_state())
+	local parts: { string } = {}
+	for _, guard in pairs(guards) do
+		table.insert(parts, `{LOOP_INDEX[tile_key(guard.x, guard.y)] or "?"}:{tick - guard.since}`)
+	end
+	table.sort(parts)
+	return table.concat(parts, " ")
+end
+
+-- counts the steals the game reports
+function Port.count_steals()
+	for _, message in ipairs(Host.chat_messages() or {}) do
+		if message.uid > S.chat_uid then
+			S.chat_uid = message.uid
+			if string.find(string.lower(message.text), CONST.PORT_ROBERTS.STEAL_TEXT, 1, true) then
+				stats.steals += 1
+			end
+		end
+	end
+end
+
+-- whether a guard is, or is about to be, at the stall; `lead`/`wide` widen that, `eta` is our ticks to get there
+function Port.danger(name: string, lead: number, wide: boolean, eta: number?): boolean
+	local P = CONST.PORT_ROBERTS
+	local here = STOP_INDEX[name]
+	local before = STOP_BEFORE[name]
+	local tick = Read.current_tick(game_state())
+	local near = ahead(before[1], here)
+	for _, guard in pairs(guards) do
+		local at = LOOP_INDEX[tile_key(guard.x, guard.y)]
+		if at ~= nil and tick - guard.seen <= 3 then
+			local d = ahead(at, here)
+			local stood = tick - guard.since
+			if d == 0 then
+				-- a guard about to step off is gone by the time we get there
+				if eta == nil or stood + eta < P.DWELL + 1 then
+					return true
+				end
+			elseif d < near or (d == near and (wide or stood >= P.DWELL - lead)) then
+				-- walking up to it, or standing at the stop before and about to
+				return true
+			end
+		end
+	end
+	return false
+end
+
+-- whether we are walled in: few reachable tiles, the cell with its door shut
+function Port.locked_in(): boolean
+	local P = CONST.PORT_ROBERTS
+	local me = Walker.position()
+	if me == nil then
+		return false
+	end
+	local r = P.JAIL_SCAN
+	local c = Host.collision({ x1 = me.x - r, y1 = me.y - r, x2 = me.x + r, y2 = me.y + r })
+	if c == nil then
+		return false
+	end
+	local function flags(x: number, y: number): number?
+		local i, j = x - c.x, y - c.y
+		if i < 0 or j < 0 or i >= c.width or j >= c.height then
+			return nil
+		end
+		return c.flags[i * c.height + j + 1]
+	end
+	local blocked = 0x200000 + 0x100 + 0x40000
+	-- {step x, step y, wall flag on the tile we leave, wall flag on the tile we enter}
+	local steps = { { 0, 1, 0x2, 0x20 }, { 1, 0, 0x8, 0x80 }, { 0, -1, 0x20, 0x2 }, { -1, 0, 0x80, 0x8 } }
+	local seen: { [number]: boolean } = { [tile_key(me.x, me.y)] = true }
+	local queue: { Tile } = { me }
+	local head = 1
+	while head <= #queue do
+		local at = queue[head]
+		head += 1
+		if head > P.JAIL_MAX_TILES then
+			return false
+		end
+		local from = flags(at.x, at.y) or 0
+		for _, step in ipairs(steps) do
+			local nx, ny = at.x + step[1], at.y + step[2]
+			local into = flags(nx, ny)
+			if into == nil then
+				return false
+			end
+			if
+				bit32.band(from, step[3]) == 0
+				and bit32.band(into, step[4]) == 0
+				and bit32.band(into, blocked) == 0
+				and not seen[tile_key(nx, ny)]
+			then
+				seen[tile_key(nx, ny)] = true
+				table.insert(queue, { x = nx, y = ny })
+			end
+		end
+	end
+	return true
+end
+
+function Port.in_plaza(pos: Tile, plane: number): boolean
+	local a = CONST.PORT_ROBERTS.PLAZA
+	return plane == 0 and pos.x >= a.x1 and pos.x <= a.x2 and pos.y >= a.y1 and pos.y <= a.y2
+end
+
+function Port.pick_state(skipped: { [string]: boolean }): State
+	if Port.locked_in() then
+		return "JAIL"
+	elseif not Port.in_plaza(snap.pos, snap.plane) then
+		return "RETURN"
+	end
+	if snap.free <= CONST.PORT_ROBERTS.FULL_FREE and not skipped["BANK"] then
+		return "BANK"
+	end
+	return "PORT"
+end
+
+-- true once the stall was clicked; the steal then goes on by itself until we click something else
+function Port.steal(name: string): boolean
+	local P = CONST.PORT_ROBERTS
+	if Port.locked_in() then
+		return false
+	end
+	local me = Walker.position()
+	local loc = me and Objects.nearest(name, me)
+	-- turning the camera first costs ticks we don't have with a guard coming
+	if
+		loc == nil
+		or not (Objects.interact(loc, P.OPTION, false, false) or Objects.interact(loc, P.OPTION, false, true))
+	then
+		stats.failures += 1
+		S.failures_in_row += 1
+		Log.log(NAME, `Couldn't click the {string.lower(name)}`)
+		return false
+	end
+	S.port_at, S.port_clicked_at = name, time()
+	S.failures_in_row = 0
+	Log.log(NAME, `tick {Read.current_tick(game_state())}: clicked the {string.lower(name)} [{Port.guards_text()}]`)
+	return true
+end
+
+-- stops stealing by clicking the tile we stand on
+function Port.stand()
+	local me = Walker.position()
+	if me and Walker.click_tile(me) then
+		S.port_at = nil
+	end
+end
+
+-- steals from the next stall while a guard is coming to ours and it is clear, else stands still
+function Port.leave(main: string)
+	Log.log(
+		NAME,
+		`tick {Read.current_tick(game_state())}: leaving, {stats.steals} steals so far [{Port.guards_text()}]`
+	)
+	local list = CONST.PORT_ROBERTS.STALLS
+	local name = list[(table.find(list, main) or #list) + 1]
+	if name ~= nil and S.port_at ~= name and not Port.danger(name, CONST.PORT_ROBERTS.LEAD, true) then
+		Log.log(NAME, `A guard is coming to the {string.lower(main)}, stealing from the {string.lower(name)}`)
+		if Port.steal(name) then
+			return
+		end
+	end
+	Log.log(NAME, `A guard is coming to the {string.lower(main)}, standing still`)
+	Port.stand()
+end
+
+function Handler.port()
+	local P = CONST.PORT_ROBERTS
+	Game.deselect()
+	Game.ensure_run()
+	Port.track()
+	Port.count_steals()
+	local main = PORT_STALL
+	local at = S.port_at
+	if at == main then
+		-- just clicked, still on our way, with a guard on the stall that is about to step off
+		local eta = if time() - S.port_clicked_at < 3000 then 4 else nil
+		if Port.danger(main, P.LEAD, false, eta) then
+			Port.leave(main)
+		elseif time() - math.max(S.last_progress_at, S.port_clicked_at) > P.STALE_MS then
+			-- the steal stopped on its own
+			S.port_at = nil
+		end
+	else
+		-- going back takes time: the guard must not be on its way by then
+		local me = Walker.position()
+		local stop = P.STOPS[main]
+		local walk = if me then math.ceil(Walker.distance(me, stop) / 2) else 0
+		if not Port.danger(main, P.LEAD + walk, false, walk + 1) then
+			Port.steal(main)
+		elseif at ~= nil and Port.danger(at, P.LEAD, false) then
+			-- the stall we went to is getting a guard too
+			Port.leave(main)
+			return
+		elseif at ~= nil and time() - math.max(S.last_progress_at, S.port_clicked_at) > P.STALE_MS then
+			S.port_at = nil
+		end
+	end
+	-- the inventory shows what we stole: back to it whenever something (antiban) switched tab, unless a guard is close
+	if not Inventory.is_open() and not Port.danger(main, P.LEAD + 3, false) then
+		SidePanels.open("Inventory")
+	end
+	sleep(P.POLL_MS)
+end
+
+-- banks what we got and leaves the way back to port_return
+function Handler.port_bank()
+	if Port.locked_in() then
+		Handler.jail()
+		return
+	end
+	S.port_at = nil
+	Handler.bank()
+	if S.failures_in_row > 0 then
+		S.skip["BANK"] = true
+	end
+end
+
+-- waits for whatever our player is doing to finish, such as picking the lock
+function Port.wait_animation()
+	local waited = 0
+	local idle = 0
+	while waited < CONST.PORT_ROBERTS.PICK_MS and idle < 3 do
+		sleep(100)
+		waited += 100
+		local me = Players.me()
+		idle = if me == nil or me.animation == -1 then idle + 1 else 0
+	end
+	sleep(Random.int(300, 600))
+end
+
+-- teleports out with the sailors' amulet, worn or in the inventory; true once we are out of the cell
+function Port.amulet(): boolean
+	local A = CONST.PORT_ROBERTS.AMULET
+	local function is_amulet(name: string?): boolean
+		return name ~= nil and string.find(string.lower(name), A.name, 1, true) ~= nil
+	end
+	local clicked = false
+	local worn_items = Wornitems.worn()
+	local worn = worn_items and worn_items.amulet
+	if worn and is_amulet(Host.item_name(worn.id)) then
+		Log.log(NAME, "Teleporting out with the worn sailors' amulet")
+		clicked = Wornitems.interact_slot(worn.slot, A.option)
+		-- back to the tab the rest of the script works from
+		SidePanels.open("Inventory")
+	else
+		for _, item in ipairs(Inventory.items() or {}) do
+			if is_amulet(item.name) then
+				Log.log(NAME, "Teleporting out with the sailors' amulet in the inventory")
+				clicked = Inventory.interact_slot(item.slot, A.option)
+				break
+			end
+		end
+	end
+	if not clicked then
+		return false
+	end
+	local waited = 0
+	while waited < A.TELEPORT_MS do
+		sleep(200)
+		waited += 200
+		if not Port.locked_in() then
+			Port.wait_animation()
+			return true
+		end
+	end
+	return false
+end
+
+-- picks the lock of the cell door
+function Handler.jail()
+	local P = CONST.PORT_ROBERTS
+	if not S.in_jail then
+		S.in_jail = true
+		S.port_at = nil
+		stats.arrests += 1
+		S.amulet_tried = false
+		Log.log(NAME, `Caught ({stats.arrests} arrests)`)
+	end
+	-- the amulet is quicker than the lock: tried once, then the lock
+	if not S.amulet_tried then
+		S.amulet_tried = true
+		if Port.amulet() then
+			return
+		end
+		Log.log(NAME, "No sailors' amulet or it didn't work, picking the lock")
+	end
+	local chat = S.chat_uid
+	for _ = 1, P.DOOR.TRIES do
+		local me = Walker.position()
+		local door = me and Objects.nearest(P.DOOR.name, me)
+		if door == nil then
+			break
+		end
+		if Objects.interact(door, P.DOOR.option, false, true) then
+			local waited = 0
+			while waited < P.DOOR.TRY_MS do
+				sleep(100)
+				waited += 100
+				for _, message in ipairs(Host.chat_messages() or {}) do
+					if message.uid > chat then
+						chat = message.uid
+						if string.find(string.lower(message.text), P.PICKED_TEXT, 1, true) then
+							S.chat_uid = chat
+							Port.wait_animation()
+							return
+						end
+					end
+				end
+				if not Port.locked_in() then
+					return
+				end
+			end
+		end
+	end
+	stats.failures += 1
+	S.failures_in_row += 1
+end
+
+-- back to the stall we work, from the cell or wherever we ended up
+function Handler.port_return()
+	-- never click to walk out of the cell: the door comes first
+	if Port.locked_in() then
+		Handler.jail()
+		return
+	end
+	S.in_jail = false
+	S.port_at = nil
+	local stop = CONST.PORT_ROBERTS.STOPS[PORT_STALL]
+	-- next to the cell door we are still locked in, or have just come out of it
+	local me = Walker.position()
+	local door = me and Objects.nearest(CONST.PORT_ROBERTS.DOOR.name, me)
+	if me and door and Objects.distance(door, me) <= 3 then
+		local out = CONST.PORT_ROBERTS.DOOR.OUT
+		if me.x ~= out.x or me.y ~= out.y then
+			-- through the door if it is open: the walker can't start from the door's tile
+			Walker.walk_tile(out, 4000)
+		end
+		local now = Walker.position()
+		if now and Objects.distance(door, now) <= 3 and not (now.x == out.x and now.y == out.y) then
+			Handler.jail()
+			return
+		end
+	end
+	if Walker.walk(stop, { near = 0, plane = 0, timeout_ms = 40000 }) then
+		S.failures_in_row = 0
+		S.last_progress_at = time()
+		return
+	end
+	stats.failures += 1
+	S.failures_in_row += 1
+end
+
 local function loading()
 	sleep(100)
 end
@@ -1109,7 +1647,11 @@ local function login()
 end
 
 local function drop()
-	Log.log(NAME, `Dropping {#snap.junk} {if PROFILE == "fruit" then "cheap fruit" else "bread and chocolate slices"}`)
+	local what = if PROFILE == "fruit"
+		then "cheap fruit"
+		elseif PROFILE == "tea" then "cups of tea"
+		else "bread and chocolate slices"
+	Log.log(NAME, `Dropping {#snap.junk} {what}`)
 	if not Inventory.shift_drop(JUNK :: { string | number }) then
 		S.skip["DROP"] = true
 	end
@@ -1124,6 +1666,37 @@ Handler.bakers_states = {
 	RETURN = Handler.return_to_safe,
 	LURE = Handler.lure,
 	EAT = Handler.eat,
+}
+
+Handler.tea_states = {
+	LOADING = loading,
+	LOGIN = login,
+	STEAL = function()
+		Game.deselect()
+		Game.ensure_run()
+		local stand = CONST.TEA.STAND
+		local stall = snap.tea
+		if snap.pos.x ~= stand.x or snap.pos.y ~= stand.y then
+			if not Walker.walk(stand, { near = 0, plane = 0 }) then
+				stats.failures += 1
+				S.failures_in_row += 1
+			end
+		elseif stall.ready and stall.loc then
+			Handler.steal(stall)
+		else
+			Handler.idle()
+		end
+	end,
+	DROP = drop,
+}
+
+Handler.port_roberts_states = {
+	LOADING = loading,
+	LOGIN = login,
+	PORT = Handler.port,
+	JAIL = Handler.jail,
+	BANK = Handler.port_bank,
+	RETURN = Handler.port_return,
 }
 
 Handler.fruit_states = {
@@ -1160,12 +1733,20 @@ Handler.fruit_states = {
 
 -- asks which stall to work and sets up for it; false when the form is closed
 function Loop.choose_stall(): boolean
-	local stalls = { "Fruit stalls", "Baker's stalls" }
+	local stalls = { "Fruit stalls", "Baker's stalls", "Tea stall", "Port Roberts" }
 	local values = Host.form({
 		title = "Stall thiever",
 		submit = "Start",
 		fields = {
 			{ id = "stall", kind = "choice", label = "Stall", options = stalls, default = stalls[1] },
+			{ kind = "label", text = "Only for Port Roberts:" },
+			{
+				id = "port_stall",
+				kind = "choice",
+				label = "Port Roberts stall",
+				options = CONST.PORT_ROBERTS.STALLS,
+				default = CONST.PORT_ROBERTS.STALLS[1],
+			},
 		},
 	})
 	if values == nil then
@@ -1175,6 +1756,14 @@ function Loop.choose_stall(): boolean
 		PROFILE, NAME, STALL = "bakers", "Baker's stalls", CONST.BAKER.STALL
 		set_junk(CONST.BAKER.JUNK)
 		Handler.states = Handler.bakers_states
+	elseif values.stall == stalls[3] then
+		PROFILE, NAME, STALL = "tea", "Tea stall", CONST.TEA.STALL
+		set_junk(CONST.TEA.JUNK)
+		Handler.states = Handler.tea_states
+	elseif values.stall == stalls[4] then
+		PROFILE, NAME, PORT_STALL = "port_roberts", "Port Roberts", values.port_stall
+		set_junk({})
+		Handler.states = Handler.port_roberts_states
 	else
 		PROFILE, NAME, STALL = "fruit", "Fruit stalls", CONST.STALL
 		set_junk(CONST.JUNK)
@@ -1205,7 +1794,7 @@ function Loop.run()
 			Antiban.do_async_tasks("outside")
 		end
 		-- the steal loop has its own pace
-		if state ~= "STEAL" then
+		if state ~= "STEAL" and state ~= "PORT" then
 			sleep(Random.int(60, 140))
 		end
 	end
