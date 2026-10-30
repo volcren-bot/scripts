@@ -1,6 +1,4 @@
 --!strict
--- Agility courses: every course of the Simba script. The course is picked from where the player stands at the start.
--- Ported from the Simba script (wasp-premium/agility): the steps keep their object ids, the screen finders and map pixels became tiles.
 local Host = require("@lib/host")
 local game_state = Host.game_state
 local sleep = Host.sleep
@@ -11,6 +9,8 @@ type Tile = Host.Tile
 local Antiban = require("@lib/main/antiban/antiban")
 local AntibanTasks = require("@lib/main/antiban/antiban_tasks")
 local Biometrics = require("@lib/main/antiban/biometrics")
+local Clickbox = require("@lib/main/clickbox")
+local Draw = require("@lib/utils/draw")
 local GameState = require("@lib/main/game_state")
 local Geometry = require("@lib/utils/math/geometry")
 local GroundItems = require("@lib/main/entities/ground_items")
@@ -26,6 +26,7 @@ local Random = require("@lib/utils/math/random")
 local Stats = require("@lib/main/interfaces/gametabs/stats")
 local StatsReport = require("@lib/utils/stats_report")
 local Toplevel = require("@lib/main/interfaces/mainscreen/toplevel")
+local Walker = require("@lib/main/walker")
 local Box, Point, Quad = Geometry.Box, Geometry.Point, Geometry.Quad
 
 local NAME = "Agility"
@@ -71,10 +72,13 @@ local CONST = {
 	REPORT = { counters_key = "" },
 	MARK = { NAME = "Mark of grace", OPTION = "Take", PAD = 1, TAKE_MS = 7000 },
 	TICK_MS = 600,
+	-- a loop that took less than LOOP_MIN_MS sleeps LOOP_SLEEP_MS before the next one
+	LOOP_MIN_MS = 200,
+	LOOP_SLEEP_MS = 100,
+	-- the most ticks of pause after an obstacle is done
+	LANDING_TICKS = 2,
 	-- the poses of standing, walking and running: anything else (a rope, a ledge) is an obstacle in progress
 	IDLE_POSES = { [808] = true, [819] = true, [820] = true, [821] = true, [822] = true, [823] = true, [824] = true },
-	-- how long the animation must stay over: a jump is followed by its landing animation after a short gap
-	IDLE_MS = 1000,
 	-- the pre-hover aims this far up from the middle of the box's base (0 base, 1 top), within SPREAD of its size
 	PREHOVER = { RAISE = 0.35, SPREAD = 0.15, MIN_HALF = 8 },
 	-- ms allowed per tile of the walk to an obstacle that is far away
@@ -84,10 +88,14 @@ local CONST = {
 	TELEPORT = { SPELL = "Camelot Teleport", OPTION = "Seers'", FAR = 15, ARRIVE_MS = 8000 },
 	-- a step is the one we are in when we stand inside its box, with this much room around it
 	PAD = 1,
-	-- the obstacle is walked to from this far, closer it is clicked where it stands
-	APPROACH_DISTANCE = 10,
+	-- obstacles farther than NEAR tiles are walked up to before they are clicked, within MS
+	WALK_UP = { NEAR = 8, MS = 20000 },
 	-- tries at clicking an obstacle before it counts as a failure
 	CLICK_TRIES = 3,
+	-- how often the highlight of the obstacle is drawn again, and its colour
+	OVERLAY = { EVERY_MS = 100, FILL = { 255, 255, 0, 70 } },
+	-- the form's choice that takes the course the player stands in
+	NEAREST = "Nearest course",
 	COURSES = {
 		canifis = {
 			name = "Canifis",
@@ -2141,12 +2149,24 @@ local CONST = {
 	},
 }
 
-local Read, Game, Loop, Handler = {}, {}, {}, {}
+local Read, Game, Loop, Handler, Overlay = {}, {}, {}, {}, {}
 
 -- what the user can change
 local CONFIG = {
 	-- a key of CONST.COURSES (gnome, draynor, canifis, seers, wyrm_advanced...), or "auto" to take the one the player is standing in
 	course = "auto",
+	-- walk to the best course the level allows once a lap is done and the level has unlocked a better one
+	progressive = false,
+	-- courses progressive never walks to (keys of CONST.COURSES), for the quests and the like that gate them or the way there
+	blacklist = {
+		ardougne = true, -- Plague City
+		ape_atoll = true, -- Monkey Madness I
+		prifddinas = true, -- Song of the Elves
+		wyrm_basic = true, -- Varlamore
+		wyrm_advanced = true, -- Varlamore
+	} :: { [string]: boolean },
+	-- outline the obstacle we are about to take
+	highlight = true,
 	max_laps = 0, -- 0 is unlimited
 	-- chance to move the mouse onto the next obstacle while the current one is still going
 	prehover = 0.8,
@@ -2171,6 +2191,11 @@ type RunState = {
 	last_xp: number,
 	failures_in_row: number,
 	course: Course?,
+	-- courses progressive failed to walk to, left out for the rest of the run
+	unreachable: { [string]: boolean },
+	-- when the highlight was last drawn, and whether something is drawn now
+	overlay_at: number,
+	overlay_drawn: boolean,
 	-- marks in the inventory when we started, and the step we last clicked
 	marks_start: number,
 	eat_at: number,
@@ -2186,6 +2211,9 @@ local S: RunState = {
 	last_xp = 0,
 	failures_in_row = 0,
 	course = nil,
+	unreachable = {},
+	overlay_at = 0,
+	overlay_drawn = false,
 	marks_start = 0,
 	eat_at = 0,
 	skip = {},
@@ -2278,6 +2306,41 @@ function Read.course_of(pos: Tile, plane: number): Course?
 		end
 	end
 	return best
+end
+
+-- the courses lowest level first, with their keys
+function Read.courses_by_level(): { { key: string, course: Course } }
+	type Entry = { key: string, course: Course }
+	local list: { Entry } = {}
+	for key, course in pairs(CONST.COURSES :: { [string]: Course }) do
+		table.insert(list, { key = key, course = course })
+	end
+	table.sort(list, function(a: Entry, b: Entry)
+		if a.course.level ~= b.course.level then
+			return a.course.level < b.course.level
+		end
+		return a.key < b.key
+	end)
+	return list
+end
+
+-- the best course above the current one that the level allows and nothing rules out
+function Read.next_course(): (string?, Course?)
+	local level = Stats.real_level("Agility") or 0
+	local current = S.course :: Course
+	local best_key, best = nil, nil
+	for _, entry in ipairs(Read.courses_by_level()) do
+		local course = entry.course
+		if
+			course.level <= level
+			and course.level > current.level
+			and not CONFIG.blacklist[entry.key]
+			and not S.unreachable[entry.key]
+		then
+			best_key, best = entry.key, course
+		end
+	end
+	return best_key, best
 end
 
 function Read.refresh_snapshot(state: ClientState): boolean
@@ -2521,6 +2584,122 @@ function Game.setup_antiban()
 	Log.log(NAME, "Antiban set up")
 end
 
+---------------------------------------------------------------------------------------------------
+-- Highlight
+
+-- outlines the obstacle of the step we stand in, drawn again every EVERY_MS
+function Overlay.update()
+	local course = S.course
+	if not CONFIG.highlight or course == nil or time() - S.overlay_at < CONST.OVERLAY.EVERY_MS then
+		return
+	end
+	S.overlay_at = time()
+	local box: Clickbox.Clickbox? = nil
+	local p = game_state().position
+	if p then
+		local pos = { x = p.x, y = p.y }
+		local step = course.steps[Read.step_of(course, pos, p.plane or 0)]
+		local loc = step and Read.obstacle(step, pos)
+		box = loc and Objects.clickbox(loc)
+	end
+	if box == nil and not S.overlay_drawn then
+		return
+	end
+	S.overlay_drawn = box ~= nil
+	Draw.batch(function()
+		Draw.clear()
+		if box then
+			local fill = CONST.OVERLAY.FILL
+			for _, triangle in ipairs(box.triangles or {}) do
+				Draw.polygon(triangle, Draw.color(fill[1], fill[2], fill[3], fill[4]))
+			end
+			Clickbox.draw(box)
+		end
+	end)
+end
+
+function Overlay.clear()
+	if S.overlay_drawn then
+		S.overlay_drawn = false
+		Draw.clear()
+	end
+end
+
+---------------------------------------------------------------------------------------------------
+-- Choosing the course
+
+-- asks for the course, progressive and highlight; false when the form is closed
+function Game.ask(): boolean
+	local names, keys = { CONST.NEAREST }, {}
+	for _, entry in ipairs(Read.courses_by_level()) do
+		local label = `{entry.course.name} (level {entry.course.level})`
+		table.insert(names, label)
+		keys[label] = entry.key
+	end
+	local default = CONST.NEAREST
+	for label, key in pairs(keys) do
+		if key == CONFIG.course then
+			default = label
+		end
+	end
+	local values = Host.form({
+		title = NAME,
+		submit = "Start",
+		fields = {
+			{ id = "course", kind = "choice", label = "Course", options = names, default = default },
+			{
+				id = "progressive",
+				kind = "check",
+				label = "Progressive (walk to the next course when unlocked)",
+				default = CONFIG.progressive,
+			},
+			{ id = "highlight", kind = "check", label = "Highlight obstacles", default = CONFIG.highlight },
+		},
+	})
+	if values == nil then
+		return false
+	end
+	CONFIG.course = keys[values.course] or "auto"
+	CONFIG.progressive = values.progressive == true
+	CONFIG.highlight = values.highlight == true
+	return true
+end
+
+function Game.set_course(course: Course)
+	if course == CONST.COURSES.seers then
+		course.teleport = CONFIG.seers_teleport
+	end
+	S.course = course
+	-- the counters' labels follow the course
+	CONST.REPORT.counters_key = ""
+end
+
+-- walks to the best course the level has unlocked; false when there is none or we didn't get there
+function Game.progress(): boolean
+	local key, course = Read.next_course()
+	if key == nil or course == nil then
+		return false
+	end
+	local previous = S.course :: Course
+	local first = course.steps[1]
+	Log.log(NAME, `Agility unlocks {course.name}, walking there`)
+	Overlay.clear()
+	local arrived = Walker.walk(first.start, { near = 2, plane = first.plane })
+	local state = game_state()
+	if arrived and Read.refresh_snapshot(state) and Read.step_of(course, snap.pos, snap.plane) > 0 then
+		Game.set_course(course)
+		snap.step = Read.step_of(course, snap.pos, snap.plane)
+		S.marks_start = Read.marks_in_inventory() - stats.marks
+		S.failures_in_row = 0
+		return true
+	end
+	S.unreachable[key] = true
+	Log.log(NAME, `Couldn't get to {course.name}, staying on {previous.name}`)
+	local back = previous.steps[1]
+	Walker.walk(back.start, { near = 2, plane = back.plane })
+	return false
+end
+
 -- picks the course and checks the level; false stops the script
 function Game.choose_course(): boolean
 	local pos, plane = snap.pos, snap.plane
@@ -2536,10 +2715,7 @@ function Game.choose_course(): boolean
 		Log.log(NAME, `Agility {level} is below {course.level}, {course.name} needs {course.level}`)
 		return false
 	end
-	if course == CONST.COURSES.seers then
-		course.teleport = CONFIG.seers_teleport
-	end
-	S.course = course
+	Game.set_course(course)
 	snap.step = Read.step_of(course, pos, plane)
 	Log.log(NAME, `{course.name} course, step {snap.step}`)
 	return true
@@ -2560,6 +2736,9 @@ function Game.setup()
 	end
 	S.marks_start = Read.marks_in_inventory()
 	S.eat_at = Random.int(CONFIG.eat_at_hitpoints[1], CONFIG.eat_at_hitpoints[2])
+	if CONFIG.progressive then
+		Game.progress()
+	end
 
 	if CONFIG.antiban and not S.antiban_ready then
 		Game.setup_antiban()
@@ -2705,6 +2884,7 @@ function Handler.wait_until(done: () -> boolean, timeout_ms: number): boolean
 		if done() then
 			return true
 		end
+		Overlay.update()
 		if CONFIG.antiban and S.antiban_ready then
 			Antiban.do_walking_antiban()
 		end
@@ -2864,16 +3044,9 @@ function Handler.finish_obstacle(course: Course, index: number, step: Step, nxt:
 		end, (step.leave + step.xp) * tick)
 	end
 
-	-- 3. the animation stays over, we are in the next step and can see its obstacle
-	local idle_since: number? = nil
+	-- 3. the animation is over, we are in the next step and can see its obstacle
 	local function settled(): boolean
 		if Read.busy() then
-			idle_since = nil
-			return false
-		end
-		local since = idle_since or time()
-		idle_since = since
-		if time() - since < CONST.IDLE_MS then
 			return false
 		end
 		local now = Read.step_here(course)
@@ -2884,6 +3057,8 @@ function Handler.finish_obstacle(course: Course, index: number, step: Step, nxt:
 		return now ~= index and now ~= 0
 	end
 	Handler.wait_until(settled, (step.leave + step.enter) * tick)
+	-- a pause once the obstacle is done, in place of a fixed wait
+	Biometrics.sleep(0, CONST.LANDING_TICKS * tick)
 
 	local now = Read.step_here(course)
 	if now == nxt then
@@ -2907,6 +3082,18 @@ function Handler.advance()
 
 	-- a miss is usually the obstacle off screen after a camera change: hover it (that turns the camera) and try again;
 	-- with no option known, or after a miss, the menu says what the obstacle offers
+	-- a far obstacle has a clickbox but can't be hovered (Objects.approach thinks it's aimable and doesn't walk), so walk up to it
+	-- first; the ground has a map to plan on, roofs don't and get the straight line
+	if Objects.distance(loc, snap.pos) > CONST.WALK_UP.NEAR then
+		Walker.walk({ x = loc.x, y = loc.y }, {
+			near = CONST.WALK_UP.NEAR - 3,
+			straight = step.plane ~= 0,
+			plane = step.plane,
+			timeout_ms = CONST.WALK_UP.MS,
+		})
+		snap.pos = Walker.position() or snap.pos
+	end
+
 	local clicked = false
 	for attempt = 1, CONST.CLICK_TRIES do
 		if #step.options == 0 or attempt > 1 then
@@ -2919,11 +3106,7 @@ function Handler.advance()
 			end
 		end
 		if #step.options > 0 then
-			if Objects.distance(loc, snap.pos) > CONST.APPROACH_DISTANCE then
-				clicked = Objects.approach(loc, step.options)
-			else
-				clicked = Objects.interact(loc, step.options, false)
-			end
+			clicked = Objects.interact(loc, step.options, false)
 		end
 		if clicked or attempt == CONST.CLICK_TRIES then
 			break
@@ -2953,6 +3136,9 @@ function Handler.advance()
 	if step.settle > 0 then
 		sleep(Random.int(0, step.settle * CONST.TICK_MS))
 	end
+	if nxt == 1 and CONFIG.progressive then
+		Game.progress()
+	end
 end
 
 Handler.states = {
@@ -2971,6 +3157,10 @@ Handler.states = {
 }
 
 function Loop.run()
+	if not Game.ask() then
+		Log.log(NAME, "Form closed, stopping the script")
+		return
+	end
 	Log.log(NAME, `{NAME} started`)
 	Game.setup()
 	S.last_progress_at, S.failures_in_row = time(), 0
@@ -2982,14 +3172,20 @@ function Loop.run()
 		if S.finished then
 			break
 		end
+		local began = time()
 		Handler.states[state]()
+		Overlay.update()
 
 		if CONFIG.antiban and S.antiban_ready then
 			Antiban.do_async_tasks("outside")
 			Antiban.do_antiban()
 		end
-		sleep(Random.int(60, 140))
+		-- a handler that waited on the game has paused enough, one that returned at once (a failure, a skipped state) must not spin
+		if time() - began < CONST.LOOP_MIN_MS then
+			sleep(CONST.LOOP_SLEEP_MS)
+		end
 	end
+	Overlay.clear()
 	StatsReport.flush(report)
 	Log.log(NAME, "Done")
 end
