@@ -2155,7 +2155,7 @@ local CONFIG = {
 	course = "auto",
 	-- walk to the best course the level allows once a lap is done and the level has unlocked a better one
 	progressive = false,
-	-- courses progressive never walks to (keys of CONST.COURSES), for the quests and the like that gate them or the way there
+	-- courses progressive never walks to (keys of CONST.COURSES), for the quests and the like that gate them; the form starts from this and overwrites it
 	blacklist = {
 		ardougne = true, -- Plague City
 		ape_atoll = true, -- Monkey Madness I
@@ -2640,26 +2640,42 @@ function Game.ask(): boolean
 			default = label
 		end
 	end
-	local values = Host.form({
-		title = NAME,
-		submit = "Start",
-		fields = {
-			{ id = "course", kind = "choice", label = "Course", options = names, default = default },
-			{
-				id = "progressive",
-				kind = "check",
-				label = "Progressive (walk to the next course when unlocked)",
-				default = CONFIG.progressive,
-			},
-			{ id = "highlight", kind = "check", label = "Highlight obstacles", default = CONFIG.highlight },
+	local fields: { any } = {
+		{ id = "course", kind = "choice", label = "Course", options = names, default = default },
+		{
+			id = "progressive",
+			kind = "check",
+			label = "Progressive (walk to the next course when unlocked)",
+			default = CONFIG.progressive,
 		},
+		{ id = "highlight", kind = "check", label = "Highlight obstacles", default = CONFIG.highlight },
+	}
+	local rows = {}
+	for _, entry in ipairs(Read.courses_by_level()) do
+		table.insert(rows, {
+			id = entry.key,
+			label = `{entry.course.name} (level {entry.course.level})`,
+			default = not CONFIG.blacklist[entry.key],
+		})
+	end
+	table.insert(fields, {
+		id = "courses",
+		kind = "list",
+		label = "Courses to walk to, in order (untick to skip one)",
+		items = rows,
+		enabled_by = "progressive",
 	})
+	local values = Host.form({ title = NAME, submit = "Start", fields = fields })
 	if values == nil then
 		return false
 	end
 	CONFIG.course = keys[values.course] or "auto"
 	CONFIG.progressive = values.progressive == true
 	CONFIG.highlight = values.highlight == true
+	for _, entry in ipairs(Read.courses_by_level()) do
+		local picked = values.courses :: { [string]: boolean }
+		CONFIG.blacklist[entry.key] = if picked[entry.key] == true then nil else true
+	end
 	return true
 end
 
