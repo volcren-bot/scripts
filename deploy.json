@@ -6,5 +6,9 @@
   "tempoross": {
     "id": "25cba578-b254-43af-8424-c6d165013f0f",
     "entry": "tempoross.luau"
+  },
+  "agility": {
+    "id": "d3558318-bf00-4574-8d0e-724b277db73c",
+    "entry": "agility.luau"
   }
 }

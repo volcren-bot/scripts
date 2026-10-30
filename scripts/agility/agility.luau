@@ -43,8 +43,6 @@ type Step = {
 	y2: number,
 	-- where we stand when the step begins, to aim at the next obstacle from before we get there
 	start: Tile,
-	-- the most ticks each phase of an obstacle can take (the old script's delays): from the click to the animation starting
-	-- (plus the walk there), from the animation to the next step being visible, and for the xp to arrive (0: it gives none)
 	leave: number,
 	enter: number,
 	xp: number,
