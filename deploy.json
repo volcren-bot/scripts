@@ -10,5 +10,9 @@
   "agility": {
     "id": "d3558318-bf00-4574-8d0e-724b277db73c",
     "entry": "agility.luau"
+  },
+  "volcanic_ash": {
+    "id": "37ec9a32-9ba4-401a-86f8-0d858e38b5e9",
+    "entry": "volcanic_ash.luau"
   }
 }
