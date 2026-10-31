@@ -32,8 +32,10 @@ local CONST = {
 	ASH = "Volcanic ash",
 	MIN_MINING = 22,
 	PILE = { name = "Ash pile", option = "Mine" },
-	-- one ash per pile, then it is gone for about half a minute
-	MINE = { RESULT_MS = 6000, POLL_MS = 100 },
+	-- we stay on a pile until it is gone (it comes back after about half a minute). RESULT_MS: how long
+	-- without any ash before the pile counts as a failure; STALL_MS: how long without more ash
+	-- before we give up on a pile that has given some
+	MINE = { RESULT_MS = 6000, STALL_MS = 15000, POLL_MS = 100, TAB_CHECK_MS = 1000, TINY_ANTIBAN = 0.4 },
 	-- the chest at the top of the volcano
 	BANK = {
 		name = "Bank chest",
@@ -53,22 +55,44 @@ local CONST = {
 	},
 }
 
-local Read, Game, Loop, Handler = {}, {}, {}, {}
+local Read, Route, Game, Loop, Handler = {}, {}, {}, {}, {}
 
 -- what the user can change
 local CONFIG = {
-	max_runs = 0, -- ash mined before stopping, 0 is unlimited
-	-- piles not worth the walk, as { x = , y = } tiles (the pile's south-west tile)
-	skip_piles = {} :: { { x: number, y: number } },
+	max_ashes = 0, -- ash mined before stopping, 0 is unlimited
+	-- the only piles ever mined, as { x = , y = } tiles (the pile's south-west tile), in the order they
+	-- are walked: from the top of the volcano (next to the chest) down. Mined in this order going down
+	-- and in reverse coming back up
+	piles = {
+		{ x = 3820, y = 3804 },
+		{ x = 3818, y = 3791 },
+		{ x = 3821, y = 3779 },
+		{ x = 3810, y = 3772 },
+		{ x = 3800, y = 3767 },
+		{ x = 3794, y = 3773 },
+		{ x = 3789, y = 3769 },
+		{ x = 3781, y = 3774 },
+	} :: { { x: number, y: number } },
+	-- the worse route (fewer piles), same order: taken now and then instead of the main one
+	secondary_piles = {
+		{ x = 3812, y = 3818 },
+		{ x = 3804, y = 3826 },
+		{ x = 3794, y = 3818 },
+		{ x = 3785, y = 3823 },
+	} :: { { x: number, y: number } },
+	-- chance (biometric) of taking the secondary route each time we are back at the top
+	secondary_chance = 0.07,
 	-- bank at the chest when the inventory is full
 	bank = true,
+	-- back at the top, bank when the inventory is at least this full (a full inventory banks anywhere)
+	bank_at = 0.7,
 	-- the script stops when stuck: no xp for idle_minutes, this many failures in a row
 	timeouts = { idle_minutes = 5, max_failures = 4 },
 	antiban = true,
 }
 
 -- counters shown next to the skills in the loader's XP tracker
-local stats = { runs = 0, failures = 0, banked = 0 }
+local stats = { ashes = 0, failures = 0, banked = 0 }
 
 type RunState = {
 	finished: boolean,
@@ -77,8 +101,13 @@ type RunState = {
 	last_progress_at: number,
 	last_xp: number,
 	failures_in_row: number,
-	-- which way along the volcano we are going: 1 is north (y grows), -1 south
-	direction: number,
+	-- the route being walked, the next pile in its list and which way we go
+	-- (1 is down the volcano, in list order; -1 is back up)
+	route: string,
+	idx: number,
+	dir: number,
+	-- set when a trip ends at the top: bank there if the inventory is filling up
+	top_check: boolean,
 	-- the pickaxe carried in the inventory at the start: the bank deposit leaves it
 	pickaxe: string?,
 	-- states to ignore for one loop
@@ -92,7 +121,10 @@ local S: RunState = {
 	last_progress_at = 0,
 	last_xp = 0,
 	failures_in_row = 0,
-	direction = 1,
+	route = "main",
+	idx = 1,
+	dir = 1,
+	top_check = false,
 	skip = {},
 }
 
@@ -159,59 +191,69 @@ function Read.ash(): number
 	return backpack.count_ex(CONST.ASH) or 0
 end
 
-function Read.skipped(loc: Host.Loc): boolean
-	for _, tile in ipairs(CONFIG.skip_piles) do
-		if tile.x == loc.x and tile.y == loc.y then
-			return true
-		end
-	end
-	return false
-end
-
--- the piles that are there to mine, not the ones we skip
-function Read.piles(): { Host.Loc }
-	local out = {}
-	for _, loc in ipairs(Objects.find(CONST.PILE.name) or {}) do
-		if not Read.skipped(loc) then
-			table.insert(out, loc)
-		end
-	end
-	return out
-end
-
-function Read.pile_there(x: number, y: number): boolean
+-- the pile standing on the tile, nil when it is depleted
+function Read.pile_at(x: number, y: number): Host.Loc?
 	for _, loc in ipairs(Objects.find(CONST.PILE.name) or {}) do
 		if loc.x == x and loc.y == y then
-			return true
+			return loc
 		end
 	end
-	return false
+	return nil
 end
 
--- the nearest pile in the direction we are going; at the end of the volcano we turn round
-function Read.next_pile(): Host.Loc?
-	local piles = Read.piles()
-	local me = snap.me
-	for _ = 1, 2 do
-		local best: Host.Loc? = nil
-		local best_distance = math.huge
-		for _, loc in ipairs(piles) do
-			-- a pile level with us (or a tile behind) still counts as ahead
-			if (loc.y - me.y) * S.direction >= -1 then
-				local d = Objects.distance(loc, me)
-				if d < best_distance then
-					best, best_distance = loc, d
-				end
+---------------------------------------------------------------------------------------------------
+-- Route
+
+function Route.list(): { { x: number, y: number } }
+	return if S.route == "secondary" then CONFIG.secondary_piles else CONFIG.piles
+end
+
+-- starts on the main route from the pile nearest to us, going the way with the most piles left
+function Route.start()
+	local k, best = 1, math.huge
+	for i, tile in ipairs(CONFIG.piles) do
+		local d = math.max(math.abs(tile.x - snap.me.x), math.abs(tile.y - snap.me.y))
+		if d < best then
+			k, best = i, d
+		end
+	end
+	local down, up = #CONFIG.piles - k + 1, k
+	S.route, S.idx = "main", k
+	if down == up then
+		S.dir = if Random.int(1, 2) == 1 then 1 else -1
+	else
+		S.dir = if down > up then 1 else -1
+	end
+	Log.log(NAME, `Starting at pile {k}, going {if S.dir > 0 then "down" else "up"}`)
+end
+
+-- the end of a pass: turn round at the bottom, at the top pick the route for the next trip
+function Route.turn()
+	if S.dir == 1 then
+		-- the last pile was just mined: come back from the one before it
+		S.dir, S.idx = -1, math.max(#Route.list() - 1, 1)
+		Log.log(NAME, "At the bottom, going back up")
+		return
+	end
+	S.top_check = true
+	local second = #CONFIG.secondary_piles > 0 and Biometrics.random_boolean(CONFIG.secondary_chance)
+	S.route, S.dir, S.idx = if second then "secondary" else "main", 1, 1
+	Log.log(NAME, `At the top, going down the {S.route} route`)
+end
+
+-- the pile to mine next on the route; depleted ones are skipped for good
+function Route.target(): Host.Loc?
+	for _ = 1, 4 * (#CONFIG.piles + #CONFIG.secondary_piles) + 4 do
+		local tile = Route.list()[S.idx]
+		if tile == nil then
+			Route.turn()
+		else
+			local loc = Read.pile_at(tile.x, tile.y)
+			if loc then
+				return loc
 			end
+			S.idx += S.dir
 		end
-		if best then
-			return best
-		end
-		if #piles == 0 then
-			return nil
-		end
-		S.direction = -S.direction
-		Log.log(NAME, if S.direction > 0 then "Going north" else "Going south")
 	end
 	return nil
 end
@@ -287,6 +329,16 @@ function Game.setup_antiban()
 	Antiban.sync_config()
 	S.antiban_ready = true
 	Log.log(NAME, "Antiban set up")
+end
+
+-- the small async antiban tasks (camera, mouse, hover) while we wait on a pile
+function Game.tiny_antiban()
+	if not CONFIG.antiban or not S.antiban_ready then
+		return
+	end
+	if Biometrics.random_boolean(CONST.MINE.TINY_ANTIBAN) then
+		Antiban.do_async_tasks("game")
+	end
 end
 
 -- closes the bank: Escape, else its close button (the lib's check rejects it when the window is big)
@@ -401,14 +453,14 @@ end
 
 -- what the loader's XP tracker shows next to the skills: the totals, it works out the rates itself
 function Loop.report_counters()
-	local key = `{stats.runs}/{stats.failures}/{stats.banked}`
+	local key = `{stats.ashes}/{stats.failures}/{stats.banked}`
 	if key == CONST.REPORT.counters_key then
 		return
 	end
 	CONST.REPORT.counters_key = key
 	Host.report_counters({
-		{ id = "runs", label = "Ash mined", value = stats.runs },
-		{ id = "failures", label = "Failures", value = stats.failures, percent_of = "runs" },
+		{ id = "ashes", label = "Ash mined", value = stats.ashes },
+		{ id = "failures", label = "Failures", value = stats.failures, percent_of = "ashes" },
 		{ id = "banked", label = "Bank trips", value = stats.banked },
 	})
 end
@@ -422,8 +474,8 @@ function Loop.check_timeouts()
 		reason = `no xp for {t.idle_minutes} minutes`
 	elseif S.failures_in_row >= t.max_failures then
 		reason = `{S.failures_in_row} failures in a row`
-	elseif CONFIG.max_runs > 0 and stats.runs >= CONFIG.max_runs then
-		Log.log(NAME, `Mined {CONFIG.max_runs} ash, stopping the script`)
+	elseif CONFIG.max_ashes > 0 and stats.ashes >= CONFIG.max_ashes then
+		Log.log(NAME, `Mined {CONFIG.max_ashes} ash, stopping the script`)
 		S.finished = true
 		return
 	end
@@ -470,7 +522,14 @@ function Loop.get_state(): State
 	if skipped["MINE"] then
 		return "LOADING"
 	end
-	plan.pile = Read.next_pile()
+	plan.pile = Route.target()
+	-- back at the top, next to the chest: bank before the trip if the inventory is filling up
+	if S.top_check then
+		S.top_check = false
+		if CONFIG.bank and not skipped["BANK"] and 28 - snap.free_slots >= math.ceil(28 * CONFIG.bank_at) then
+			return "BANK"
+		end
+	end
 	return if plan.pile then "MINE" else "WAIT"
 end
 
@@ -482,31 +541,53 @@ function Handler.mine(pile: Host.Loc)
 	local before = Read.ash()
 	if not Objects.approach(pile, { CONST.PILE.option }) then
 		-- someone else may have taken it as we got there
-		if Read.pile_there(pile.x, pile.y) then
+		if Read.pile_at(pile.x, pile.y) then
 			S.failures_in_row += 1
 			stats.failures += 1
 			Log.log(NAME, `Couldn't mine the pile at {pile.x}, {pile.y}`)
 		end
 		return
 	end
-	local waited = 0
-	while waited < CONST.MINE.RESULT_MS do
-		if Read.ash() > before then
-			stats.runs += 1
+	-- stay on the pile until it is depleted, with the inventory open to watch the ash come in
+	Inventory.open()
+	local ash = before
+	local mined = 0
+	local last_gain, last_tab_check = time(), time()
+	while true do
+		local now = Read.ash()
+		if now > ash then
+			mined += now - ash
+			stats.ashes += now - ash
+			ash = now
 			S.failures_in_row = 0
 			S.last_progress_at = time()
+			last_gain = time()
+		end
+		-- gone: depleted, or someone else was quicker
+		if not Read.pile_at(pile.x, pile.y) then
 			return
 		end
-		-- gone without ash: another player was quicker
-		if not Read.pile_there(pile.x, pile.y) then
+		-- no room for more: the bank is next
+		if CONFIG.bank and Inventory.free_slots() == 0 then
 			return
 		end
+		local idle = time() - last_gain
+		if mined == 0 and idle >= CONST.MINE.RESULT_MS then
+			S.failures_in_row += 1
+			stats.failures += 1
+			Log.log(NAME, `No ash from the pile at {pile.x}, {pile.y}`)
+			return
+		elseif idle >= CONST.MINE.STALL_MS then
+			Log.log(NAME, `The pile at {pile.x}, {pile.y} stopped giving ash, moving on`)
+			return
+		end
+		if time() - last_tab_check >= CONST.MINE.TAB_CHECK_MS then
+			last_tab_check = time()
+			Inventory.open()
+		end
+		Game.tiny_antiban()
 		sleep(CONST.MINE.POLL_MS)
-		waited += CONST.MINE.POLL_MS
 	end
-	S.failures_in_row += 1
-	stats.failures += 1
-	Log.log(NAME, `No ash from the pile at {pile.x}, {pile.y}`)
 end
 
 -- opens the chest, deposits the inventory and closes it
@@ -566,6 +647,8 @@ Handler.states = {
 	end,
 	MINE = function()
 		Handler.mine(assert(plan.pile))
+		-- done with this pile, mined or not: never go back to it
+		S.idx += S.dir
 		if CONFIG.antiban and S.antiban_ready then
 			if not Antiban.do_antiban() then
 				S.skip["MINE"] = true
@@ -581,9 +664,54 @@ Handler.states = {
 	end,
 }
 
+-- asks for the settings that were hard coded in CONFIG, which stay as their defaults; false when the form is closed
+function Game.ask(): boolean
+	local values = Host.form({
+		title = NAME,
+		submit = "Start",
+		fields = {
+			{
+				id = "max_ashes",
+				kind = "number",
+				label = "Max ashes (0 is unlimited)",
+				default = CONFIG.max_ashes,
+				min = 0,
+				max = 1000000,
+				integer = true,
+			},
+		},
+	})
+	if values == nil then
+		return false
+	end
+	Game.apply_settings(values)
+	return true
+end
+
+-- puts the form's values in CONFIG; they are read where they are used, so it works while the script runs too
+function Game.apply_settings(values: { [string]: any })
+	CONFIG.max_ashes = values.max_ashes
+end
+
+-- takes the settings the user sent with Update in the loader, if there are any
+function Game.poll_settings()
+	local values = Host.form_update()
+	if values then
+		Game.apply_settings(values)
+		Log.log(NAME, "Settings updated")
+	end
+end
+
 function Loop.run()
+	if not Game.ask() then
+		Log.log(NAME, "Form closed, stopping the script")
+		return
+	end
 	Log.log(NAME, `{NAME} started`)
 	Game.setup()
+	if not S.finished then
+		Route.start()
+	end
 	S.last_progress_at, S.failures_in_row = time(), 0
 	Loop.hook_antiban_timeouts()
 
@@ -593,6 +721,7 @@ function Loop.run()
 		if S.finished then
 			break
 		end
+		Game.poll_settings()
 		Handler.states[state]()
 
 		if CONFIG.antiban and S.antiban_ready then
