@@ -1736,14 +1736,40 @@ Handler.fruit_states = {
 	RETURN = Handler.return_to_house,
 }
 
+local STALLS = { "Fruit stalls", "Baker's stalls", "Tea stall", "Port Roberts" }
+
+-- the stall being worked and the one the form last named, to tell when the user changes it
+local chosen = { stall = STALLS[1], port_stall = CONST.PORT_ROBERTS.STALLS[1] }
+
+-- switches to the stall of the form's values: its profile, values, junk and handlers
+function Loop.apply_stall(values: { [string]: any })
+	chosen.stall, chosen.port_stall = values.stall, values.port_stall
+	if values.stall == STALLS[2] then
+		PROFILE, NAME, STALL = "bakers", "Baker's stalls", CONST.BAKER.STALL
+		set_junk(CONST.BAKER.JUNK)
+		Handler.states = Handler.bakers_states
+	elseif values.stall == STALLS[3] then
+		PROFILE, NAME, STALL = "tea", "Tea stall", CONST.TEA.STALL
+		set_junk(CONST.TEA.JUNK)
+		Handler.states = Handler.tea_states
+	elseif values.stall == STALLS[4] then
+		PROFILE, NAME, PORT_STALL = "port_roberts", "Port Roberts", values.port_stall
+		set_junk({})
+		Handler.states = Handler.port_roberts_states
+	else
+		PROFILE, NAME, STALL = "fruit", "Fruit stalls", CONST.STALL
+		set_junk(CONST.JUNK)
+		Handler.states = Handler.fruit_states
+	end
+end
+
 -- asks which stall to work and sets up for it; false when the form is closed
 function Loop.choose_stall(): boolean
-	local stalls = { "Fruit stalls", "Baker's stalls", "Tea stall", "Port Roberts" }
 	local values = Host.form({
 		title = "Stall thiever",
 		submit = "Start",
 		fields = {
-			{ id = "stall", kind = "choice", label = "Stall", options = stalls, default = stalls[1] },
+			{ id = "stall", kind = "choice", label = "Stall", options = STALLS, default = STALLS[1] },
 			{ kind = "label", text = "Only for Port Roberts:" },
 			{
 				id = "port_stall",
@@ -1757,24 +1783,32 @@ function Loop.choose_stall(): boolean
 	if values == nil then
 		return false
 	end
-	if values.stall == stalls[2] then
-		PROFILE, NAME, STALL = "bakers", "Baker's stalls", CONST.BAKER.STALL
-		set_junk(CONST.BAKER.JUNK)
-		Handler.states = Handler.bakers_states
-	elseif values.stall == stalls[3] then
-		PROFILE, NAME, STALL = "tea", "Tea stall", CONST.TEA.STALL
-		set_junk(CONST.TEA.JUNK)
-		Handler.states = Handler.tea_states
-	elseif values.stall == stalls[4] then
-		PROFILE, NAME, PORT_STALL = "port_roberts", "Port Roberts", values.port_stall
-		set_junk({})
-		Handler.states = Handler.port_roberts_states
-	else
-		PROFILE, NAME, STALL = "fruit", "Fruit stalls", CONST.STALL
-		set_junk(CONST.JUNK)
-		Handler.states = Handler.fruit_states
-	end
+	Loop.apply_stall(values)
 	return true
+end
+
+-- takes the settings the user sent with Update in the loader. A new stall resets what belongs to the old one and sets up again
+function Loop.poll_settings()
+	local values = Host.form_update()
+	if values == nil then
+		return
+	end
+	local switched = values.stall ~= chosen.stall
+	if not switched and PROFILE == "port_roberts" and values.port_stall ~= PORT_STALL then
+		PORT_STALL = values.port_stall
+		chosen.port_stall = values.port_stall
+		Log.log(NAME, `Port Roberts stall changed to {PORT_STALL}`)
+		return
+	end
+	if not switched then
+		return
+	end
+	Loop.apply_stall(values)
+	S.sticky, S.skip, plan = nil, {}, {}
+	S.hitpoints, S.lures_in_row, S.steals_since_lure = 0, 0, 0
+	S.port_at, S.port_clicked_at, S.in_jail, S.amulet_tried = nil, 0, false, false
+	Log.log(NAME, `Switched to {NAME}`)
+	Game.setup()
 end
 
 function Loop.run()
@@ -1793,6 +1827,7 @@ function Loop.run()
 		if S.finished then
 			break
 		end
+		Loop.poll_settings()
 		Handler.states[state]()
 
 		if CONFIG.antiban and S.antiban_ready then

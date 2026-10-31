@@ -2670,13 +2670,30 @@ function Game.ask(): boolean
 		return false
 	end
 	CONFIG.course = keys[values.course] or "auto"
+	Game.apply_live(values)
+	return true
+end
+
+-- the settings that can change while the script runs; the course is picked once, at the start
+function Game.apply_live(values: { [string]: any })
 	CONFIG.progressive = values.progressive == true
 	CONFIG.highlight = values.highlight == true
+	local picked = values.courses :: { [string]: boolean }
 	for _, entry in ipairs(Read.courses_by_level()) do
-		local picked = values.courses :: { [string]: boolean }
 		CONFIG.blacklist[entry.key] = if picked[entry.key] == true then nil else true
 	end
-	return true
+	if not CONFIG.highlight then
+		Overlay.clear()
+	end
+end
+
+-- takes the settings the user sent with Update in the loader, if there are any
+function Game.poll_settings()
+	local values = Host.form_update()
+	if values then
+		Game.apply_live(values)
+		Log.log(NAME, "Settings updated")
+	end
 end
 
 function Game.set_course(course: Course)
@@ -3187,6 +3204,7 @@ function Loop.run()
 			break
 		end
 		local began = time()
+		Game.poll_settings()
 		Handler.states[state]()
 		Overlay.update()
 

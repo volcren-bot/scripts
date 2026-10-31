@@ -1918,6 +1918,18 @@ function Game.ensure_logged_in(s: ClientState): boolean
 	return Game.sign_in()
 end
 
+-- bare-handed fishing needs the levels; turns it off when they are missing
+function Game.check_barehand()
+	if CONFIG.barehand then
+		local strength = Stats.real_level("Strength")
+		local fishing = Stats.real_level("Fishing")
+		if strength == nil or fishing == nil or strength < 35 or fishing < 55 then
+			Log.log("Tempoross", `No bare-handed fishing: strength {strength or "?"}/35, fishing {fishing or "?"}/55`)
+			CONFIG.barehand = false
+		end
+	end
+end
+
 function Game.setup()
 	while true do
 		local state = game_state()
@@ -1927,14 +1939,7 @@ function Game.setup()
 		sleep(100)
 	end
 
-	if CONFIG.barehand then
-		local strength = Stats.real_level("Strength")
-		local fishing = Stats.real_level("Fishing")
-		if strength == nil or fishing == nil or strength < 35 or fishing < 55 then
-			Log.log("Tempoross", `No bare-handed fishing: strength {strength or "?"}/35, fishing {fishing or "?"}/55`)
-			CONFIG.barehand = false
-		end
-	end
+	Game.check_barehand()
 
 	if CONFIG.antiban and not S.antiban_ready then
 		Biometrics.setup_player()
@@ -2812,7 +2817,89 @@ Handler.states = {
 	end,
 }
 
+-- Settings
+
+local function integer_field(id: string, label: string, default: number, min: number, max: number): any
+	return { id = id, kind = "number", label = label, default = default, min = min, max = max, integer = true }
+end
+
+-- asks for the settings that were hard coded in CONFIG, which stay as their defaults; false when the form is closed
+function Game.ask(): boolean
+	local values = Host.form({
+		title = "Tempoross",
+		submit = "Start",
+		fields = {
+			integer_field("world", "World to play on", CONFIG.world, 1, 1000),
+			{ id = "solo", kind = "check", label = "Solo (don't wait for a crew)", default = CONFIG.solo },
+			integer_field("min_players", "Board with at least this many players", CONFIG.boarding.min_players, 1, 100),
+			{
+				id = "players_variance",
+				kind = "number",
+				label = "Variance of that number (0.1 = 10%)",
+				default = CONFIG.boarding.players_variance,
+				min = 0,
+				max = 1,
+				step = 0.05,
+			},
+			integer_field("min_time", "Board anyway when the boat leaves within (s)", CONFIG.boarding.min_time, 0, 120),
+			{ id = "barehand", kind = "check", label = "Bare-handed fishing (35 Strength, 55 Fishing)", default = CONFIG.barehand },
+			integer_field("buckets", "Buckets of water to carry", CONFIG.buckets, 0, 10),
+			{ id = "cook", kind = "check", label = "Cook fish", default = CONFIG.cook.enabled },
+			integer_field("cook_min", "Cook once holding at least (min)", CONFIG.cook.min, 1, 28),
+			integer_field("cook_max", "Cook once holding at least (max)", CONFIG.cook.max, 1, 28),
+			integer_field("cook_storm", "Cook during a storm from", CONFIG.cook.min_storm, 1, 28),
+			integer_field("load_intensity", "Load the cannon at wave intensity", CONFIG.load.intensity, 0, 100),
+			integer_field("load_energy", "...or Tempoross energy at most", CONFIG.load.energy, 0, 100),
+			integer_field("pier_min", "Walk to the pier at energy (min)", CONFIG.pier.min_energy, 0, 100),
+			integer_field("pier_max", "Walk to the pier at energy (max)", CONFIG.pier.max_energy, 0, 100),
+			integer_field("max_games", "Stop after this many games (0 = never)", CONFIG.max_games, 0, 100000),
+		},
+	})
+	if values == nil then
+		return false
+	end
+	Game.apply_settings(values)
+	return true
+end
+
+-- puts the form's values in CONFIG; they are read where they are used, so it works while the script runs too
+function Game.apply_settings(values: { [string]: any })
+	CONFIG.world = values.world
+	CONFIG.solo = values.solo == true
+	CONFIG.boarding.min_players = values.min_players
+	CONFIG.boarding.players_variance = values.players_variance
+	CONFIG.boarding.min_time = values.min_time
+	CONFIG.barehand = values.barehand == true
+	CONFIG.buckets = values.buckets
+	CONFIG.cook.enabled = values.cook == true
+	CONFIG.cook.min = math.min(values.cook_min, values.cook_max)
+	CONFIG.cook.max = math.max(values.cook_min, values.cook_max)
+	CONFIG.cook.min_storm = values.cook_storm
+	CONFIG.load.intensity = values.load_intensity
+	CONFIG.load.energy = values.load_energy
+	CONFIG.pier.min_energy = math.min(values.pier_min, values.pier_max)
+	CONFIG.pier.max_energy = math.max(values.pier_min, values.pier_max)
+	CONFIG.max_games = values.max_games
+	-- rolled from these ranges, so roll again
+	S.cook_fish_threshold = Random.int(CONFIG.cook.min, CONFIG.cook.max)
+	S.pier_energy = Random.int(CONFIG.pier.min_energy, CONFIG.pier.max_energy)
+end
+
+-- takes the settings the user sent with Update in the loader, if there are any
+function Game.poll_settings()
+	local values = Host.form_update()
+	if values then
+		Game.apply_settings(values)
+		Game.check_barehand()
+		Log.log("Tempoross", "Settings updated")
+	end
+end
+
 function Loop.run()
+	if not Game.ask() then
+		Log.log("Tempoross", "Form closed, stopping the script")
+		return
+	end
 	Chat.skip_old_messages()
 	Log.log("Tempoross", "Tempoross started")
 	Game.setup()
@@ -2825,6 +2912,7 @@ function Loop.run()
 		if S.finished then
 			break
 		end
+		Game.poll_settings()
 		Handler.states[state]()
 
 		if S.hud_up and S.was_in_game then
