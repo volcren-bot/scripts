@@ -9,6 +9,7 @@ name: deploy
 # DEPLOY_TOKEN_TEMPOROSS, and the repository variable SITE_URL (e.g. https://volcren.com) must be set.
 # Only the flat .luau files of a folder are uploaded, and a subfolder fails the job.
 # The tokens are secrets of the `production` environment (restrict it to the main branch in the repo settings).
+# A script that fails the format check or lint is skipped (and the run ends red), the others are still published.
 # Run it by hand to publish every script in deploy.json, changed or not.
 on:
   push:
@@ -24,15 +25,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # No secrets here: the third-party action and the lint tools never see a deploy token
+  # No secrets here: the third-party action and the lint tools never see a deploy token.
+  # Lints each script of deploy.json on its own and passes the folders that failed on, so one bad script doesn't hold the rest back.
   lint:
     runs-on: ubuntu-latest
+    outputs:
+      failed: ${{ steps.lint.outputs.failed }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
 
-      - run: tools/lint.sh
+      - id: lint
+        run: |
+          failed=""
+          for dir in $(jq -r 'keys[]' deploy.json); do
+            if [ -d "scripts/$dir" ] && ! tools/lint.sh "scripts/$dir"; then
+              echo "::error::scripts/$dir failed the format check or lint, it won't be published"
+              failed="$failed $dir"
+            fi
+          done
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
 
   publish:
     needs: lint
@@ -49,6 +62,7 @@ jobs:
       - name: Upload changed scripts
         env:
           BEFORE: ${{ github.event.before }}
+          LINT_FAILED: ${{ needs.lint.outputs.failed }}
           ALL_SECRETS: ${{ toJSON(secrets) }}
         run: |
           SITE_URL="$(printf %s "$SITE_URL" | tr -d '[:space:]')"
@@ -59,6 +73,11 @@ jobs:
 
           failed=0
           for dir in $(jq -r 'keys[]' deploy.json); do
+            if [[ " $LINT_FAILED " == *" $dir "* ]]; then
+              echo "$dir: skipped, it failed the lint job"
+              failed=1
+              continue
+            fi
             id="$(jq -r --arg d "$dir" '.[$d].id' deploy.json)"
             entry="$(jq -r --arg d "$dir" '.[$d].entry // empty' deploy.json)"
             folder="scripts/$dir"

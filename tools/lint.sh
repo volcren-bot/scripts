@@ -3,20 +3,23 @@
 #   tools/lint.sh           check only; fails on format diffs or lint warnings
 #   tools/lint.sh --fix     format in place first
 #   tools/lint.sh --types   also report type errors (noisy: the sandbox's API is not known to luau-analyze)
+#   tools/lint.sh scripts/tempoross   only those folders (default: all of scripts)
 set -euo pipefail
 
 cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
 config=tools/stylua.toml
 
-dirs=(scripts)
+dirs=()
 fix=0 types=0
 for arg in "$@"; do
 	case "$arg" in
 	--fix) fix=1 ;;
 	--types) types=1 ;;
-	*) echo "unknown option: $arg" >&2; exit 2 ;;
+	-*) echo "unknown option: $arg" >&2; exit 2 ;;
+	*) dirs+=("$arg") ;;
 	esac
 done
+((${#dirs[@]})) || dirs=(scripts)
 
 if ((fix)); then
 	stylua --config-path "$config" "${dirs[@]}"
