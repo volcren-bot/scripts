@@ -2809,36 +2809,16 @@ function Game.ask(): boolean
 	local values = Host.form({
 		title = "Tempoross",
 		submit = "Start",
+		columns = true,
 		fields = {
-			integer_field("world", "World to play on", CONFIG.world, 1, 1000),
-			{ id = "solo", kind = "check", label = "Solo (don't wait for a crew)", default = CONFIG.solo },
-			integer_field("min_players", "Board with at least this many players", CONFIG.boarding.min_players, 1, 100),
-			{
-				id = "players_variance",
-				kind = "number",
-				label = "Variance of that number (0.1 = 10%)",
-				default = CONFIG.boarding.players_variance,
-				min = 0,
-				max = 1,
-				step = 0.05,
-			},
-			integer_field("min_time", "Board anyway when the boat leaves within (s)", CONFIG.boarding.min_time, 0, 120),
-			{
-				id = "barehand",
-				kind = "check",
-				label = "Bare-handed fishing (35 Strength, 55 Fishing)",
-				default = CONFIG.barehand,
-			},
-			integer_field("buckets", "Buckets of water to carry", CONFIG.buckets, 0, 10),
-			{ id = "cook", kind = "check", label = "Cook fish", default = CONFIG.cook.enabled },
-			integer_field("cook_min", "Cook once holding at least (min)", CONFIG.cook.min, 1, 28),
-			integer_field("cook_max", "Cook once holding at least (max)", CONFIG.cook.max, 1, 28),
-			integer_field("cook_storm", "Cook during a storm from", CONFIG.cook.min_storm, 1, 28),
-			integer_field("load_intensity", "Load the cannon at wave intensity", CONFIG.load.intensity, 0, 100),
-			integer_field("load_energy", "...or Tempoross energy at most", CONFIG.load.energy, 0, 100),
-			integer_field("pier_min", "Walk to the pier at energy (min)", CONFIG.pier.min_energy, 0, 100),
-			integer_field("pier_max", "Walk to the pier at energy (max)", CONFIG.pier.max_energy, 0, 100),
-			integer_field("max_games", "Stop after this many games (0 = never)", CONFIG.max_games, 0, 100000),
+			integer_field("world", "World", CONFIG.world, 1, 1000),
+			{ id = "solo", kind = "check", label = "Solo (not implemented)", default = CONFIG.solo },
+			integer_field("min_players", "Minimum players", CONFIG.boarding.min_players, 1, 100),
+			integer_field("min_time", "Minimum time", CONFIG.boarding.min_time, 0, 120),
+			{ id = "barehand", kind = "check", label = "Bare-handed", default = CONFIG.barehand },
+			integer_field("buckets", "Buckets", CONFIG.buckets, 0, 10),
+			{ id = "cook", kind = "check", label = "Cook", default = CONFIG.cook.enabled },
+			integer_field("max_games", "Maximum games", CONFIG.max_games, 0, 100000),
 		},
 	})
 	if values == nil then
@@ -2853,18 +2833,10 @@ function Game.apply_settings(values: { [string]: any })
 	CONFIG.world = values.world
 	CONFIG.solo = values.solo == true
 	CONFIG.boarding.min_players = values.min_players
-	CONFIG.boarding.players_variance = values.players_variance
 	CONFIG.boarding.min_time = values.min_time
 	CONFIG.barehand = values.barehand == true
 	CONFIG.buckets = values.buckets
 	CONFIG.cook.enabled = values.cook == true
-	CONFIG.cook.min = math.min(values.cook_min, values.cook_max)
-	CONFIG.cook.max = math.max(values.cook_min, values.cook_max)
-	CONFIG.cook.min_storm = values.cook_storm
-	CONFIG.load.intensity = values.load_intensity
-	CONFIG.load.energy = values.load_energy
-	CONFIG.pier.min_energy = math.min(values.pier_min, values.pier_max)
-	CONFIG.pier.max_energy = math.max(values.pier_min, values.pier_max)
 	CONFIG.max_games = values.max_games
 	-- rolled from these ranges, so roll again
 	S.cook_fish_threshold = Random.int(CONFIG.cook.min, CONFIG.cook.max)
