@@ -2842,7 +2842,12 @@ function Game.ask(): boolean
 				step = 0.05,
 			},
 			integer_field("min_time", "Board anyway when the boat leaves within (s)", CONFIG.boarding.min_time, 0, 120),
-			{ id = "barehand", kind = "check", label = "Bare-handed fishing (35 Strength, 55 Fishing)", default = CONFIG.barehand },
+			{
+				id = "barehand",
+				kind = "check",
+				label = "Bare-handed fishing (35 Strength, 55 Fishing)",
+				default = CONFIG.barehand,
+			},
 			integer_field("buckets", "Buckets of water to carry", CONFIG.buckets, 0, 10),
 			{ id = "cook", kind = "check", label = "Cook fish", default = CONFIG.cook.enabled },
 			integer_field("cook_min", "Cook once holding at least (min)", CONFIG.cook.min, 1, 28),
