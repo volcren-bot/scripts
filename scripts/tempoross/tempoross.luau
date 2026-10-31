@@ -1943,7 +1943,7 @@ function Game.setup()
 
 	if CONFIG.antiban and not S.antiban_ready then
 		Biometrics.setup_player()
-		local MINUTE, HOUR = Antiban.MINUTE, Antiban.HOUR
+		local MINUTE = Antiban.MINUTE
 		Antiban.set_zoom_range(0, 30)
 		Antiban.set_pitch_range(80, 100)
 
@@ -1983,27 +1983,8 @@ function Game.setup()
 		Antiban.add_async_task(AntibanTasks.toggle_chat_tab, 80 * SECOND, 0.4, "outside")
 		Antiban.add_async_task(AntibanTasks.hover_random_ground_item, 120 * SECOND, 0.4, "outside")
 
-		Antiban.add_break(30 * MINUTE, 2 * MINUTE, 0.33, 0.01)
-		Antiban.add_break(45 * MINUTE, 5 * MINUTE, 0.33, 0.02)
-		Antiban.add_break(
-			60 * MINUTE,
-			10 * MINUTE,
-			0.33,
-			math.floor(0.05 * Biometrics.random_double(1.0) * 100 + 0.5) / 100
-		)
-		Antiban.add_break(
-			250 * MINUTE,
-			20 * MINUTE,
-			0.33,
-			math.floor(0.5 * Biometrics.random_double(1.3) * 100 + 0.5) / 100
-		)
-
-		Antiban.add_sleep(
-			Biometrics.sleep_hour(),
-			Biometrics.sleep_length() * HOUR,
-			0.1,
-			0.8 * Biometrics.random_double(1.3)
-		)
+		-- breaks and sleeps come from the loader's Breaks tab
+		Antiban.sync_config()
 		S.antiban_ready = true
 		Log.log("Tempoross", "Antiban set up")
 	end
