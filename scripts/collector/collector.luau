@@ -98,6 +98,18 @@ type Boat = {
 	seer_at: Host.Tile,
 }
 
+-- a collectable in a cave whose bank is outside: the way out and back in, and the bank object out there
+type Cave = {
+	-- the loc inside that leads out, and its option
+	exit: string,
+	exit_option: string,
+	-- the loc outside that leads back in, and its option
+	enter: string,
+	enter_option: string,
+	-- the loc outside that opens the bank (not a booth, so it is opened by name)
+	bank: string,
+}
+
 type Collectable = {
 	-- the ground item picked up
 	item: string,
@@ -119,13 +131,24 @@ type Collectable = {
 	tele: Tele?,
 	-- set when the bank is across the water: the boat trip and the deposit box
 	boat: Boat?,
+	-- set when the bank is outside the cave the spawns are in: the way out and in, and the bank
+	cave: Cave?,
 	-- set when the spawns are taken in a fixed order, or in reverse (picked at random on arriving): each is waited for by walking to it
 	order: { Host.Tile }?,
 }
 
 -- what can be collected, in the order of the settings dropdown
-local COLLECTABLE_NAMES =
-	{ "Lumbridge Logs", "Barbarian outpost planks", "Eclipse red", "Observatory superantipoison", "Snape grass" }
+local COLLECTABLE_NAMES = {
+	"Lumbridge Logs",
+	"Barbarian outpost planks",
+	"Eclipse red",
+	"Observatory superantipoison",
+	"Snape grass",
+	"Red spider eggs",
+}
+local SPIDER_LOCATIONS = { "Pandemonium", "Forthos Dungeon" }
+-- the locations that are not done; they show a TODO
+local SPIDER_TODO = { "Forthos Dungeon" }
 local SNAPE_ROUTES = {
 	"The Dibber (Hosidius)",
 	"Waterbirth (Enchanted lyre)",
@@ -234,6 +257,26 @@ local COLLECTABLES: { [string]: Collectable } = {
 		},
 		far = { chest = { id = 21301, at = { x = 1809, y = 3567, plane = 0 } } },
 		contested = true,
+	},
+	["Red spider eggs"] = {
+		item = "Red spiders' eggs",
+		option = "Take",
+		plane = 0,
+		members = true,
+		-- the Pandemonium cave: three spawns, all taken before hopping
+		tiles = {
+			{ x = 3030, y = 9382 },
+			{ x = 3031, y = 9370 },
+			{ x = 3035, y = 9376 },
+		},
+		-- the Opening to the north leads out to the Bank Crab; the cave entrance leads back
+		cave = {
+			exit = "Opening",
+			exit_option = "Exit",
+			enter = "Cave entrance",
+			enter_option = "Enter",
+			bank = "Bank Crab",
+		},
 	},
 }
 
@@ -356,6 +399,8 @@ local CONST = {
 	AIM = { TILES = 3, ERROR = 0.1 },
 	-- a boat trip: the interface shown during it, how long it takes to show after the click (we may walk to Jarvald first)
 	-- and to end, and how long walking to an NPC may take
+	-- a cave trip: how long going through the exit or the entrance takes
+	CAVE = { PASS_MS = 12000, SCENE_MS = 4000 },
 	BOAT = { JOURNEY = "misc_shipjourney", START_MS = 15000, END_MS = 20000, WALK_MS = 8000, CLOSE = 7 },
 	TELE = {
 		MOVED = 20,
@@ -383,6 +428,7 @@ local CONFIG = {
 	-- far banks: teleport with a ring of dueling instead of walking
 	ring = false,
 	snape_route = SNAPE_ROUTES[1],
+	spider_location = SPIDER_LOCATIONS[1],
 	-- the script stops when stuck: nothing collected for idle_minutes, this many failures in a row
 	timeouts = { idle_minutes = 8, max_failures = 4 },
 	antiban = true,
@@ -873,6 +919,13 @@ function Game.setup()
 				S.finished = true
 				return
 			end
+		elseif c.cave and Walker.distance(snap.me, near) > CONST.TELE.FAR_FROM then
+			Log.log(NAME, `Going into the cave of the {CONFIG.collect} spawns`)
+			if not Handler.pass_through(c.cave.enter, c.cave.enter_option) then
+				Log.log(NAME, "Couldn't get into the cave (start outside it or inside), stopping the script")
+				S.finished = true
+				return
+			end
 		elseif c.boat and Walker.distance(snap.me, near) > CONST.TELE.FAR_FROM then
 			Log.log(NAME, `Sailing to the {CONFIG.collect} spawns`)
 			if not Handler.sail(c.boat.town_npc, c.boat.to_island, c.boat.town_at) then
@@ -1011,10 +1064,10 @@ function Loop.get_state(): State
 	Loop.watch_progress(s)
 	Loop.report_counters()
 
-	-- a teleport or boat route away from the spawns (a bank trip that didn't finish): the bank code when the bag is full,
+	-- a teleport, boat or cave route away from the spawns (a bank trip that didn't finish): the bank code when the bag is full,
 	-- else the way back; the pick code only runs at the spawns
 	local trip = Read.collectable()
-	if (trip.boat or trip.tele) and Read.away_from_spawns() then
+	if (trip.boat or trip.tele or trip.cave) and Read.away_from_spawns() then
 		return if snap.free_slots == 0 and not skipped["BANK"] then "BANK" else "RETURN"
 	end
 
@@ -1578,6 +1631,8 @@ function Handler.bank()
 		return Handler.bank_by_teleport(c)
 	elseif c.boat then
 		return Handler.bank_by_boat(c)
+	elseif c.cave then
+		return Handler.bank_by_cave(c)
 	end
 	local route = c.route
 	-- the deposit box is not on the way when there is a route or the bank is far
@@ -1924,6 +1979,83 @@ function Handler.sail(npc_id: number, option: string, at: Host.Tile): boolean
 	return from ~= nil and here ~= nil and Walker.distance(here, from) >= CONST.TELE.MOVED
 end
 
+-- goes through a loc (the cave's exit or entrance) and waits to be somewhere else; true once we are
+function Handler.pass_through(name: string, option: string): boolean
+	local from = Walker.position()
+	for attempt = 1, 3 do
+		local loc = if from then Objects.nearest(name, from) else nil
+		if loc and Objects.approach(loc, option) then
+			local deadline = time() + CONST.CAVE.PASS_MS
+			while time() < deadline do
+				local here = Walker.position()
+				if here and from and Walker.distance(here, from) >= CONST.TELE.MOVED then
+					sleep(Random.int(500, 1100))
+					return true
+				end
+				sleep(CONST.PICK.POLL_MS)
+			end
+		end
+		Log.log(NAME, `Couldn't go through the {name} ({option}, attempt {attempt})`)
+		sleep(Random.int(400, 900))
+		from = Walker.position()
+	end
+	return false
+end
+
+-- leaves the cave, deposits the item (only it) with the bank object outside, and goes back in
+function Handler.bank_by_cave(c: Collectable)
+	local cave = assert(c.cave)
+	local function failed()
+		S.failures_in_row += 1
+		stats.failures += 1
+		S.skip["BANK"] = true
+	end
+	-- a trip that stopped outside (the way back failed) goes on from there
+	if not Read.away_from_spawns() then
+		Log.log(NAME, "Inventory full, leaving the cave")
+		if not Handler.pass_through(cave.exit, cave.exit_option) then
+			return failed()
+		end
+	end
+	local opened = false
+	for attempt = 1, CONST.BANK.OPEN_ATTEMPTS do
+		-- the scene may still be loading after coming out
+		local bank: Host.Loc? = nil
+		local deadline = time() + CONST.CAVE.SCENE_MS
+		repeat
+			local here = Walker.position()
+			bank = if here then Objects.nearest(cave.bank, here) else nil
+			if bank == nil then
+				sleep(CONST.PICK.POLL_MS)
+			end
+		until bank ~= nil or time() >= deadline
+		opened = bank ~= nil and (Bankmain.open({ loc = bank, npc = nil }) or Handler.enter_pin())
+		if opened or S.finished then
+			break
+		end
+		Log.log(NAME, `The {cave.bank} didn't open (attempt {attempt})`)
+		sleep(Random.int(400, 900))
+	end
+	if opened then
+		-- the "All" quantity button, then the item: the rest of the inventory stays
+		if Bankmain.deposit(c.item, nil, true) and Inventory.wait_count(c.item, 0, CONST.BANK.DEPOSIT_MS) then
+			stats.trips += 1
+			S.failures_in_row = 0
+		else
+			Log.log(NAME, `The {c.item} wasn't deposited`)
+			S.failures_in_row += 1
+			stats.failures += 1
+		end
+		Bankmain.close()
+		Inventory.open()
+	else
+		S.failures_in_row += 1
+		stats.failures += 1
+	end
+	-- even when the deposit failed, the way back is the only way on
+	Handler.return_to_spawns(c)
+end
+
 -- sails to the town, deposits the item (only it) with the seer, and sails back to the island
 function Handler.bank_by_boat(c: Collectable)
 	local boat = assert(c.boat)
@@ -1972,12 +2104,17 @@ function Handler.bank_by_boat(c: Collectable)
 	Handler.return_to_spawns(c)
 end
 
--- sails or teleports back to the spawns and starts a new round there; on failing, the RETURN state tries again
+-- sails, goes through the cave entrance or teleports back to the spawns and starts a new round there; on failing, the RETURN state tries again
 function Handler.return_to_spawns(c: Collectable)
 	S.visited = {}
-	local back = if c.boat
-		then Handler.sail(c.boat.town_npc, c.boat.to_island, c.boat.town_at)
-		else Handler.teleport_with(assert(c.tele).to, c.tele.lyre)
+	local back
+	if c.boat then
+		back = Handler.sail(c.boat.town_npc, c.boat.to_island, c.boat.town_at)
+	elseif c.cave then
+		back = Handler.pass_through(c.cave.enter, c.cave.enter_option)
+	else
+		back = Handler.teleport_with(assert(c.tele).to, c.tele.lyre)
+	end
 	if back then
 		Read.new_rotation()
 		Handler.walk_to_step(false)
@@ -2051,6 +2188,20 @@ function Game.ask(): boolean
 				visible_when = { id = "snape_route", equals = SNAPE_ROUTES[2] },
 			},
 			{
+				id = "spider_location",
+				kind = "choice",
+				label = "Location",
+				options = SPIDER_LOCATIONS,
+				default = CONFIG.spider_location,
+				visible_when = { id = "collect", equals = "Red spider eggs" },
+			},
+			{
+				id = "spider_todo",
+				kind = "label",
+				label = "TODO",
+				visible_when = { id = "spider_location", equals = SPIDER_TODO },
+			},
+			{
 				id = "max_items",
 				kind = "number",
 				label = "Max items (0 is unlimited)",
@@ -2084,6 +2235,9 @@ function Game.apply_settings(values: { [string]: any })
 	CONFIG.max_items = values.max_items
 	if table.find(SNAPE_ROUTES, values.snape_route) then
 		CONFIG.snape_route = values.snape_route
+	end
+	if table.find(SPIDER_LOCATIONS, values.spider_location) then
+		CONFIG.spider_location = values.spider_location
 	end
 	CONFIG.ring = values.ring == true
 end
@@ -2129,6 +2283,10 @@ function Loop.run()
 	end
 	if CONFIG.collect == "Snape grass" and table.find(SNAPE_TODO, CONFIG.snape_route) then
 		Log.log(NAME, `{CONFIG.snape_route} isn't done yet (TODO), stopping the script`)
+		return
+	end
+	if CONFIG.collect == "Red spider eggs" and table.find(SPIDER_TODO, CONFIG.spider_location) then
+		Log.log(NAME, `{CONFIG.spider_location} isn't done yet (TODO), stopping the script`)
 		return
 	end
 	Log.log(NAME, `{NAME} started: {CONFIG.collect}`)

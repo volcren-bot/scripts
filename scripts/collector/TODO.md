@@ -2,15 +2,13 @@
 
 Items:
 
-- Snape grass (peer the seer and teleports/enchanted lyre)
 - Wine of zamorak (wild and no wild)
 - White berries
 - Climbing boots
 - Mort mire funghi (all spots)
 - Antidragon shields
 - Monk robes
-- Red spider eggs (all spots)
-- Antipoison
+- Red spider eggs (forthos and pandemonium)
 
 Shop:
 
@@ -24,4 +22,4 @@ Shop:
 - Warrior guild's food
 - Warrior guild's potions
 - Blast furnace ores
--
+- Antipoison sophanem
