@@ -22,7 +22,9 @@ local Inventory = require("@lib/main/interfaces/gametabs/inventory")
 local Log = require("@lib/utils/log")
 local Login = require("@lib/main/interfaces/login/login")
 local Magic = require("@lib/main/interfaces/gametabs/magic")
+local Minimenu = require("@lib/main/interfaces/minimenu")
 local Mouse = require("@lib/utils/input/mouse")
+local Npcs = require("@lib/main/entities/npcs")
 local Objects = require("@lib/main/entities/objects")
 local Projection = require("@lib/main/projection/projection")
 local Random = require("@lib/utils/math/random")
@@ -73,6 +75,27 @@ type Far = {
 type Tele = {
 	to: { string },
 	bank: { string },
+	-- the lists are destinations of the enchanted lyre (worn or in the inventory), not spells
+	lyre: boolean?,
+	-- false when the bank has no deposit box
+	box: boolean?,
+}
+
+-- a collectable reached and banked by boat: Jarvald takes us between the island and the town, the seer there has a deposit box
+type Boat = {
+	-- Jarvald on the island and in the town (the ids differ), and the option each has to sail to the other
+	island_npc: number,
+	to_town: string,
+	town_npc: number,
+	to_island: string,
+	-- where he stands on each side: walked to first, as he is not always in sight or in reach
+	island_at: Host.Tile,
+	town_at: Host.Tile,
+	-- the NPC in the town that opens the deposit box, and the option that does
+	seer: string,
+	seer_option: string,
+	-- a tile near the seer: he is too far from the pier to be in sight on arriving
+	seer_at: Host.Tile,
 }
 
 type Collectable = {
@@ -94,6 +117,8 @@ type Collectable = {
 	contested: boolean?,
 	-- set when the bank and the spawns are teleports apart: the spells
 	tele: Tele?,
+	-- set when the bank is across the water: the boat trip and the deposit box
+	boat: Boat?,
 	-- set when the spawns are taken in a fixed order, or in reverse (picked at random on arriving): each is waited for by walking to it
 	order: { Host.Tile }?,
 }
@@ -108,7 +133,7 @@ local SNAPE_ROUTES = {
 	"Waterbirth (Peer the Seer)",
 }
 -- the routes that are done; the others show a TODO
-local SNAPE_TODO = { SNAPE_ROUTES[2], SNAPE_ROUTES[4] }
+local SNAPE_TODO: { string } = {}
 local FAR_BANK_NAMES = { "Observatory superantipoison" }
 local COLLECTABLES: { [string]: Collectable } = {
 	["Lumbridge Logs"] = {
@@ -212,6 +237,25 @@ local COLLECTABLES: { [string]: Collectable } = {
 	},
 }
 
+-- Waterbirth Island: the three by the dock and the three a bit southeast of them
+local WATERBIRTH_TILES: { Host.Tile } = {
+	{ x = 2540, y = 3765 },
+	{ x = 2542, y = 3765 },
+	{ x = 2546, y = 3763 },
+	{ x = 2552, y = 3757 },
+	{ x = 2553, y = 3754 },
+	{ x = 2553, y = 3751 },
+}
+-- the walking order of the six: from the southeast to the dock
+local WATERBIRTH_ORDER: { Host.Tile } = {
+	{ x = 2553, y = 3751 },
+	{ x = 2553, y = 3754 },
+	{ x = 2552, y = 3757 },
+	{ x = 2546, y = 3763 },
+	{ x = 2542, y = 3765 },
+	{ x = 2540, y = 3765 },
+}
+
 -- the snape grass routes that are not the Dibber's
 local SNAPE_ROUTE_DATA: { [string]: Collectable } = {
 	[SNAPE_ROUTES[3]] = {
@@ -219,29 +263,45 @@ local SNAPE_ROUTE_DATA: { [string]: Collectable } = {
 		option = "Take",
 		plane = 0,
 		members = true,
-		-- Waterbirth Island: the three by the dock and the three a bit southeast of them
-		tiles = {
-			{ x = 2540, y = 3765 },
-			{ x = 2542, y = 3765 },
-			{ x = 2546, y = 3763 },
-			{ x = 2552, y = 3757 },
-			{ x = 2553, y = 3754 },
-			{ x = 2553, y = 3751 },
-		},
+		tiles = WATERBIRTH_TILES,
 		contested = true,
-		-- the walking order of the six: from the southeast to the dock
-		order = {
-			{ x = 2553, y = 3751 },
-			{ x = 2553, y = 3754 },
-			{ x = 2552, y = 3757 },
-			{ x = 2546, y = 3763 },
-			{ x = 2542, y = 3765 },
-			{ x = 2540, y = 3765 },
-		},
+		order = WATERBIRTH_ORDER,
 		-- Moonclan has the bank booths and a deposit box
 		tele = {
 			to = { "Waterbirth Teleport", "Tele Group Waterbirth" },
 			bank = { "Moonclan Teleport", "Tele Group Moonclan" },
+		},
+	},
+	[SNAPE_ROUTES[2]] = {
+		item = "Snape grass",
+		option = "Take",
+		plane = 0,
+		members = true,
+		tiles = WATERBIRTH_TILES,
+		contested = true,
+		order = WATERBIRTH_ORDER,
+		-- the enchanted lyre goes between the island and Neitiznot, where the bank chests are
+		tele = { to = { "Waterbirth Island" }, bank = { "Neitiznot" }, lyre = true, box = false },
+	},
+	[SNAPE_ROUTES[4]] = {
+		item = "Snape grass",
+		option = "Take",
+		plane = 0,
+		members = true,
+		tiles = WATERBIRTH_TILES,
+		contested = true,
+		order = WATERBIRTH_ORDER,
+		-- Jarvald sails to Rellekka, where Peer the Seer deposits the grass
+		boat = {
+			island_npc = 10407,
+			to_town = "Rellekka",
+			town_npc = 6535,
+			to_island = "Waterbirth Island",
+			island_at = { x = 2545, y = 3761 },
+			town_at = { x = 2622, y = 3683 },
+			seer = "Peer the Seer",
+			seer_option = "Deposit-items",
+			seer_at = { x = 2634, y = 3673 },
 		},
 	},
 }
@@ -294,6 +354,9 @@ local CONST = {
 	-- how far from the spawns is too far to walk, and how long we wait for the first spawn of a round before taking any
 	-- a fixed order: the camera is turned toward the average bearing of the next AIM_TILES spawns, when it is further off than a threshold
 	AIM = { TILES = 3, ERROR = 0.1 },
+	-- a boat trip: the interface shown during it, how long it takes to show after the click (we may walk to Jarvald first)
+	-- and to end, and how long walking to an NPC may take
+	BOAT = { JOURNEY = "misc_shipjourney", START_MS = 15000, END_MS = 20000, WALK_MS = 8000, CLOSE = 7 },
 	TELE = {
 		MOVED = 20,
 		ARRIVE_MS = 10000,
@@ -397,7 +460,7 @@ type Snapshot = {
 
 local snap: Snapshot = nil :: any
 
-type State = "LOADING" | "LOGIN" | "SETTLE" | "BANK" | "COMBINE" | "DROP" | "PICK" | "HOP" | "WAIT"
+type State = "LOADING" | "LOGIN" | "SETTLE" | "BANK" | "RETURN" | "COMBINE" | "DROP" | "PICK" | "HOP" | "WAIT"
 
 -- what get_state found that its handler needs
 type Plan = { item: Host.GroundItem? }
@@ -804,8 +867,16 @@ function Game.setup()
 			c.tele and (snap.state.position.plane ~= c.plane or Walker.distance(snap.me, near) > CONST.TELE.FAR_FROM)
 		then
 			Log.log(NAME, `Teleporting to the {CONFIG.collect} spawns`)
-			if not Game.check_spellbook() or not Handler.teleport_with(c.tele.to) then
+			local ready = if c.tele.lyre then Game.check_lyre() else Game.check_spellbook()
+			if not ready or not Handler.teleport_with(c.tele.to, c.tele.lyre) then
 				Log.log(NAME, "Couldn't teleport to the spawns, stopping the script")
+				S.finished = true
+				return
+			end
+		elseif c.boat and Walker.distance(snap.me, near) > CONST.TELE.FAR_FROM then
+			Log.log(NAME, `Sailing to the {CONFIG.collect} spawns`)
+			if not Handler.sail(c.boat.town_npc, c.boat.to_island, c.boat.town_at) then
+				Log.log(NAME, "Couldn't sail to the spawns (start in Rellekka or on the island), stopping the script")
 				S.finished = true
 				return
 			end
@@ -939,6 +1010,13 @@ function Loop.get_state(): State
 	end
 	Loop.watch_progress(s)
 	Loop.report_counters()
+
+	-- a teleport or boat route away from the spawns (a bank trip that didn't finish): the bank code when the bag is full,
+	-- else the way back; the pick code only runs at the spawns
+	local trip = Read.collectable()
+	if (trip.boat or trip.tele) and Read.away_from_spawns() then
+		return if snap.free_slots == 0 and not skipped["BANK"] then "BANK" else "RETURN"
+	end
 
 	local potions = Read.potions()
 	if potions then
@@ -1498,6 +1576,8 @@ function Handler.bank()
 	local c = Read.collectable()
 	if c.tele then
 		return Handler.bank_by_teleport(c)
+	elseif c.boat then
+		return Handler.bank_by_boat(c)
 	end
 	local route = c.route
 	-- the deposit box is not on the way when there is a route or the bank is far
@@ -1661,29 +1741,75 @@ function Handler.wait_for_spawn()
 	antiban()
 end
 
+-- the enchanted lyre in any of its forms
+local LYRE_NAMES = {
+	"Enchanted lyre(i)",
+	"Enchanted lyre(5)",
+	"Enchanted lyre(4)",
+	"Enchanted lyre(3)",
+	"Enchanted lyre(2)",
+	"Enchanted lyre(1)",
+	"Enchanted lyre",
+}
+
+-- whether we have the lyre, worn or in the inventory
+function Read.has_lyre(): boolean
+	local worn = Wornitems.indices_of(LYRE_NAMES)
+	local carried = Inventory.indices_of(LYRE_NAMES)
+	return (worn ~= nil and #worn > 0) or (carried ~= nil and #carried > 0)
+end
+
+-- the lyre is needed for the lyre route; false stops the script
+function Game.check_lyre(): boolean
+	if Read.has_lyre() then
+		return true
+	end
+	Log.log(NAME, "Error: no enchanted lyre worn or in the inventory, stopping the script")
+	return false
+end
+
+-- plays the lyre to the destination: worn, its options are on the item; in the inventory they are under Play
+function Handler.play_lyre(destination: string): boolean
+	local worn = Wornitems.indices_of(LYRE_NAMES)
+	if worn and #worn > 0 then
+		return Wornitems.open() and Wornitems.interact_slot(worn[1], destination)
+	end
+	local carried = Inventory.indices_of(LYRE_NAMES)
+	if carried and #carried > 0 then
+		return Inventory.open()
+			and Inventory.hover_slot(carried[1])
+			and Minimenu.open()
+			and Minimenu.select_submenu(destination, nil, "Play")
+	end
+	return false
+end
+
 -- casts one of the spells, picked at random among those that can be cast now, and waits to land somewhere far from where we cast it;
 -- no spell to cast (out of runes) stops the script
-function Handler.teleport_with(spells: { string }): boolean
-	if not Magic.open() then
+function Handler.teleport_with(spells: { string }, lyre: boolean?): boolean
+	if not lyre and not Magic.open() then
 		Log.log(NAME, "Couldn't open the spellbook")
 		return false
 	end
 	local usable: { string } = {}
 	for _, spell in ipairs(spells) do
-		if Magic.can_cast(spell) then
+		if if lyre then Read.has_lyre() else Magic.can_cast(spell) then
 			table.insert(usable, spell)
 		end
 	end
 	if #usable == 0 then
-		Log.log(NAME, `Error: none of {table.concat(spells, ", ")} can be cast (out of runes?), stopping the script`)
+		Log.log(
+			NAME,
+			`Error: none of {table.concat(spells, ", ")} can be cast (out of runes, or no lyre?), stopping the script`
+		)
 		S.finished = true
 		return false
 	end
 	local spell = usable[if #usable > 1 and Biometrics.random_boolean(0.5) then 2 else 1]
 	local from = Walker.position()
-	Log.log(NAME, `Casting {spell}`)
-	if not Magic.cast(spell) then
-		Log.log(NAME, `Couldn't cast {spell}`)
+	Log.log(NAME, if lyre then `Playing the lyre to {spell}` else `Casting {spell}`)
+	if not (if lyre then Handler.play_lyre(spell) else Magic.cast(spell)) then
+		Log.log(NAME, `Couldn't {if lyre then "play the lyre to" else "cast"} {spell}`)
 		return false
 	end
 	local deadline = time() + CONST.TELE.ARRIVE_MS
@@ -1707,11 +1833,14 @@ function Handler.bank_by_teleport(c: Collectable)
 		stats.failures += 1
 		S.skip["BANK"] = true
 	end
-	Log.log(NAME, "Inventory full, teleporting to the bank")
-	if not Handler.teleport_with(tele.bank) then
-		return failed()
+	-- a trip that stopped at the bank (the way back failed) goes on from there
+	if not Read.away_from_spawns() then
+		Log.log(NAME, "Inventory full, teleporting to the bank")
+		if not Handler.teleport_with(tele.bank, tele.lyre) then
+			return failed()
+		end
 	end
-	local box = Biometrics.random_boolean(CONST.TELE.BOX_CHANCE)
+	local box = tele.box ~= false and Biometrics.random_boolean(CONST.TELE.BOX_CHANCE)
 	local opened = false
 	for attempt = 1, CONST.BANK.OPEN_ATTEMPTS do
 		if box then
@@ -1744,14 +1873,119 @@ function Handler.bank_by_teleport(c: Collectable)
 		Bankmain.close()
 	end
 	Inventory.open()
-	-- a new round starts on the island
+	Handler.return_to_spawns(c)
+end
+
+-- whether we are far from the spawns, as after sailing to the town
+function Read.away_from_spawns(): boolean
+	local c = Read.collectable()
+	local at = Walker.position()
+	return at ~= nil and Walker.distance(at, c.tiles[1]) > CONST.TELE.FAR_FROM
+end
+
+-- talks to Jarvald with the option (he has a different id on each side), and waits through the ship journey;
+-- true once we are somewhere else
+function Handler.sail(npc_id: number, option: string, at: Host.Tile): boolean
+	local from = Walker.position()
+	local started = false
+	local jarvald: Host.Npc? = nil
+	local reason = ""
+	for attempt = 1, 3 do
+		-- close enough to see and click him
+		local here = Walker.position()
+		if here and Walker.distance(here, jarvald or at) > CONST.BOAT.CLOSE then
+			Walker.walk(at, { near = 3 })
+		end
+		jarvald = (Npcs.find(npc_id) or {})[1]
+		reason = if jarvald == nil then "not in sight" else "couldn't click him"
+		if jarvald and Npcs.interact(jarvald, option, CONST.BOAT.WALK_MS) then
+			reason = "no journey"
+			local deadline = time() + CONST.BOAT.START_MS
+			while time() < deadline and Toplevel.interface_name() ~= CONST.BOAT.JOURNEY do
+				sleep(CONST.PICK.POLL_MS)
+			end
+			started = Toplevel.interface_name() == CONST.BOAT.JOURNEY
+			if started then
+				break
+			end
+		end
+		Log.log(NAME, `Jarvald didn't take us ({option}, attempt {attempt}: {reason})`)
+		sleep(Random.int(400, 900))
+	end
+	if not started then
+		return false
+	end
+	local deadline = time() + CONST.BOAT.END_MS
+	while time() < deadline and Toplevel.interface_name() == CONST.BOAT.JOURNEY do
+		sleep(CONST.PICK.POLL_MS)
+	end
+	sleep(Random.int(500, 1100))
+	local here = Walker.position()
+	return from ~= nil and here ~= nil and Walker.distance(here, from) >= CONST.TELE.MOVED
+end
+
+-- sails to the town, deposits the item (only it) with the seer, and sails back to the island
+function Handler.bank_by_boat(c: Collectable)
+	local boat = assert(c.boat)
+	local function failed()
+		S.failures_in_row += 1
+		stats.failures += 1
+		S.skip["BANK"] = true
+	end
+	-- a trip that stopped in the town (the way back failed) goes on from there
+	if not Read.away_from_spawns() then
+		Log.log(NAME, `Inventory full, sailing to {boat.to_town}`)
+		if not Handler.sail(boat.island_npc, boat.to_town, boat.island_at) then
+			return failed()
+		end
+	end
+	if not Walker.walk(boat.seer_at, { near = 3 }) then
+		Log.log(NAME, `Couldn't walk to {boat.seer}`)
+	end
+	local opened = false
+	for attempt = 1, CONST.BANK.OPEN_ATTEMPTS do
+		local seer = (Npcs.find(boat.seer) or {})[1]
+		opened = seer ~= nil and Npcs.interact(seer, boat.seer_option, CONST.BOAT.WALK_MS) and DepositBox.wait_open()
+		if opened or S.finished then
+			break
+		end
+		Log.log(NAME, `{boat.seer}'s deposit box didn't open (attempt {attempt})`)
+		sleep(Random.int(400, 900))
+	end
+	if opened then
+		-- the "All" quantity button, then the item: the rest of the inventory stays
+		if DepositBox.deposit(c.item, nil, true) and Inventory.wait_count(c.item, 0, CONST.BANK.DEPOSIT_MS) then
+			stats.trips += 1
+			S.failures_in_row = 0
+		else
+			Log.log(NAME, `The {c.item} wasn't deposited`)
+			S.failures_in_row += 1
+			stats.failures += 1
+		end
+		DepositBox.close()
+		Inventory.open()
+	else
+		S.failures_in_row += 1
+		stats.failures += 1
+	end
+	-- even when the deposit failed, the way back is the only way on
+	Handler.return_to_spawns(c)
+end
+
+-- sails or teleports back to the spawns and starts a new round there; on failing, the RETURN state tries again
+function Handler.return_to_spawns(c: Collectable)
 	S.visited = {}
-	if Handler.teleport_with(tele.to) then
+	local back = if c.boat
+		then Handler.sail(c.boat.town_npc, c.boat.to_island, c.boat.town_at)
+		else Handler.teleport_with(assert(c.tele).to, c.tele.lyre)
+	if back then
 		Read.new_rotation()
 		Handler.walk_to_step(false)
 		Handler.aim_camera()
 	elseif not S.finished then
-		failed()
+		S.failures_in_row += 1
+		stats.failures += 1
+		sleep(Random.int(800, 1600))
 	end
 	S.last_progress_at = time()
 end
@@ -1767,6 +2001,9 @@ Handler.states = {
 		sleep(100)
 	end,
 	BANK = Handler.bank,
+	RETURN = function()
+		Handler.return_to_spawns(Read.collectable())
+	end,
 	COMBINE = Handler.combine,
 	DROP = Handler.drop_vials,
 	PICK = function()
@@ -1806,6 +2043,12 @@ function Game.ask(): boolean
 				kind = "label",
 				label = "TODO",
 				visible_when = { id = "snape_route", equals = SNAPE_TODO },
+			},
+			{
+				id = "snape_lyre",
+				kind = "label",
+				label = "Requires the Fremennik elite diary (enchanted lyre), worn or in the inventory",
+				visible_when = { id = "snape_route", equals = SNAPE_ROUTES[2] },
 			},
 			{
 				id = "max_items",
@@ -1879,6 +2122,9 @@ function Loop.run()
 		return
 	end
 	if CONFIG.collect == "Snape grass" and CONFIG.snape_route == SNAPE_ROUTES[3] and not Game.check_spellbook() then
+		return
+	end
+	if CONFIG.collect == "Snape grass" and CONFIG.snape_route == SNAPE_ROUTES[2] and not Game.check_lyre() then
 		return
 	end
 	if CONFIG.collect == "Snape grass" and table.find(SNAPE_TODO, CONFIG.snape_route) then
