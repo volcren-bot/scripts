@@ -1,4 +1,6 @@
 --!strict
+local BankpinKeypad = require("@lib/main/interfaces/mainscreen/bankpin_keypad")
+local DepositBox = require("@lib/main/interfaces/mainscreen/depositbox")
 local Host = require("@lib/host")
 local game_state = Host.game_state
 local sleep = Host.sleep
@@ -26,6 +28,7 @@ local Random = require("@lib/utils/math/random")
 local SidePanels = require("@lib/main/interfaces/gametabs/side_panels")
 local Stats = require("@lib/main/interfaces/gametabs/stats")
 local StatsReport = require("@lib/utils/stats_report")
+local Toplevel = require("@lib/main/interfaces/mainscreen/toplevel")
 local Walker = require("@lib/main/walker")
 local Wornitems = require("@lib/main/interfaces/gametabs/wornitems")
 
@@ -1784,6 +1787,19 @@ function Loop.poll_settings()
 	Log.log(NAME, `Switched to {NAME}`)
 	Game.setup()
 end
+-- an interface opened by accident (a click on the wrong thing) blocks every click: closed, unless it is the bank, the deposit box or the PIN keypad while banking
+local last_stray_at = 0
+local function close_stray(banking: boolean)
+	if not Toplevel.has_interface() or time() - last_stray_at < 2000 then
+		return
+	end
+	if banking and (Bankmain.is_open() or DepositBox.is_open() or BankpinKeypad.is_open()) then
+		return
+	end
+	last_stray_at = time()
+	Log.log(NAME, `Closing the {Toplevel.interface_name() or "interface"} that is in the way`)
+	Toplevel.escape_clear()
+end
 
 function Loop.run()
 	if not Loop.choose_stall() then
@@ -1801,6 +1817,7 @@ function Loop.run()
 		if S.finished then
 			break
 		end
+		close_stray(state == "BANK")
 		Loop.poll_settings()
 		Handler.states[state]()
 

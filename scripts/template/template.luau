@@ -14,6 +14,7 @@ local Login = require("@lib/main/interfaces/login/login")
 local Random = require("@lib/utils/math/random")
 local Stats = require("@lib/main/interfaces/gametabs/stats")
 local StatsReport = require("@lib/utils/stats_report")
+local Toplevel = require("@lib/main/interfaces/mainscreen/toplevel")
 
 local NAME = "Template" -- TODO: script name, used as the log prefix
 
@@ -288,6 +289,16 @@ Handler.states = {
 		end
 	end,
 }
+-- an interface opened by accident (a click on the wrong thing) blocks every click: closed
+local last_stray_at = 0
+local function close_stray()
+	if not Toplevel.has_interface() or time() - last_stray_at < 2000 then
+		return
+	end
+	last_stray_at = time()
+	Log.log(NAME, `Closing the {Toplevel.interface_name() or "interface"} that is in the way`)
+	Toplevel.escape_clear()
+end
 
 function Loop.run()
 	Log.log(NAME, `{NAME} started`)
@@ -301,6 +312,7 @@ function Loop.run()
 		if S.finished then
 			break
 		end
+		close_stray()
 		Handler.states[state]()
 
 		if CONFIG.antiban and S.antiban_ready then

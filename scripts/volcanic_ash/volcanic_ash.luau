@@ -1,5 +1,7 @@
 --!strict
 -- Mines volcanic ash on Fossil Island: walks the ash piles up and down the volcano, banks at the chest when the inventory is full.
+local BankpinKeypad = require("@lib/main/interfaces/mainscreen/bankpin_keypad")
+local DepositBox = require("@lib/main/interfaces/mainscreen/depositbox")
 local Host = require("@lib/host")
 local game_state = Host.game_state
 local sleep = Host.sleep
@@ -21,6 +23,7 @@ local Player = require("@lib/main/player")
 local Random = require("@lib/utils/math/random")
 local Stats = require("@lib/main/interfaces/gametabs/stats")
 local StatsReport = require("@lib/utils/stats_report")
+local Toplevel = require("@lib/main/interfaces/mainscreen/toplevel")
 local Walker = require("@lib/main/walker")
 local WorldSwitcher = require("@lib/main/interfaces/gametabs/worldswitcher")
 local Wornitems = require("@lib/main/interfaces/gametabs/wornitems")
@@ -810,6 +813,19 @@ function Game.poll_settings()
 		Log.log(NAME, "Settings updated")
 	end
 end
+-- an interface opened by accident (a click on the wrong thing) blocks every click: closed, unless it is the bank, the deposit box or the PIN keypad while banking
+local last_stray_at = 0
+local function close_stray(banking: boolean)
+	if not Toplevel.has_interface() or time() - last_stray_at < 2000 then
+		return
+	end
+	if banking and (Bankmain.is_open() or DepositBox.is_open() or BankpinKeypad.is_open()) then
+		return
+	end
+	last_stray_at = time()
+	Log.log(NAME, `Closing the {Toplevel.interface_name() or "interface"} that is in the way`)
+	Toplevel.escape_clear()
+end
 
 function Loop.run()
 	if not Game.ask() then
@@ -830,6 +846,7 @@ function Loop.run()
 		if S.finished then
 			break
 		end
+		close_stray(state == "BANK")
 		Game.poll_settings()
 		Handler.states[state]()
 

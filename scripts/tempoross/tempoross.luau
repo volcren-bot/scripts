@@ -32,6 +32,7 @@ local Random = require("@lib/utils/math/random")
 local Stats = require("@lib/main/interfaces/gametabs/stats")
 local StatsReport = require("@lib/utils/stats_report")
 local Ticks = require("@lib/utils/ticks")
+local Toplevel = require("@lib/main/interfaces/mainscreen/toplevel")
 local Varbits = require("@lib/main/varbits")
 local Walker = require("@lib/main/walker")
 local WorldSwitcher = require("@lib/main/interfaces/gametabs/worldswitcher")
@@ -2840,6 +2841,16 @@ function Game.poll_settings()
 		Log.log("Tempoross", "Settings updated")
 	end
 end
+-- an interface opened by accident (a click on the wrong thing) blocks every click: closed
+local last_stray_at = 0
+local function close_stray()
+	if not Toplevel.has_interface() or time() - last_stray_at < 2000 then
+		return
+	end
+	last_stray_at = time()
+	Log.log("Tempoross", `Closing the {Toplevel.interface_name() or "interface"} that is in the way`)
+	Toplevel.escape_clear()
+end
 
 function Loop.run()
 	if not Game.ask() then
@@ -2858,6 +2869,7 @@ function Loop.run()
 		if S.finished then
 			break
 		end
+		close_stray()
 		Game.poll_settings()
 		Handler.states[state]()
 

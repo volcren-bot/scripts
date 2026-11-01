@@ -3155,6 +3155,16 @@ Handler.states = {
 	PORTAL = Handler.portal,
 	ADVANCE = Handler.advance,
 }
+-- an interface opened by accident (a click on the wrong thing) blocks every click: closed
+local last_stray_at = 0
+local function close_stray()
+	if not Toplevel.has_interface() or time() - last_stray_at < 2000 then
+		return
+	end
+	last_stray_at = time()
+	Log.log(NAME, `Closing the {Toplevel.interface_name() or "interface"} that is in the way`)
+	Toplevel.escape_clear()
+end
 
 function Loop.run()
 	if not Game.ask() then
@@ -3172,6 +3182,7 @@ function Loop.run()
 		if S.finished then
 			break
 		end
+		close_stray()
 		local began = time()
 		Game.poll_settings()
 		Handler.states[state]()
