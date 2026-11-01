@@ -64,8 +64,7 @@ type Course = {
 	steps: { Step },
 }
 
--- fixed values: ids, tiles, thresholds
--- The bounds are the old script's map boxes turned into world tiles, so they can be a tile off.
+-- fixed values: ids, tiles, thresholds (the bounds are the old script's map boxes turned into world tiles, so they can be a tile off)
 local CONST = {
 	REPORT = { counters_key = "" },
 	MARK = { NAME = "Mark of grace", OPTION = "Take", PAD = 1, TAKE_MS = 7000 },
@@ -2238,7 +2237,6 @@ local plan: Plan = {}
 -- gains go to Volcren once a minute
 local report = StatsReport.new()
 
----------------------------------------------------------------------------------------------------
 -- Reading the client
 
 -- falls back to wall clock ticks
@@ -2277,8 +2275,7 @@ function Read.step_of(course: Course, pos: Tile, plane: number): number
 	return 0
 end
 
--- the course we stand in: one the level allows, then the one with the smaller box (the ground steps cover whole regions that overlap
--- their neighbours), then the higher level (the Wyrm and Shayzien courses share their first steps)
+-- the course we stand in: one the level allows, then the smaller box, then the higher level (the Wyrm and Shayzien courses share their first steps)
 function Read.course_of(pos: Tile, plane: number): Course?
 	local level = Stats.real_level("Agility") or 0
 	local best: Course?, best_can, best_area = nil, false, math.huge
@@ -2490,7 +2487,6 @@ function Read.food(): number?
 	return nil
 end
 
----------------------------------------------------------------------------------------------------
 -- Game setup
 
 function Game.sign_in(): boolean
@@ -2563,7 +2559,6 @@ function Game.setup_antiban()
 	Log.log(NAME, "Antiban set up")
 end
 
----------------------------------------------------------------------------------------------------
 -- Highlight
 
 -- outlines the obstacle of the step we stand in, drawn again every EVERY_MS
@@ -2604,7 +2599,6 @@ function Overlay.clear()
 	end
 end
 
----------------------------------------------------------------------------------------------------
 -- Choosing the course
 
 -- asks for the course, progressive and highlight; false when the form is closed
@@ -2757,7 +2751,6 @@ function Game.setup()
 	end
 end
 
----------------------------------------------------------------------------------------------------
 -- Loop
 
 -- resets the idle timeout on xp and reports it
@@ -2880,7 +2873,6 @@ function Loop.get_state(): State
 	return "ADVANCE"
 end
 
----------------------------------------------------------------------------------------------------
 -- Handlers
 
 function Handler.fail(why: string)
@@ -3031,8 +3023,7 @@ function Handler.prehover(course: Course, nxt: number)
 	Log.log(NAME, `Pre-hover step {nxt}: {if aimed then "moving" else "no spot to aim at"}`)
 end
 
--- follows an obstacle after the click: the animation starts, the xp comes, the animation is over and the next step is in view;
--- the old script's delays are the limits. "ok" when we stand in the next step, "fell" when somewhere else, "failed" when nothing happened
+-- follows an obstacle after the click until the next step is in view: "ok" when we stand in the next step, "fell" when elsewhere, "failed" when nothing happened
 function Handler.finish_obstacle(course: Course, index: number, step: Step, nxt: number, distance: number): string
 	local tick = CONST.TICK_MS
 	local xp_before = Read.agility_xp()
@@ -3092,10 +3083,7 @@ function Handler.advance()
 		return Handler.fail(`obstacle {step.id} not found at step {index}`)
 	end
 
-	-- a miss is usually the obstacle off screen after a camera change: hover it (that turns the camera) and try again;
-	-- with no option known, or after a miss, the menu says what the obstacle offers
-	-- a far obstacle has a clickbox but can't be hovered (Objects.approach thinks it's aimable and doesn't walk), so walk up to it
-	-- first; the ground has a map to plan on, roofs don't and get the straight line
+	-- a miss is usually the obstacle off screen after a camera change, so hover it and try again; a far obstacle can't be hovered, so walk up to it first (ground has a map, roofs get a straight line)
 	if Objects.distance(loc, snap.pos) > CONST.WALK_UP.NEAR then
 		Walker.walk({ x = loc.x, y = loc.y }, {
 			near = CONST.WALK_UP.NEAR - 3,

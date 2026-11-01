@@ -261,7 +261,6 @@ local S: RunState = {
 	pier_logged = false,
 }
 
----------------------------------------------------------------------------------------------------
 -- Snapshot of what the client shows, read once per loop
 
 type Snapshot = {
@@ -469,7 +468,6 @@ type Activity = {
 	last_tile: string,
 }
 
----------------------------------------------------------------------------------------------------
 -- Chat events
 
 local events = {
@@ -570,7 +568,6 @@ function Chat.read_chat()
 	end
 end
 
----------------------------------------------------------------------------------------------------
 -- Sides: our ship and everything its crew uses
 
 type Side = {
@@ -636,7 +633,6 @@ function Ship.our_totem(): Loc?
 	return S.side and Read.loc_at((S.side :: Side).totem, { "Totem pole", "Damaged totem pole" })
 end
 
----------------------------------------------------------------------------------------------------
 -- Hazards
 
 function Hazard.fire_npcs(): { Npc }
@@ -866,7 +862,6 @@ function Route.route_end(to: Tile): Tile
 	return if tiles and #tiles > 0 then tiles[#tiles] else to
 end
 
----------------------------------------------------------------------------------------------------
 -- Tools
 
 function Read.item_name_lower(id: number): string
@@ -930,7 +925,6 @@ function Read.has_hammer(): boolean
 		or table.find(Read.worn_ids(), Items.IMCANDO_HAMMER) ~= nil
 end
 
----------------------------------------------------------------------------------------------------
 -- Interacting
 
 function Read.progress_signature(): string
@@ -1214,7 +1208,6 @@ function Route.approach_opts(way: WayOptions?): Clickbox.Approach
 	return { walk = Route.walk_checks(way ~= nil and way.urgent == true), arrive_ms = false }
 end
 
----------------------------------------------------------------------------------------------------
 -- Game actions
 
 function Hazard.douse(fire: Npc): boolean
@@ -1718,7 +1711,6 @@ function Hazard.dodge(hazard: Npc)
 	Route.step_away(if a then (a.npc or a.loc) :: Tile? else nil)
 end
 
----------------------------------------------------------------------------------------------------
 -- The game loop
 
 function Game.new_game()
@@ -1776,7 +1768,6 @@ function Game.should_load(): boolean
 	return fish >= 4 and (intensity >= CONFIG.load.intensity or energy <= CONFIG.load.energy)
 end
 
----------------------------------------------------------------------------------------------------
 -- The lobby
 
 function Read.lobby_players(): number?
@@ -1990,7 +1981,6 @@ function Game.setup()
 	end
 end
 
----------------------------------------------------------------------------------------------------
 -- Leaving
 
 -- whether the wait to leave is over: time ran out or the boat's ladder is back
@@ -2037,7 +2027,6 @@ function Game.leave()
 	end
 end
 
----------------------------------------------------------------------------------------------------
 -- States
 
 type State =
@@ -2505,7 +2494,6 @@ function Loop.get_state(): State
 	return Loop.get_lobby_state(skipped)
 end
 
----------------------------------------------------------------------------------------------------
 -- Handlers
 
 function Handler.wait_untethered()

@@ -333,7 +333,6 @@ for rank, name in ipairs(CONST.BAKER.FOOD) do
 	FOOD_RANK[string.lower(name)] = rank
 end
 
----------------------------------------------------------------------------------------------------
 -- Reading the client
 
 -- falls back to wall clock ticks
@@ -445,7 +444,6 @@ function Read.can_alternate(): boolean
 	return Player.is_running() and (Player.run_energy() or 0) >= CONFIG.min_run_energy
 end
 
----------------------------------------------------------------------------------------------------
 -- Game setup
 
 function Game.sign_in(): boolean
@@ -595,7 +593,6 @@ function Game.setup()
 	end
 end
 
----------------------------------------------------------------------------------------------------
 -- Banking
 
 function Game.bank_kinds(): { string }
@@ -709,7 +706,6 @@ function Game.use_bank(): boolean
 	return pack.wait_used(CONST.BANK.BASKETS, 3000) or (pack.count_used() or 0) > 0
 end
 
----------------------------------------------------------------------------------------------------
 -- Loop
 
 -- resets the idle timeout on xp and reports it
@@ -833,7 +829,6 @@ function Loop.get_state(): State
 	return "STEAL"
 end
 
----------------------------------------------------------------------------------------------------
 -- Handlers
 
 -- the stall to steal from now, nil when there is none ready
@@ -1000,7 +995,6 @@ function Handler.return_to_house()
 	S.failures_in_row += 1
 end
 
----------------------------------------------------------------------------------------------------
 -- Baker's stalls
 
 local function chebyshev(a: Tile, b: Tile): number
@@ -1187,7 +1181,6 @@ function Handler.return_to_safe()
 	S.failures_in_row += 1
 end
 
----------------------------------------------------------------------------------------------------
 -- Port Roberts
 
 -- the tiles the guards walk, in the order they walk them, and where each stall's tile is in it

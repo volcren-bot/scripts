@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# Format check (StyLua) and lint (luau-analyze) for the Luau scripts.
-#   tools/lint.sh           check only; fails on format diffs or lint warnings
-#   tools/lint.sh --fix     format in place first
-#   tools/lint.sh --types   also report type errors (noisy: the sandbox's API is not known to luau-analyze)
-#   tools/lint.sh scripts/tempoross   only those folders (default: all of scripts)
+# Format check (StyLua) and lint (luau-analyze) for the Luau scripts; usage: tools/lint.sh [--fix | --types] [folders].
 set -euo pipefail
 
 cd "$(dirname -- "${BASH_SOURCE[0]}")/.."

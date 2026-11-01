@@ -35,9 +35,7 @@ local CONST = {
 	PILE = { name = "Ash pile", option = "Mine" },
 	-- game ticks a pile takes to come back; a timer more than LATE_TICKS past due means someone else took it again
 	RESPAWN = { TICKS = 50, LATE_TICKS = 4 },
-	-- we stay on a pile until it is gone (it comes back after about half a minute). RESULT_MS: how long
-	-- without any ash before the pile counts as a failure; STALL_MS: how long without more ash
-	-- before we give up on a pile that has given some
+	-- we stay on a pile until it is gone; RESULT_MS is how long without ash before it counts as a failure, STALL_MS how long without more ash before we give up
 	MINE = { RESULT_MS = 6000, STALL_MS = 15000, POLL_MS = 100, TAB_CHECK_MS = 1000, TINY_ANTIBAN = 0.4 },
 	-- the chest at the top of the volcano
 	BANK = {
@@ -63,9 +61,7 @@ local Read, Route, Game, Loop, Handler = {}, {}, {}, {}, {}
 -- what the user can change
 local CONFIG = {
 	max_ashes = 0, -- ash mined before stopping, 0 is unlimited
-	-- the only piles ever mined, as { x = , y = } tiles (the pile's south-west tile), in the order they
-	-- are walked: from the top of the volcano (next to the chest) down. Mined in this order going down
-	-- and in reverse coming back up
+	-- the only piles ever mined, as { x = , y = } south-west tiles, walked from the top of the volcano down and in reverse coming back up
 	piles = {
 		{ x = 3820, y = 3804 },
 		{ x = 3818, y = 3791 },
@@ -111,8 +107,7 @@ type RunState = {
 	last_progress_at: number,
 	last_xp: number,
 	failures_in_row: number,
-	-- the route being walked, the next pile in its list and which way we go
-	-- (1 is down the volcano, in list order; -1 is back up)
+	-- the route being walked, the next pile in its list and which way we go (1 is down the volcano, -1 is back up)
 	route: string,
 	idx: number,
 	dir: number,
@@ -165,7 +160,6 @@ local plan: Plan = {}
 -- gains go to Volcren once a minute
 local report = StatsReport.new()
 
----------------------------------------------------------------------------------------------------
 -- Reading the client
 
 -- falls back to wall clock ticks
@@ -223,7 +217,6 @@ function Read.pile_at(x: number, y: number): Host.Loc?
 	return nil
 end
 
----------------------------------------------------------------------------------------------------
 -- Route
 
 function Route.list(): { { x: number, y: number } }
@@ -263,9 +256,7 @@ function Route.turn()
 	Log.log(NAME, `At the top, going down the {S.route} route`)
 end
 
--- the pile to mine next on the route, or the tile of one we depleted that is about to come back.
--- Depleted piles are skipped for good; skipping several in a row that we have no timer for means
--- someone else is mining them, and asks for a hop
+-- the pile to mine next on the route, or one we depleted that is about to come back; skipping several with no timer means someone else mines them, so hop
 function Route.target(): (Host.Loc?, Host.Tile?)
 	local unknown, streak_start = 0, S.idx
 	for _ = 1, 4 * (#CONFIG.piles + #CONFIG.secondary_piles) + 4 do
@@ -303,7 +294,6 @@ function Route.target(): (Host.Loc?, Host.Tile?)
 	return nil, nil
 end
 
----------------------------------------------------------------------------------------------------
 -- Game setup
 
 function Game.sign_in(): boolean
@@ -408,8 +398,7 @@ function Game.close_bank(): boolean
 	return false
 end
 
--- empties the inventory into the open bank. With a pickaxe carried it stays: the items are deposited
--- one kind at a time (the bank's quantity is All, so one click takes every item of that id)
+-- empties the inventory into the open bank, keeping a carried pickaxe, depositing one kind at a time (the bank's quantity is All)
 function Game.deposit(): boolean
 	if S.pickaxe == nil then
 		local button = Host.widget(CONST.BANK.GROUP, CONST.BANK.DEPOSIT_INVENTORY)
@@ -483,7 +472,6 @@ function Game.setup()
 	end
 end
 
----------------------------------------------------------------------------------------------------
 -- Loop
 
 -- resets the idle timeout on xp and reports it
@@ -584,7 +572,6 @@ function Loop.get_state(): State
 	return if plan.pile then "MINE" elseif plan.wait then "AWAIT" else "WAIT"
 end
 
----------------------------------------------------------------------------------------------------
 -- Handlers
 
 -- walks to the pile, mines it and waits for the ash

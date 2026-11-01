@@ -2,7 +2,6 @@
 
 Items:
 
-- Eclipse red
 - Snape grass (peer the seer and teleports/enchanted lyre)
 - Wine of zamorak (wild and no wild)
 - White berries

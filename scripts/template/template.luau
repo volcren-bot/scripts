@@ -74,7 +74,6 @@ local plan: Plan = {}
 -- gains go to Volcren once a minute
 local report = StatsReport.new()
 
----------------------------------------------------------------------------------------------------
 -- Reading the client
 
 -- falls back to wall clock ticks
@@ -97,7 +96,6 @@ function Read.refresh_snapshot(state: ClientState): boolean
 	return true
 end
 
----------------------------------------------------------------------------------------------------
 -- Game setup
 
 function Game.sign_in(): boolean
@@ -186,7 +184,6 @@ function Game.setup()
 	end
 end
 
----------------------------------------------------------------------------------------------------
 -- Loop
 
 -- resets the idle timeout on xp and reports it
@@ -272,7 +269,6 @@ function Loop.get_state(): State
 	return "IDLE"
 end
 
----------------------------------------------------------------------------------------------------
 -- Handlers
 
 Handler.states = {
