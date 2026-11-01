@@ -14,5 +14,9 @@
   "volcanic_ash": {
     "id": "37ec9a32-9ba4-401a-86f8-0d858e38b5e9",
     "entry": "volcanic_ash.luau"
+  },
+  "collector": {
+    "id": "4837b3fd-7bd5-483b-8004-e006ac975394",
+    "entry": "collector.luau"
   }
 }
