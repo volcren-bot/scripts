@@ -14,16 +14,16 @@ local Camera = require("@lib/main/camera")
 local ChatOptions = require("@lib/main/interfaces/chatbox/chat_options")
 local Clickbox = require("@lib/main/clickbox")
 local DepositBox = require("@lib/main/interfaces/mainscreen/depositbox")
+local Diaries = require("@lib/main/diaries")
 local GameState = require("@lib/main/game_state")
-local Geometry = require("@lib/utils/math/geometry")
 local GroundItems = require("@lib/main/entities/ground_items")
 local Inv = require("@lib/main/interfaces/inv")
 local Inventory = require("@lib/main/interfaces/gametabs/inventory")
+local Journal = require("@lib/main/interfaces/gametabs/journal")
 local Log = require("@lib/utils/log")
 local Login = require("@lib/main/interfaces/login/login")
 local Magic = require("@lib/main/interfaces/gametabs/magic")
 local Minimenu = require("@lib/main/interfaces/minimenu")
-local Mouse = require("@lib/utils/input/mouse")
 local Npcs = require("@lib/main/entities/npcs")
 local Objects = require("@lib/main/entities/objects")
 local Projection = require("@lib/main/projection/projection")
@@ -71,6 +71,9 @@ type Far = {
 	ring: boolean?,
 }
 
+-- a bank booth and the unlock that opens it without the diary: the Seal of passage or the Dream Mentor quest
+type Booth = { x: number, y: number, seal: boolean?, dream: boolean? }
+
 -- a collectable reached and banked by teleport spells: each list holds the spells that do the same, one of them is picked
 type Tele = {
 	to: { string },
@@ -79,6 +82,8 @@ type Tele = {
 	lyre: boolean?,
 	-- false when the bank has no deposit box
 	box: boolean?,
+	-- set when the bank's booths are restricted until the Fremennik elite diary is done: each booth and what unlocks it
+	booths: { Booth }?,
 }
 
 -- a collectable reached and banked by boat: Jarvald takes us between the island and the town, the seer there has a deposit box
@@ -146,9 +151,6 @@ local COLLECTABLE_NAMES = {
 	"Snape grass",
 	"Red spider eggs",
 }
-local SPIDER_LOCATIONS = { "Pandemonium", "Forthos Dungeon" }
--- the locations that are not done; they show a TODO
-local SPIDER_TODO = { "Forthos Dungeon" }
 local SNAPE_ROUTES = {
 	"The Dibber (Hosidius)",
 	"Waterbirth (Enchanted lyre)",
@@ -313,6 +315,12 @@ local SNAPE_ROUTE_DATA: { [string]: Collectable } = {
 		tele = {
 			to = { "Waterbirth Teleport", "Tele Group Waterbirth" },
 			bank = { "Moonclan Teleport", "Tele Group Moonclan" },
+			-- the three booths in a row; without the elite diary the two western ones need the seal, the eastern one Dream Mentor
+			booths = {
+				{ x = 2097, y = 3920, seal = true },
+				{ x = 2098, y = 3920, seal = true },
+				{ x = 2099, y = 3920, dream = true },
+			},
 		},
 	},
 	[SNAPE_ROUTES[2]] = {
@@ -428,7 +436,6 @@ local CONFIG = {
 	-- far banks: teleport with a ring of dueling instead of walking
 	ring = false,
 	snape_route = SNAPE_ROUTES[1],
-	spider_location = SPIDER_LOCATIONS[1],
 	-- the script stops when stuck: nothing collected for idle_minutes, this many failures in a row
 	timeouts = { idle_minutes = 8, max_failures = 4 },
 	antiban = true,
@@ -470,6 +477,8 @@ type RunState = {
 	reverse: boolean,
 	waiting_since: number?,
 	wait_target: Host.Tile?,
+	-- the booths the bank trips may use (nil: any bank); an empty list means the deposit box only
+	booths: { Booth }?,
 }
 
 local S: RunState = {
@@ -495,6 +504,7 @@ local S: RunState = {
 	reverse = false,
 	waiting_since = nil,
 	wait_target = nil,
+	booths = nil,
 }
 
 type Snapshot = {
@@ -1823,6 +1833,65 @@ function Game.check_lyre(): boolean
 	return false
 end
 
+-- the lyre needs the Fremennik elite diary; false stops the script
+function Game.check_lyre_diary(): boolean
+	local done = Diaries.tier("Fremennik", "elite")
+	if done then
+		return true
+	end
+	if done == nil then
+		Log.log(NAME, "Error: couldn't read the Fremennik diary, stopping the script")
+	else
+		Log.log(
+			NAME,
+			"Error: the Fremennik elite diary must be completed to use the enchanted lyre, stopping the script"
+		)
+	end
+	return false
+end
+
+local SEAL_NAMES = { "Seal of passage" }
+
+-- the booths the account may bank at when the collectable restricts them; nil when any bank will do (the diary is done, or no restriction)
+function Game.pick_booths(c: Collectable): { Booth }?
+	local booths = c.tele and c.tele.booths
+	if booths == nil or Diaries.tier("Fremennik", "elite") == true then
+		return nil
+	end
+	local worn, carried = Wornitems.indices_of(SEAL_NAMES), Inventory.indices_of(SEAL_NAMES)
+	local seal = (worn ~= nil and #worn > 0) or (carried ~= nil and #carried > 0)
+	local dream = Journal.is_quest_complete("Dream Mentor")
+	local allowed: { Booth } = {}
+	for _, booth in ipairs(booths) do
+		if (booth.seal and seal) or (booth.dream and dream) then
+			table.insert(allowed, booth)
+		end
+	end
+	local where = if #allowed > 0
+		then `banking at {#allowed} of {#booths} booths`
+		else "banking at the deposit box only"
+	Log.log(NAME, `Fremennik elite diary not done (seal of passage: {seal}, Dream Mentor: {dream}), {where}`)
+	return allowed
+end
+
+-- the closest allowed booth to us, as a bank source
+function Read.allowed_booth(booths: { Booth }): Bankmain.Source?
+	local at = Walker.position()
+	local best: Host.Loc? = nil
+	local best_d = math.huge
+	for _, loc in ipairs(Objects.find("Bank booth") or {}) do
+		for _, booth in ipairs(booths) do
+			if loc.x == booth.x and loc.y == booth.y then
+				local d = if at then Walker.distance(at, loc) else 0
+				if d < best_d then
+					best, best_d = loc, d
+				end
+			end
+		end
+	end
+	return if best then { loc = best, npc = nil } else nil
+end
+
 -- plays the lyre to the destination: worn, its options are on the item; in the inventory they are under Play
 function Handler.play_lyre(destination: string): boolean
 	local worn = Wornitems.indices_of(LYRE_NAMES)
@@ -1895,13 +1964,17 @@ function Handler.bank_by_teleport(c: Collectable)
 			return failed()
 		end
 	end
-	local box = tele.box ~= false and Biometrics.random_boolean(CONST.TELE.BOX_CHANCE)
+	local booths = S.booths
+	-- restricted to the deposit box when no booth is unlocked
+	local box = tele.box ~= false
+		and ((booths ~= nil and #booths == 0) or Biometrics.random_boolean(CONST.TELE.BOX_CHANCE))
 	local opened = false
 	for attempt = 1, CONST.BANK.OPEN_ATTEMPTS do
 		if box then
 			opened = DepositBox.open() and DepositBox.wait_open()
 		else
-			opened = Bankmain.open() or Handler.enter_pin()
+			local source = if booths then Read.allowed_booth(booths) else nil
+			opened = Bankmain.open(source) or Handler.enter_pin()
 		end
 		if opened or S.finished then
 			break
@@ -2182,24 +2255,10 @@ function Game.ask(): boolean
 				visible_when = { id = "snape_route", equals = SNAPE_TODO },
 			},
 			{
-				id = "snape_lyre",
+				id = "spider_note",
 				kind = "label",
-				label = "Requires the Fremennik elite diary (enchanted lyre), worn or in the inventory",
-				visible_when = { id = "snape_route", equals = SNAPE_ROUTES[2] },
-			},
-			{
-				id = "spider_location",
-				kind = "choice",
-				label = "Location",
-				options = SPIDER_LOCATIONS,
-				default = CONFIG.spider_location,
+				label = "Only picks the eggs at the Pandemonium",
 				visible_when = { id = "collect", equals = "Red spider eggs" },
-			},
-			{
-				id = "spider_todo",
-				kind = "label",
-				label = "TODO",
-				visible_when = { id = "spider_location", equals = SPIDER_TODO },
 			},
 			{
 				id = "max_items",
@@ -2235,9 +2294,6 @@ function Game.apply_settings(values: { [string]: any })
 	CONFIG.max_items = values.max_items
 	if table.find(SNAPE_ROUTES, values.snape_route) then
 		CONFIG.snape_route = values.snape_route
-	end
-	if table.find(SPIDER_LOCATIONS, values.spider_location) then
-		CONFIG.spider_location = values.spider_location
 	end
 	CONFIG.ring = values.ring == true
 end
@@ -2278,19 +2334,23 @@ function Loop.run()
 	if CONFIG.collect == "Snape grass" and CONFIG.snape_route == SNAPE_ROUTES[3] and not Game.check_spellbook() then
 		return
 	end
-	if CONFIG.collect == "Snape grass" and CONFIG.snape_route == SNAPE_ROUTES[2] and not Game.check_lyre() then
+	if
+		CONFIG.collect == "Snape grass"
+		and CONFIG.snape_route == SNAPE_ROUTES[2]
+		and not (Game.check_lyre_diary() and Game.check_lyre())
+	then
 		return
 	end
 	if CONFIG.collect == "Snape grass" and table.find(SNAPE_TODO, CONFIG.snape_route) then
 		Log.log(NAME, `{CONFIG.snape_route} isn't done yet (TODO), stopping the script`)
 		return
 	end
-	if CONFIG.collect == "Red spider eggs" and table.find(SPIDER_TODO, CONFIG.spider_location) then
-		Log.log(NAME, `{CONFIG.spider_location} isn't done yet (TODO), stopping the script`)
-		return
-	end
 	Log.log(NAME, `{NAME} started: {CONFIG.collect}`)
 	Game.setup()
+	S.booths = Game.pick_booths(Read.collectable())
+	if S.booths then
+		Inventory.open()
+	end
 	S.last_progress_at, S.failures_in_row = time(), 0
 	Loop.hook_antiban_timeouts()
 

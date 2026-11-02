@@ -3,12 +3,9 @@
 Items:
 
 - Wine of zamorak (wild and no wild)
-- White berries
 - Climbing boots
 - Mort mire funghi (all spots)
-- Antidragon shields
-- Monk robes
-- Red spider eggs (forthos and pandemonium)
+- Red spider eggs (forthos??)
 
 Shop:
 
@@ -23,3 +20,4 @@ Shop:
 - Warrior guild's potions
 - Blast furnace ores
 - Antipoison sophanem
+- Antidragon shields (oziach)
