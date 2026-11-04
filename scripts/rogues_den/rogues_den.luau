@@ -36,6 +36,9 @@ local Walker = require("@lib/main/walker")
 
 local NAME = "Rogues Den"
 
+-- Camera.face runs the camera antiban now and then; here it would zoom in on a route that has to stay in view.
+Camera.face_task = nil
+
 -- what the user can change
 local CONFIG = {
 	-- how many rounds to do, 0 to keep going until stopped
@@ -44,6 +47,8 @@ local CONFIG = {
 	banker = "Emerald Benedict",
 	-- the run trick only works while running: a round starts with at least this much run energy (percent)
 	min_energy = 90,
+	-- how long after a step ends the next one starts (ms): the mouse is already there, so this is the reaction time
+	reaction_ms = { min = 120, max = 380 },
 	-- the script stops when stuck: no stage done for idle_minutes, this many failures in a row
 	timeouts = { idle_minutes = 5, max_failures = 6 },
 	antiban = true,
@@ -52,7 +57,7 @@ local CONFIG = {
 type Tile = { x: number, y: number }
 type Area = { x1: number, y1: number, x2: number, y2: number }
 type Stage = {
-	kind: "walk" | "object" | "mosaic" | "stun" | "route",
+	kind: "walk" | "object" | "mosaic" | "stun" | "route" | "blades",
 	to: Tile,
 	id: number?,
 	options: { string }?,
@@ -61,7 +66,6 @@ type Stage = {
 	once: boolean?,
 	choices: { Tile }?,
 	even: boolean?,
-	goal: Tile?,
 	route: { Tile }?,
 	-- the parity of the route's tile indexes that are safe to land on, when it crosses traps
 	safe: number?,
@@ -69,10 +73,8 @@ type Stage = {
 	menu: boolean?,
 	approach: boolean?,
 	planned: boolean?,
-	closer: number?,
 	animation: number?,
 	hold: { late_x: number }?,
-	max_steps: number?,
 }
 
 local function area(x: number, y: number, r: number): Area
@@ -102,8 +104,6 @@ end
 
 local ANTE = rect(3044, 4980, 3072, 4991)
 
-local STAGES: { Stage } = {}
-
 -- The player must end up exactly here: the plugin marks these tiles as the safe
 -- spot next to a trap, so stopping one tile short is not good enough.
 local function stand(to: Tile): Stage
@@ -130,22 +130,21 @@ local function trap_click(choices: { Tile }, landing: Tile): Stage
 	}
 end
 
--- A hard-coded route walked as overlapping clicks, the player ending on its last tile.
-local function chain(route: { Tile }, safe: number?): Stage
-	local last = route[#route]
+-- A hard-coded route walked as overlapping clicks. Only the route's own tiles have to be exact: `land` is past its end.
+local function chain(route: { Tile }, safe: number?, land: Area): Stage
 	return {
 		kind = "route",
-		to = last,
+		to = route[#route],
 		route = route,
 		safe = safe,
-		land = area(last.x, last.y, 0),
+		land = land,
 		once = true,
 		crossing = true,
 	}
 end
 
-local function blade_route(land: Area): Stage
-	return { kind = "route", to = { x = 2969, y = 5018 }, land = land, once = true, crossing = true }
+local function blades(land: Area): Stage
+	return { kind = "blades", to = { x = 2969, y = 5018 }, land = land, once = true, crossing = true }
 end
 
 local function walk(to: Tile): Stage
@@ -207,10 +206,9 @@ local function menu(stage: Stage): Stage
 end
 
 -- An object too far to be listed yet: the lib walks towards it and clicks it as soon as it can.
-local function approaching(stage: Stage, planned: boolean?, closer: number?): Stage
+local function approaching(stage: Stage, planned: boolean?): Stage
 	stage.approach = true
 	stage.planned = planned
-	stage.closer = closer
 	return stage
 end
 
@@ -221,7 +219,6 @@ local function holding(stage: Stage, late_x: number): Stage
 	return stage
 end
 
--- A step that only counts once the player has played this animation, whatever tile they stand on.
 -- A walk that the walker plans from the collision map, not a click on the goal.
 local function planned(stage: Stage): Stage
 	stage.planned = true
@@ -235,6 +232,7 @@ local function walk_either(a: Tile, b: Tile): Stage
 	return stage
 end
 
+-- A step that only counts once the player has played this animation, whatever tile they stand on.
 local function playing(stage: Stage, animation: number): Stage
 	stage.animation = animation
 	return stage
@@ -255,7 +253,9 @@ for y = 5045, 5075 do
 	table.insert(CORRIDOR, t(2992, y))
 end
 
-local STEPS: { Stage } = {
+local BLADE_LAND = rect(2965, 5016, 2967, 5020)
+
+local STAGES: { Stage } = {
 	-- Antechamber to the first squeeze, then around the blade corridor.
 	use({ x = 3056, y = 4991 }, 7256, { "Open" }, rect(3052, 4992, 3060, 4994), true),
 	use({ x = 3049, y = 4997 }, 7251, { "Enter" }, rect(3044, 4995, 3048, 4999), true),
@@ -270,7 +270,7 @@ local STEPS: { Stage } = {
 	approaching(use({ x = 2993, y = 5004 }, 7240, { "Climb" }, rect(2984, 5003, 2988, 5006), true)),
 
 	-- Wall blade lane: they knock the player across, so it is never clicked again.
-	blade_route(rect(2965, 5016, 2967, 5020)),
+	blades(BLADE_LAND),
 
 	-- Crush corridor and the first two squeezes.
 	retrying(use({ x = 2958, y = 5031 }, 7239, { "Climb" }, rect(2956, 5034, 2960, 5038), true)),
@@ -307,7 +307,7 @@ local STEPS: { Stage } = {
 	use({ x = 3010, y = 5033 }, 7255, { "Open" }),
 	stand({ x = 3000, y = 5034 }),
 	planned(stand({ x = 2992, y = 5045 })),
-	chain(CORRIDOR, 0),
+	chain(CORRIDOR, 0, rect(2991, 5075, 2993, 5077)),
 	stun(rect(3011, 5056, 3030, 5066)),
 	walk({ x = 3028, y = 5056 }),
 	-- After the guard: the pendulum carries a click on any of these four tiles to 3028,5051; the last is the likeliest.
@@ -321,23 +321,6 @@ local STEPS: { Stage } = {
 	),
 	retrying(use({ x = 3018, y = 5047 }, 7237, { "Crack" }, rect(3040, 4960, 3075, 4992), true)),
 }
-STAGES = STEPS
-
--- A crossing whose landing was never measured must leave the player between the
--- obstacle and the next waypoint, never back on the near side.
-for i, stage in ipairs(STAGES) do
-	if stage.crossing and stage.land == nil then
-		local next_stage = STAGES[i + 1]
-		stage.land = if next_stage
-			then rect(
-				math.min(stage.to.x, next_stage.to.x) - 1,
-				math.min(stage.to.y, next_stage.to.y) - 1,
-				math.max(stage.to.x, next_stage.to.x) + 1,
-				math.max(stage.to.y, next_stage.to.y) + 1
-			)
-			else area(stage.to.x, stage.to.y, 3)
-	end
-end
 
 local function find_listed(stage: Stage)
 	local at = stage.to
@@ -403,6 +386,26 @@ local function preflight(to: Tile, timeout: number, adjacent_ok: boolean): numbe
 	error(`no walkable route from {here()} to {to.x},{to.y}`, 0)
 end
 
+local function carried(id: number): number
+	local count = 0
+	for _, item in ipairs(Host.item_container(93) or {}) do
+		if item.id == id then
+			count += item.quantity
+		end
+	end
+	return count
+end
+
+-- The jewel the maze gives on the way in and takes back when the player leaves or is thrown out.
+local JEWEL = 5561
+
+-- Inside the maze, the jewel gone means the player was thrown out: no step can finish any more.
+local function check_inside(i: number)
+	if i > 1 and i < #STAGES and carried(JEWEL) == 0 then
+		error(`step {i}: thrown out, at {here()}`, 0)
+	end
+end
+
 -- Logs each new animation the player plays, to learn what the obstacles use.
 local last_animation = -1
 
@@ -414,20 +417,40 @@ local function track_animation(step: string)
 	end
 end
 
-local function wait_land(stage: Stage, timeout: number)
+-- Waits until the game is done with the player: no path left to animate, the server tile still, no animation.
+-- This is the fact itself, with no pause on top: the pause before the next click is `CONFIG.reaction_ms`.
+local function wait_settled(timeout: number, on_poll: (() -> ())?): boolean
+	local started = Host.time()
+	while Player.in_transit() or Player.is_moving() or Player.is_animating() do
+		if on_poll then
+			on_poll()
+		end
+		if Host.time() - started > timeout then
+			return false
+		end
+		Host.sleep(30)
+	end
+	return true
+end
+
+-- How long the player may stand doing nothing after a click before it is taken as having failed.
+local IDLE_GIVE_UP_MS = 3000
+
+local function wait_land(stage: Stage, i: number, timeout: number)
 	local started = Host.time()
 	local last = pos()
 	local moved_at = started
 	repeat
+		check_inside(i)
 		local p = pos()
-		if p.x ~= last.x or p.y ~= last.y or Player.is_moving() or Player.is_animating() then
+		if p.x ~= last.x or p.y ~= last.y or Player.in_transit() or Player.is_animating() then
 			last, moved_at = p, Host.time()
-		elseif Host.time() - moved_at > 3000 and not inside(p, stage.land) then
+		elseif Host.time() - moved_at > IDLE_GIVE_UP_MS and not inside(p, stage.land) then
 			break
 		end
 		if inside(p, stage.land) then
 			if stage.crossing or stage.kind ~= "walk" then
-				Player.wait_idle(10000, function()
+				wait_settled(10000, function()
 					track_animation(`{stage.to.x},{stage.to.y}`)
 				end)
 			end
@@ -435,12 +458,11 @@ local function wait_land(stage: Stage, timeout: number)
 				return
 			end
 		end
-		Host.sleep(120)
+		Host.sleep(60)
 	until Host.time() - started > timeout
-	error(`step ended at {here()}, outside {stage.land.x1}..{stage.land.x2},{stage.land.y1}..{stage.land.y2}`, 0)
+	error(`step {i}: ended at {here()}, outside {stage.land.x1}..{stage.land.x2},{stage.land.y1}..{stage.land.y2}`, 0)
 end
 
--- Clicks the target tile itself, so a run past hazards is one click.
 -- Where the player will stand when this step is done.
 local function arrival(stage: Stage): Tile
 	if stage.kind == "walk" and not stage.once then
@@ -464,6 +486,9 @@ local function prehover(j: number, at: Tile)
 		Walker.hover_tile_async(nxt.to, at)
 		return
 	end
+	if not nxt.id then
+		return
+	end
 	local loc = find_object(nxt)
 	if loc then
 		Objects.hover_async(loc, at)
@@ -482,17 +507,18 @@ local function blade_lane_tile(): number
 	return 5018
 end
 
--- Whether the click on `goal` is the destination the player now has (a chained click starts with the last leg's one).
+-- Whether `goal` is the destination the player now has. A tile off is a miss: on a trap route that is what ejects.
 local function placed(goal: Tile): boolean
 	local destination = Host.game_state().destination
-	return destination ~= nil and math.max(math.abs(destination.x - goal.x), math.abs(destination.y - goal.y)) <= 1
+	return destination ~= nil and destination.x == goal.x and destination.y == goal.y
 end
 
 -- Clicks the tile; when it can't be seen from the camera as it is (the walker's fidgets and the antiban move it), the
 -- camera is raised and zoomed out a notch and it is tried again. The minimap, which is only as exact as a tile, is the last resort.
 local function click_goal(goal: Tile): boolean
 	for attempt = 1, 4 do
-		if Walker.click_tile(goal) or placed(goal) then
+		local me = pos()
+		if (me.x == goal.x and me.y == goal.y) or Walker.click_tile(goal) or placed(goal) then
 			return true
 		end
 		if attempt < 4 then
@@ -507,6 +533,9 @@ local function click_goal(goal: Tile): boolean
 	return Walker.click_minimap(goal)
 end
 
+-- the animation of a blade or pendulum knocking the player back
+local KNOCKED = 1115
+
 -- East of the blades, where a click that missed them leaves the player: they are clicked again from there.
 local LANE_EAST = rect(2970, 5016, 2974, 5019)
 -- everything between the ledge and the blades: the player there is still on the blade stage
@@ -515,28 +544,56 @@ local LANE_TILE = { x = 2969, y = 5018 }
 -- from the wall search to the mosaic door: the player there is still on the mosaic stage, picking up the tile
 local MOSAIC_SECTION = rect(2998, 5078, 3023, 5090)
 
--- Whether the game took the click as a walk into the lane's row (a click beside the blades walks around them instead).
-local function into_blades(y: number): boolean
+-- Whether the blades have the player: they knock them across, so the lane must not be clicked again.
+local function in_blades(): boolean
+	return inside(pos(), BLADE_LAND) or Player.animation() == KNOCKED
+end
+
+-- Whether the game took the click as a walk into the lane. A click on any other tile walks the long way around the blades.
+local function into_lane(before: Tile?): boolean
 	local destination = nil
 	local deadline = Host.time() + 600
 	repeat
 		destination = Host.game_state().destination
-		if destination == nil then
-			Host.sleep(40)
+		if destination and not (before and destination.x == before.x and destination.y == before.y) then
+			break
 		end
-	until destination ~= nil or Host.time() > deadline
-	return destination ~= nil and math.abs(destination.x - LANE_TILE.x) <= 2 and math.abs(destination.y - y) <= 1
+		Host.sleep(40)
+	until Host.time() > deadline
+	return destination ~= nil and destination.x == LANE_TILE.x and math.abs(destination.y - LANE_TILE.y) <= 1
 end
 
 -- The blades' tile of the lane's row, clicked as a tile. A click that sends the player anywhere else is made again.
 local function click_blade(y: number): boolean
 	for _ = 1, 4 do
-		if click_goal({ x = LANE_TILE.x, y = y }) and into_blades(y) then
+		local before = Host.game_state().destination
+		local clicked = click_goal({ x = LANE_TILE.x, y = y })
+		if in_blades() or (clicked and into_lane(before)) then
 			return true
 		end
 		print(`  the blade click at {LANE_TILE.x},{y} did not go into the blades, clicking again`)
 	end
 	return false
+end
+
+local function cross_blades(i: number)
+	if not inside(pos(), LANE_EAST) then
+		local ok = Walker.walk(BLADE_APPROACH, { straight = true, near = 3 })
+		if not ok and not inside(pos(), LANE_EAST) then
+			error(`step {i}: the walker did not get to the blades, at {here()}`, 0)
+		end
+	end
+	if not click_blade(blade_lane_tile()) then
+		error(`step {i}: could not click the blades from {here()}`, 0)
+	end
+	-- the blades can stop the player a tile short of them
+	wait_settled(4000)
+	if not in_blades() and inside(pos(), LANE_EAST) then
+		print(`  stopped beside the blades at {here()}, clicking them again`)
+		if not click_blade(LANE_TILE.y) then
+			error(`step {i}: could not click the blades from {here()}`, 0)
+		end
+	end
 end
 
 -- The run trick: the player may stand on any tile, but every tile clicked on a trap strip must have the safe parity.
@@ -566,7 +623,7 @@ local function fix_destination(route: { Tile }, safe: number, i: number)
 end
 
 -- Walks a hard-coded route as overlapping clicks: the next one is made while the player is still moving.
-local function follow_route(route: { Tile }, i: number, last: (() -> boolean)?, safe: number?)
+local function follow_route(route: { Tile }, i: number, safe: number?)
 	local me = pos()
 	local from, nearest = 0, 3
 	for k, tile in ipairs(route) do
@@ -591,8 +648,7 @@ local function follow_route(route: { Tile }, i: number, last: (() -> boolean)?, 
 		table.insert(clicks, route[k])
 	end
 	for n, goal in ipairs(clicks) do
-		local clicked = if last and n == #clicks then last() else click_goal(goal)
-		if not clicked then
+		if not click_goal(goal) then
 			error(`step {i}: {goal.x},{goal.y} could not be clicked from {here()}`, 0)
 		end
 		if safe then
@@ -612,7 +668,7 @@ local function follow_route(route: { Tile }, i: number, last: (() -> boolean)?, 
 				if p.x ~= at.x or p.y ~= at.y then
 					at, moved_at = p, Host.time()
 				end
-				reached = math.max(math.abs(p.x - goal.x), math.abs(p.y - goal.y)) <= lead
+				reached = math.max(math.abs(p.x - goal.x), math.abs(p.y - goal.y)) <= lead and Walker.on_screen(nxt)
 				if fidget_at and Host.time() >= fidget_at then
 					fidget_at = nil
 					if math.max(math.abs(p.x - goal.x), math.abs(p.y - goal.y)) > lead + 2 then
@@ -627,8 +683,30 @@ local function follow_route(route: { Tile }, i: number, last: (() -> boolean)?, 
 			until reached or Host.time() - started > 20000 or Host.time() - moved_at > 2500
 		end
 	end
-	Player.wait_walk(20000)
-	Player.wait_still(1500)
+	wait_settled(20000)
+end
+
+-- Waits until the click has played out: true once the player stands on the step's tile, false if they stopped elsewhere.
+local function wait_arrival(stage: Stage, i: number): boolean
+	local goal = arrival(stage)
+	local started, idle_since = Host.time(), Host.time()
+	while Host.time() - started < 20000 do
+		check_inside(i)
+		local p = pos()
+		if p.x == goal.x and p.y == goal.y then
+			return true
+		end
+		local busy = Player.in_transit() or Player.is_moving() or Player.is_animating()
+		if busy then
+			idle_since = Host.time()
+		elseif inside(p, stage.land) then
+			return true
+		elseif Host.time() - idle_since > 600 then
+			return false
+		end
+		Host.sleep(30)
+	end
+	error(`step {i}: still walking after 20s, at {here()}`, 0)
 end
 
 local function walk_to(stage: Stage, i: number)
@@ -640,7 +718,7 @@ local function walk_to(stage: Stage, i: number)
 		if not Walker.walk(goal, { near = 0 }) then
 			error(`step {i}: the walker could not get to {goal.x},{goal.y} from {here()}`, 0)
 		end
-		Player.wait_idle(3000)
+		wait_settled(3000)
 		return
 	end
 	local tried_minimap = false
@@ -654,31 +732,20 @@ local function walk_to(stage: Stage, i: number)
 			error(`step {i}: {goal.x},{goal.y} could not be clicked from {here()}`, 0)
 		end
 		prehover(i + 1, arrival(stage))
-		if not Player.wait_walk(20000) then
-			error(`step {i}: still walking after 20s, at {here()}`, 0)
-		end
-		Player.wait_idle(3000)
-		if stage.once then
+		if wait_arrival(stage, i) or stage.once then
 			return
 		end
 		local now = pos()
 		if now.x == me.x and now.y == me.y then
-			Host.sleep(400)
-			local again = pos()
-			if again.x == me.x and again.y == me.y then
-				if tried_minimap or not Walker.click_minimap(goal) then
-					error(`step {i}: the click did not move the player from {here()}`, 0)
-				end
-				tried_minimap = true
-				Player.wait_walk(20000)
+			if tried_minimap or not Walker.click_minimap(goal) then
+				error(`step {i}: the click did not move the player from {here()}`, 0)
 			end
+			tried_minimap = true
+			wait_arrival(stage, i)
 		end
 	end
 	error(`step {i}: did not reach {goal.x},{goal.y}, at {here()}`, 0)
 end
-
--- the animation of a blade or pendulum knocking the player back
-local KNOCKED = 1115
 
 local held: { loc: Host.Loc, option: string }? = nil
 
@@ -754,25 +821,68 @@ end
 -- The game's refusals that mean the click did nothing and should be made again.
 local REFUSALS = { "can't reach that", "won't open" }
 
--- A refusal that came after `mark`, waited for a moment unless the step is already done or the player has started moving.
-local function refused_since(mark: number, stage: Stage): string?
-	local started = Host.time()
-	repeat
-		for _, message in ipairs(Host.chat_messages() or {}) do
-			if message.uid > mark then
-				for _, text in ipairs(REFUSALS) do
-					if string.find(message.text, text, 1, true) then
-						return text
-					end
+local function refused_since(mark: number): string?
+	for _, message in ipairs(Host.chat_messages() or {}) do
+		if message.uid > mark then
+			for _, text in ipairs(REFUSALS) do
+				if string.find(message.text, text, 1, true) then
+					return text
 				end
 			end
 		end
-		if inside(pos(), stage.land) or Player.is_animating() then
-			return nil
-		end
-		Host.sleep(100)
-	until Host.time() - started > 1200
+	end
 	return nil
+end
+
+-- Follows a click on an object to its end: across, refused by the game, knocked back on the way, or nothing happened.
+-- A knock isn't over with its animation: the trap carries the player one more tile, and a click made before then is refused.
+local function play_out(stage: Stage, i: number, mark: number): (string, string?)
+	local nxt = STAGES[i + 1]
+	local late = stage.hold ~= nil and Biometrics.random_boolean(0.5)
+	local last_try, knocked, seen = 0, false, stage.animation == nil
+	local idle_since = Host.time()
+	while true do
+		check_inside(i)
+		track_animation(`{stage.to.x},{stage.to.y}`)
+		local animation = Player.animation()
+		seen = seen or animation == stage.animation
+		if seen and inside(pos(), stage.land) then
+			return "done"
+		end
+		local refusal = refused_since(mark)
+		if refusal then
+			return "refused", refusal
+		end
+		knocked = knocked or animation == KNOCKED
+		if Player.in_transit() or Player.is_moving() or Player.is_animating() then
+			idle_since = Host.time()
+		elseif knocked and stage.retry then
+			return "knocked"
+		elseif Host.time() - idle_since > IDLE_GIVE_UP_MS then
+			return "idle"
+		end
+		if stage.hold and nxt and not held and Host.time() - last_try > 700 then
+			if not late or pos().x >= stage.hold.late_x then
+				last_try = Host.time()
+				open_held_menu(nxt)
+			end
+		end
+		Host.sleep(60)
+	end
+end
+
+-- Whether a click went to this object. Same-id neighbours (two walls, two ledges) have identical menu rows; what tells them
+-- apart is the destination the click gives the client, which is the tile of the object clicked. No new one says nothing.
+local function went_to(loc: Host.Loc, previous: Tile?): boolean
+	local deadline = Host.time() + 300
+	repeat
+		local to = Host.game_state().destination
+		if to and not (previous and to.x == previous.x and to.y == previous.y) then
+			return to.x >= loc.x and to.x < loc.x + loc.size_x and to.y >= loc.y and to.y < loc.y + loc.size_y
+		end
+		Host.sleep(20)
+	until Host.time() > deadline
+	return true
 end
 
 local function use_object(stage: Stage, i: number)
@@ -784,6 +894,7 @@ local function use_object(stage: Stage, i: number)
 	for attempt = 1, 4 do
 		local used = false
 		local mark = last_chat_uid()
+		local previous = Host.game_state().destination
 		local reuse = held
 		held = nil
 		if stage.menu and reuse and reuse.loc.x == loc.x and reuse.loc.y == loc.y and Minimenu.is_open() then
@@ -820,7 +931,7 @@ local function use_object(stage: Stage, i: number)
 			used = Objects.approach(
 				loc,
 				stage.options or { "Open" },
-				{ walk = { straight = not stage.planned }, arrive_ms = false, closer = stage.closer }
+				{ walk = { straight = not stage.planned }, arrive_ms = false }
 			)
 			if not used then
 				print(`  approach to {loc.name} at {loc.x},{loc.y} returned false from {here()}`)
@@ -848,66 +959,29 @@ local function use_object(stage: Stage, i: number)
 			end
 			error(`step {i}: could not use {loc.name} at {loc.x},{loc.y}`, 0)
 		end
+		if not stage.approach and not went_to(loc, previous) then
+			print(`  the click on {loc.name} went to its neighbour, clicking again`)
+			continue
+		end
 		clicks += 1
-		local nxt = STAGES[i + 1]
 		if not stage.hold then
 			prehover(i + 1, arrival(stage))
 		end
-		Player.wait_walk(15000)
-		if stage.animation then
-			local started = Host.time()
-			while Player.animation() ~= stage.animation and Host.time() - started < 2500 do
-				Host.sleep(60)
-			end
-			if Player.animation() ~= stage.animation then
-				print(`  no animation {stage.animation} after clicking {loc.name} from {here()}, trying again`)
-				if attempt == 4 then
-					error(`step {i}: {loc.name} at {loc.x},{loc.y} never played animation {stage.animation}`, 0)
-				end
-				Host.sleep(Random.int(400, 900))
-				continue
-			end
-		end
-		local refusal = refused_since(mark, stage)
-		if refusal then
-			print(`  "{refusal}" for {loc.name} at {loc.x},{loc.y} from {here()}, trying again`)
-			Player.wait_idle(3000)
-			if attempt == 4 then
-				error(`step {i}: "{refusal}" for {loc.name} at {loc.x},{loc.y} from {here()}`, 0)
-			end
-			Host.sleep(Random.int(400, 900))
-			continue
-		end
-		local late = stage.hold ~= nil and Biometrics.random_boolean(0.5)
-		local last_try = 0
-		local knocked = false
-		local started = Host.time()
-		repeat
-			track_animation(`{stage.to.x},{stage.to.y}`)
-			if inside(pos(), stage.land) then
-				return
-			end
-			-- knocked back (a pendulum): once the fall is over the player is free, so it is tried again at once
-			if stage.retry then
-				if Player.animation() == KNOCKED then
-					knocked = true
-				elseif knocked and not Player.is_animating() then
-					break
-				end
-			end
-			if stage.hold and nxt and not held and Host.time() - last_try > 700 then
-				if not late or pos().x >= stage.hold.late_x then
-					last_try = Host.time()
-					open_held_menu(nxt)
-				end
-			end
-			Host.sleep(120)
-		until Host.time() - started > 8000
-		if not stage.retry or clicks >= 3 then
+		local outcome, refusal = play_out(stage, i, mark)
+		if outcome == "done" then
 			return
 		end
-		print(`  not across yet at {here()}, clicking {loc.name} again`)
+		if outcome == "refused" then
+			print(`  "{refusal}" for {loc.name} at {loc.x},{loc.y} from {here()}, trying again`)
+			wait_settled(3000)
+			Host.sleep(Random.int(400, 900))
+		elseif not stage.retry and not stage.animation then
+			error(`step {i}: {loc.name} at {loc.x},{loc.y} did nothing, at {here()}`, 0)
+		else
+			print(`  not across yet at {here()}, clicking {loc.name} again`)
+		end
 	end
+	error(`step {i}: could not get across {loc.name} at {loc.x},{loc.y}, at {here()}`, 0)
 end
 
 local TILE_ITEM = 5568
@@ -917,17 +991,8 @@ local MOSAIC_GROUP = 688
 -- The four corner pieces of the puzzle, the bottom right one first (the usual answer).
 local MOSAIC_PIECES = { 5, 6, 7, 8 }
 
-local function has_tile(): boolean
-	for _, it in ipairs(Host.item_container(93) or {}) do
-		if it.id == TILE_ITEM then
-			return true
-		end
-	end
-	return false
-end
-
 local function solve_mosaic(stage: Stage, i: number)
-	if not has_tile() then
+	if carried(TILE_ITEM) == 0 then
 		local tile = nil
 		for _, item in ipairs(GroundItems.find(TILE_ITEM) or {}) do
 			if item.x == TILE_AT.x and item.y == TILE_AT.y then
@@ -944,10 +1009,10 @@ local function solve_mosaic(stage: Stage, i: number)
 			Objects.hover_async(door, TILE_AT)
 		end
 		local deadline = Host.time() + 3000 + distance * 700
-		while not has_tile() and Host.time() < deadline do
+		while carried(TILE_ITEM) == 0 and Host.time() < deadline do
 			Host.sleep(100)
 		end
-		if not has_tile() then
+		if carried(TILE_ITEM) == 0 then
 			error(`step {i}: could not take the tile`, 0)
 		end
 	end
@@ -1005,16 +1070,20 @@ end
 
 local POWDER = 5559
 local POWDER_AT = { x = 3009, y = 5063 }
--- The tile between the powder and the guard's beat, and where its patrol is stunned from.
-local GUARD_BEAT = rect(3013, 5057, 3022, 5062)
+-- Where the patrol guard can be met: its beat and the ground it crosses when it comes for the player. The other guard
+-- walks north of a wall, past the top of this.
+local GUARD_AREA = rect(2998, 5055, 3027, 5067)
 
 local function find_guard(): Host.Npc?
+	local at = pos()
+	local best, best_distance = nil, math.huge
 	for _, n in ipairs(Npcs.find("Rogue Guard") or {}) do
-		if inside({ x = n.x, y = n.y }, GUARD_BEAT) then
-			return n
+		local distance = math.max(math.abs(n.x - at.x), math.abs(n.y - at.y))
+		if inside({ x = n.x, y = n.y }, GUARD_AREA) and distance < best_distance then
+			best, best_distance = n, distance
 		end
 	end
-	return nil
+	return best
 end
 
 local function powder_slot(): number?
@@ -1024,16 +1093,6 @@ local function powder_slot(): number?
 		end
 	end
 	return nil
-end
-
-local function powder_count(): number
-	local count = 0
-	for _, it in ipairs(Host.item_container(93) or {}) do
-		if it.id == POWDER then
-			count += it.quantity
-		end
-	end
-	return count
 end
 
 -- One try of the powder on the guard. The stack going down at any moment is the success. Failed: it did not go down within
@@ -1051,21 +1110,22 @@ local function throw_powder(before: number): boolean
 	local deadline = Host.time() + 10000
 	local still_since = Host.time()
 	while Host.time() < deadline do
-		if powder_count() < before then
+		if carried(POWDER) < before then
 			return true
 		end
 		if Player.is_moving() then
 			still_since = Host.time()
 		elseif Host.time() - still_since > 1500 then
-			return powder_count() < before
+			return carried(POWDER) < before
 		end
 		Host.sleep(50)
 	end
-	return powder_count() < before
+	return carried(POWDER) < before
 end
 
 -- Takes flash powder, stuns the guard on the way and leaves at once: the next step runs past while it is stunned.
-local function stun_guard(stage: Stage, i: number)
+-- The guard comes for a player it sees, so there is no standing around between the two.
+local function stun_guard(i: number)
 	if not powder_slot() then
 		local found = nil
 		for _, it in ipairs(GroundItems.find(POWDER) or {}) do
@@ -1073,24 +1133,32 @@ local function stun_guard(stage: Stage, i: number)
 				found = it
 			end
 		end
-		if not found or not GroundItems.approach(found, "Take", { walk = { straight = true } }) then
+		local me = pos()
+		local distance = math.max(math.abs(me.x - POWDER_AT.x), math.abs(me.y - POWDER_AT.y))
+		if not found or not GroundItems.approach(found, "Take", { walk = { straight = true }, arrive_ms = false }) then
 			error(`step {i}: no flash powder to take`, 0)
 		end
-		Player.wait_still(3000)
-	end
-	if not powder_slot() then
-		error(`step {i}: could not take the flash powder`, 0)
+		local deadline = Host.time() + 3000 + distance * 700
+		while not powder_slot() and Host.time() < deadline do
+			check_inside(i)
+			Host.sleep(50)
+		end
+		if not powder_slot() then
+			error(`step {i}: could not take the flash powder`, 0)
+		end
 	end
 	local started = Host.time()
 	while not find_guard() and Host.time() - started < 40000 do
-		Host.sleep(150)
+		check_inside(i)
+		Host.sleep(100)
 	end
-	local before = powder_count()
+	local before = carried(POWDER)
 	for attempt = 1, 3 do
 		if throw_powder(before) then
-			prehover(i + 1, arrival(stage))
+			prehover(i + 1, pos())
 			return
 		end
+		check_inside(i)
 		print(`  the powder did not reach the guard (try {attempt}), trying again`)
 		Host.sleep(300)
 	end
@@ -1133,7 +1201,7 @@ local plan: { stage: number?, retry: boolean? } = {}
 
 local function blade_stage(): number
 	for i, stage in ipairs(STAGES) do
-		if stage.kind == "route" and not stage.goal and not stage.route then
+		if stage.kind == "blades" then
 			return i
 		end
 	end
@@ -1177,9 +1245,24 @@ local function resume_index(): number?
 	return nil
 end
 
+-- The course clicks far ahead, so the camera stays high and zoomed out; the lobby's antiban can leave it anywhere.
+local MAZE_PITCH_SLACK = 200
+local MAZE_ZOOM_MAX = 200
+
+local function maze_camera()
+	local pitch, zoom = Camera.pitch(), Camera.zoom()
+	if pitch and pitch < Camera.PITCH_MAX - MAZE_PITCH_SLACK then
+		Camera.set_pitch(Camera.PITCH_MAX)
+	end
+	if zoom and zoom > MAZE_ZOOM_MAX then
+		Camera.set_zoom(Camera.ZOOM_MIN)
+	end
+end
+
 local function do_stage(i: number, retry: boolean?)
 	local stage = STAGES[i]
 	local prev = STAGES[i - 1]
+	maze_camera()
 	local p = pos()
 	if prev and not retry and not inside(p, prev.land) then
 		error(`step {i}: at {p.x},{p.y}, expected to be where step {i - 1} ended`, 0)
@@ -1188,8 +1271,7 @@ local function do_stage(i: number, retry: boolean?)
 	print(`{i}: {stage.kind} {stage.to.x},{stage.to.y} from {p.x},{p.y}, {steps} steps`)
 	local stage_started = Host.time()
 	if i == #STAGES then
-		local seen = Host.chat_messages() or {}
-		chat_mark = if #seen > 0 then seen[#seen].uid else 0
+		chat_mark = last_chat_uid()
 	end
 	if stage.choices then
 		if stage.even then
@@ -1200,45 +1282,19 @@ local function do_stage(i: number, retry: boolean?)
 	end
 	if stage.kind == "walk" then
 		walk_to(stage, i)
-	elseif stage.kind == "route" and stage.route then
-		follow_route(stage.route, i, nil, stage.safe)
-	elseif stage.kind == "route" and stage.goal then
-		local planned = Host.scene_route(pos(), stage.goal)
-		if not planned or not planned.reached then
-			error(`step {i}: no route from {here()} to {stage.goal.x},{stage.goal.y}`, 0)
-		end
-		follow_route(planned.tiles, i)
 	elseif stage.kind == "route" then
-		local tile = blade_lane_tile()
-		if not inside(pos(), LANE_EAST) then
-			local ok = Walker.walk(BLADE_APPROACH, { straight = true, near = 3 })
-			if not ok and not inside(pos(), LANE_EAST) then
-				error(`step {i}: the walker did not get to the blades, at {here()}`, 0)
-			end
-			if not click_blade(tile) then
-				error(`step {i}: could not click the blades from {here()}`, 0)
-			end
-		end
-		-- stopped beside the blades (a missed click): they are clicked again
-		if not inside(pos(), stage.land) and inside(pos(), LANE_EAST) then
-			Player.wait_idle(3000)
-			if not inside(pos(), stage.land) then
-				print(`  stopped beside the blades at {here()}, clicking them again`)
-				if not click_blade(LANE_TILE.y) then
-					error(`step {i}: could not click the blades from {here()}`, 0)
-				end
-				Player.wait_walk(10000)
-			end
-		end
+		follow_route(stage.route :: { Tile }, i, stage.safe)
+	elseif stage.kind == "blades" then
+		cross_blades(i)
 	elseif stage.kind == "mosaic" then
 		solve_mosaic(stage, i)
 	elseif stage.kind == "stun" then
-		stun_guard(stage, i)
+		stun_guard(i)
 	else
 		use_object(stage, i)
 	end
 	if stage.kind ~= "stun" then
-		wait_land(stage, if stage.crossing then 20000 else 12000)
+		wait_land(stage, i, if stage.crossing then 20000 else 12000)
 	end
 	print(`  ok {here()} {math.floor(Host.time() - stage_started)} ms, energy {math.floor(Player.run_energy() or 0)}%`)
 end
@@ -1256,18 +1312,6 @@ local function finish_round()
 	end
 	S.last_stage = nil
 	print(if failed then "round done, but the safe was not cracked (no reward)" else "round done")
-end
-
--- The jewel the maze gives on the way in and takes back when the player leaves or is thrown out.
-local JEWEL = 5561
-
-local function has_jewel(): boolean
-	for _, item in ipairs(Host.item_container(93) or {}) do
-		if item.id == JEWEL then
-			return true
-		end
-	end
-	return false
 end
 
 local function carrying(): boolean
@@ -1386,7 +1430,7 @@ local function report_counters()
 	Host.report_counters({
 		{ id = "runs", label = "Rounds", value = stats.runs },
 		{ id = "rewards", label = "Rewards", value = stats.rewards, percent_of = "runs" },
-		{ id = "failures", label = "Failures", value = stats.failures, percent_of = "runs" },
+		{ id = "failures", label = "Thrown out", value = stats.failures },
 	})
 end
 
@@ -1413,7 +1457,7 @@ local function get_state(): State
 	end
 	StatsReport.update(report, s.skills)
 	report_counters()
-	if S.last_stage and S.last_stage > 1 and not has_jewel() then
+	if S.last_stage and S.last_stage > 1 and carried(JEWEL) == 0 then
 		Log.log(NAME, `Thrown out of the maze at step {S.last_stage}, starting over`)
 		stats.failures += 1
 		S.last_stage = nil
@@ -1477,7 +1521,6 @@ local function attempt(action: () -> ())
 		S.failures_in_row = 0
 		S.last_progress_at = Host.time()
 	else
-		stats.failures += 1
 		S.failures_in_row += 1
 		Log.log(NAME, `{err}`)
 		Host.sleep(1500)
@@ -1492,7 +1535,6 @@ local function lobby_antiban()
 	end
 end
 
--- Waits (standing still) until the run energy is at least `target` percent, up to ten minutes.
 -- One small camera, zoom or pitch change.
 local function tiny_antiban()
 	local roll = math.random(3)
@@ -1505,6 +1547,7 @@ local function tiny_antiban()
 	end
 end
 
+-- Waits (standing still) until the run energy is at least `target` percent, up to five minutes.
 local function wait_energy(target: number)
 	local started = Host.time()
 	local logged = started
@@ -1527,11 +1570,11 @@ end
 local REST_AT = { x = 3002, y = 5067 }
 
 -- Walks to one random tile around REST_AT with run off and waits there, with tiny antibans, until the energy reaches a
--- random 30 to 40 percent; then run goes back on.
-local function recover_energy()
+-- random 30 to 40 percent; then run goes back on. Whether the player had to go there.
+local function recover_energy(): boolean
 	local need = Random.int(30, 40)
 	if (Player.run_energy() or 100) >= need then
-		return
+		return false
 	end
 	Minimap.set_run(false)
 	for _ = 1, 4 do
@@ -1543,6 +1586,7 @@ local function recover_energy()
 	print(`  waiting at {here()} until the run energy is {need}%`)
 	wait_energy(need)
 	Minimap.set_run(true)
+	return true
 end
 
 local HANDLERS: { [State]: () -> () } = {
@@ -1563,7 +1607,9 @@ local HANDLERS: { [State]: () -> () } = {
 			wait_energy(CONFIG.min_energy)
 		elseif STAGES[index].kind == "stun" then
 			-- the run after the stun must start at once, so the energy is gathered before the powder is taken
-			recover_energy()
+			if recover_energy() then
+				plan.retry = true
+			end
 		elseif STAGES[index - 1].kind ~= "stun" and (Player.run_energy() or 100) < 15 then
 			-- inside the maze it is safe to stand still: the traps only go off when moving
 			wait_energy(35)
@@ -1575,6 +1621,7 @@ local HANDLERS: { [State]: () -> () } = {
 				finish_round()
 			end
 		end)
+		Host.sleep(Random.trunc(Random.left(CONFIG.reaction_ms.min, CONFIG.reaction_ms.max)))
 	end,
 	BANK = function()
 		lobby_antiban()
