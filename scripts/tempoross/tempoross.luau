@@ -1831,9 +1831,12 @@ function Game.wait_aboard(): boolean
 	local from = s.tick_count
 	local started = time()
 	snap.me = Walker.position() or snap.me
-	while not Read.on_boat() and Read.ticks_since(from, started) < CONST.CLIMB_TICKS do
+	local waited = Read.ticks_since(from, started)
+	while not Read.on_boat() and waited < CONST.CLIMB_TICKS do
 		sleep(50)
-		snap.me = Walker.position() or snap.me
+		local now = game_state()
+		snap.me = if now.position then { x = now.position.x, y = now.position.y } else snap.me
+		waited = if from and now.tick_count then now.tick_count - from else (time() - started) // 600
 	end
 	local aboard = Read.on_boat()
 	Log.log(

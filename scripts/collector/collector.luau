@@ -663,10 +663,16 @@ function Read.watch_rivals(spawns: { Host.GroundItem })
 	for _, item in ipairs(spawns) do
 		now[`{item.x},{item.y}`] = true
 	end
+	local near: boolean? = nil
 	for key in pairs(S.seen) do
 		if not now[key] then
 			local at = S.clicked[key]
-			if (at == nil or time() - at > CONST.RIVAL.CLICK_MS) and Read.player_near_spawns() then
+			if at == nil or time() - at > CONST.RIVAL.CLICK_MS then
+				if near == nil then
+					near = Read.player_near_spawns()
+				end
+			end
+			if (at == nil or time() - at > CONST.RIVAL.CLICK_MS) and near then
 				if not S.rivals then
 					Log.log(NAME, `Someone else took the spawn at {key}`)
 				end
@@ -749,9 +755,9 @@ end
 
 -- the spawns still to take: for a contested collectable the ones not taken yet in this round, and a new round once none is left;
 -- with few spawns the new round starts at the first one of the last, which we wait for
-function Read.candidates(reset: boolean): { Host.GroundItem }
+function Read.candidates(reset: boolean, known: { Host.GroundItem }?): { Host.GroundItem }
 	local c = Read.collectable()
-	local spawns = Read.spawns()
+	local spawns = known or Read.spawns()
 	if c.order then
 		-- the spawn of the step, or none while it is gone
 		local tile = Read.step_tile()
@@ -1134,7 +1140,7 @@ function Loop.get_state(): State
 			end
 		end
 	end
-	plan.item = plan.item or Read.cheapest(Read.candidates(true), snap.me)
+	plan.item = plan.item or Read.cheapest(Read.candidates(true, spawns), snap.me)
 	if plan.item and not skipped["PICK"] then
 		return "PICK"
 	end

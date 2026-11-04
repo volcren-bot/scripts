@@ -409,8 +409,8 @@ end
 -- Logs each new animation the player plays, to learn what the obstacles use.
 local last_animation = -1
 
-local function track_animation(step: string)
-	local id = Player.animation()
+local function track_animation(step: string, animation: number?)
+	local id = if animation ~= nil then animation else Player.animation()
 	if id ~= nil and id ~= last_animation then
 		last_animation = id
 		print(`  {step}: animation {id} at {here()}`)
@@ -843,8 +843,8 @@ local function play_out(stage: Stage, i: number, mark: number): (string, string?
 	local idle_since = Host.time()
 	while true do
 		check_inside(i)
-		track_animation(`{stage.to.x},{stage.to.y}`)
 		local animation = Player.animation()
+		track_animation(`{stage.to.x},{stage.to.y}`, animation)
 		seen = seen or animation == stage.animation
 		if seen and inside(pos(), stage.land) then
 			return "done"
@@ -854,7 +854,7 @@ local function play_out(stage: Stage, i: number, mark: number): (string, string?
 			return "refused", refusal
 		end
 		knocked = knocked or animation == KNOCKED
-		if Player.in_transit() or Player.is_moving() or Player.is_animating() then
+		if Player.in_transit() or Player.is_moving() or (animation ~= nil and animation ~= -1) then
 			idle_since = Host.time()
 		elseif knocked and stage.retry then
 			return "knocked"

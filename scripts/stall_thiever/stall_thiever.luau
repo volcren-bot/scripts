@@ -352,13 +352,17 @@ function Read.in_house(pos: Tile): boolean
 	return pos.x >= h.x1 and pos.x <= h.x2 and pos.y >= h.y1 and pos.y <= h.y2
 end
 
-function Read.stall_at(tile: Tile): Stall
-	for _, loc in ipairs(Objects.find(STALL.NAME) or {}) do
+local function stall_among(stalls: { Host.Loc }, tile: Tile): Stall
+	for _, loc in ipairs(stalls) do
 		if loc.x == tile.x and loc.y == tile.y then
 			return { loc = loc, ready = loc.id == STALL.READY_ID }
 		end
 	end
 	return { loc = nil, ready = false }
+end
+
+function Read.stall_at(tile: Tile): Stall
+	return stall_among(Objects.find(STALL.NAME) or {}, tile)
 end
 
 -- slots of the strawberries not in a basket
@@ -421,7 +425,8 @@ function Read.refresh_snapshot(state: ClientState): boolean
 		at_safe = pos.plane == 0 and pos.x == CONST.BAKER.SAFE.x and pos.y == CONST.BAKER.SAFE.y,
 	} :: any
 	if PROFILE == "fruit" then
-		snap.east, snap.west = Read.stall_at(CONST.STALL.EAST), Read.stall_at(CONST.STALL.WEST)
+		local stalls = Objects.find(STALL.NAME) or {}
+		snap.east, snap.west = stall_among(stalls, CONST.STALL.EAST), stall_among(stalls, CONST.STALL.WEST)
 	elseif PROFILE == "tea" then
 		snap.tea = Read.stall_at(CONST.TEA.STALL.TILE)
 	elseif PROFILE == "bakers" then
@@ -1033,7 +1038,7 @@ function Bakers.combat_message(): boolean
 end
 
 -- the guard that has seen us, if any: it refuses the steal, drops our hitpoints or swings at us
-function Bakers.spotted(): Guard?
+function Bakers.spotted(hitpoints: number?): Guard?
 	local guards = Bakers.guards()
 	local nearest = guards[1]
 	local reason: string? = nil
@@ -1041,7 +1046,6 @@ function Bakers.spotted(): Guard?
 	if Bakers.combat_message() then
 		reason = "the game says we are in combat"
 	end
-	local hitpoints = Player.hitpoints()
 	if hitpoints then
 		if hitpoints < S.hitpoints then
 			reason = reason or `hitpoints {S.hitpoints} -> {hitpoints}`
@@ -1068,7 +1072,7 @@ function Bakers.pick_state(skipped: { [string]: boolean }): State
 	if snap.food and hitpoints and hitpoints <= CONFIG.eat_at_hitpoints and not skipped["EAT"] then
 		return "EAT"
 	end
-	if Bakers.spotted() then
+	if Bakers.spotted(hitpoints) then
 		return "LURE"
 	end
 	if snap.free == 0 then

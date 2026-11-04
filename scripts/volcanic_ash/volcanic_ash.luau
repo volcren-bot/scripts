@@ -15,6 +15,7 @@ local GameState = require("@lib/main/game_state")
 local Interact = require("@lib/main/interact")
 local Inv = require("@lib/main/interfaces/inv")
 local Inventory = require("@lib/main/interfaces/gametabs/inventory")
+local Item = require("@lib/utils/item")
 local Log = require("@lib/utils/log")
 local Login = require("@lib/main/interfaces/login/login")
 local Mouse = require("@lib/utils/input/mouse")
@@ -210,14 +211,36 @@ function Read.ash(): number
 	return backpack.count_ex(CONST.ASH) or 0
 end
 
--- the pile standing on the tile, nil when it is depleted
-function Read.pile_at(x: number, y: number): Host.Loc?
-	for _, loc in ipairs(Objects.find(CONST.PILE.name) or {}) do
+local ASH_MATCHER = Item.matcher(CONST.ASH)
+
+-- the ash held and the free slots from one read of the backpack; the slots are nil when it can't be read
+function Read.ash_and_free(): (number, number?)
+	local items = backpack.items()
+	if items == nil then
+		return 0, nil
+	end
+	local ash = 0
+	for _, s in ipairs(items) do
+		if Item.matches(ASH_MATCHER, s.id, s.name) then
+			ash += s.quantity
+		end
+	end
+	return ash, 28 - #items
+end
+
+-- the pile standing on the tile among `piles`, nil when it is depleted
+local function pile_among(piles: { Host.Loc }, x: number, y: number): Host.Loc?
+	for _, loc in ipairs(piles) do
 		if loc.x == x and loc.y == y then
 			return loc
 		end
 	end
 	return nil
+end
+
+-- the pile standing on the tile, nil when it is depleted
+function Read.pile_at(x: number, y: number): Host.Loc?
+	return pile_among(Objects.find(CONST.PILE.name) or {}, x, y)
 end
 
 -- Route
@@ -262,6 +285,7 @@ end
 -- the pile to mine next on the route, or one we depleted that is about to come back; skipping several with no timer means someone else mines them, so hop
 function Route.target(): (Host.Loc?, Host.Tile?)
 	local unknown, streak_start = 0, S.idx
+	local piles = Objects.find(CONST.PILE.name) or {}
 	for _ = 1, 4 * (#CONFIG.piles + #CONFIG.secondary_piles) + 4 do
 		local tile = Route.list()[S.idx]
 		if tile == nil then
@@ -269,7 +293,7 @@ function Route.target(): (Host.Loc?, Host.Tile?)
 			unknown = 0
 		else
 			local key = `{tile.x},{tile.y}`
-			local loc = Read.pile_at(tile.x, tile.y)
+			local loc = pile_among(piles, tile.x, tile.y)
 			if loc then
 				S.respawn[key] = nil
 				return loc, nil
@@ -596,7 +620,7 @@ function Handler.mine(pile: Host.Loc)
 	local mined = 0
 	local last_gain, last_tab_check = time(), time()
 	while true do
-		local now = Read.ash()
+		local now, free = Read.ash_and_free()
 		if now > ash then
 			mined += now - ash
 			stats.ashes += now - ash
@@ -614,7 +638,7 @@ function Handler.mine(pile: Host.Loc)
 			return
 		end
 		-- no room for more: the bank is next
-		if CONFIG.bank and Inventory.free_slots() == 0 then
+		if CONFIG.bank and free == 0 then
 			return
 		end
 		local idle = time() - last_gain

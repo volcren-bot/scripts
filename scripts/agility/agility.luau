@@ -2375,6 +2375,16 @@ function Read.agility_xp(): number
 	return Stats.xp("Agility") or 0
 end
 
+-- the boosted hitpoints level in a state snapshot
+function Read.hitpoints(s: ClientState): number?
+	for _, skill in ipairs(s.skills or {}) do
+		if skill.name == "Hitpoints" then
+			return skill.level
+		end
+	end
+	return nil
+end
+
 -- the step we stand in right now, straight from the client
 function Read.step_here(course: Course): number
 	local p = game_state().position
@@ -2839,7 +2849,7 @@ function Loop.get_state(): State
 		return "LOST"
 	end
 
-	local hitpoints = Player.hitpoints()
+	local hitpoints = Read.hitpoints(s)
 	if hitpoints and hitpoints <= S.eat_at and not skipped["EAT"] then
 		plan.food = Read.food()
 		if plan.food then
