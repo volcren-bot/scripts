@@ -481,6 +481,7 @@ function Game.setup_antiban()
 	AntibanTasks.skills = { "Thieving" }
 	AntibanTasks.apply_zoom_range()
 	AntibanTasks.apply_pitch_range()
+	Antiban.add_task(AntibanTasks.handle_randoms, 30 * SECOND, 0.33)
 	Antiban.add_task(AntibanTasks.adjust_camera, 3 * MINUTE, 0.33)
 	Antiban.add_task(AntibanTasks.random_camera_task, 7 * MINUTE, 0.33)
 	Antiban.add_task(AntibanTasks.random_mouse_task, 8 * MINUTE, 0.33)

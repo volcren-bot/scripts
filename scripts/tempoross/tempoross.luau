@@ -29,6 +29,7 @@ local Objects = require("@lib/main/entities/objects")
 local Player = require("@lib/main/player")
 local Position = require("@lib/main/position")
 local Random = require("@lib/utils/math/random")
+local Randoms = require("@lib/main/antiban/randoms")
 local Stats = require("@lib/main/interfaces/gametabs/stats")
 local StatsReport = require("@lib/utils/stats_report")
 local Ticks = require("@lib/utils/ticks")
@@ -55,6 +56,9 @@ local CONST = {
 
 	-- tether the player is tied to, 0 when none
 	TETHERED_VARBIT = 11895,
+	-- random events: a moment to notice one (min, max in ms), and how long before trying again after one couldn't be dealt with
+	RANDOMS_PAUSE_MS = { 800, 2600 },
+	RANDOMS_RETRY_MS = 30000,
 	LOBBY = 687,
 	LOBBY_PLAYERS = 3,
 	LOBBY_DEPARTURE = 4,
@@ -228,6 +232,7 @@ type RunState = {
 	click_continue_dialogue: boolean?,
 	end_dialogue: boolean,
 	pier_logged: boolean,
+	randoms_retry_at: number,
 }
 
 local S: RunState = {
@@ -256,6 +261,7 @@ local S: RunState = {
 	last_cooked = 0,
 	antiban_began_at = 0,
 	was_in_game = false,
+	randoms_retry_at = 0,
 	played_here = false,
 	game_started = 0,
 	end_dialogue = false,
@@ -2071,6 +2077,7 @@ type State =
 	| "WALK_DOCK"
 	| "WALK_LADDER"
 	| "SOLO_START"
+	| "RANDOM_EVENT"
 	| "LOBBY_ANTIBAN"
 	| "LEAVE_BOAT"
 	| "BOAT_PUMP"
@@ -2374,6 +2381,16 @@ function Loop.get_game_state(skipped: { [State]: boolean }): State
 end
 
 function Loop.get_lobby_state(skipped: { [State]: boolean }): State
+	-- a random event can't reach the cove, so it is only looked for out here, whatever the boat is doing
+	if
+		CONFIG.antiban
+		and S.antiban_ready
+		and time() >= S.randoms_retry_at
+		and not Player.in_instance()
+		and Randoms.find() ~= nil
+	then
+		return "RANDOM_EVENT"
+	end
 	local ladder = Geo.nearest_walk(Read.locs_named({ "Rope ladder" }), snap.me, Geo.to_tile)
 	if ladder == nil then
 		-- ladder out of sight: walk to the dock, unless we are on the boat
@@ -2749,6 +2766,12 @@ Handler.states = {
 		if Task.use_loc(plan.ladder :: Loc, { "Solo-start" }) then
 			-- the game takes a moment to load
 			sleep(Random.int(1800, 2600))
+		end
+	end,
+	RANDOM_EVENT = function()
+		sleep(Random.int(CONST.RANDOMS_PAUSE_MS[1], CONST.RANDOMS_PAUSE_MS[2]))
+		if not Randoms.handle() then
+			S.randoms_retry_at = time() + CONST.RANDOMS_RETRY_MS
 		end
 	end,
 	LOBBY_ANTIBAN = function()
