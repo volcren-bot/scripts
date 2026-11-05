@@ -16,10 +16,13 @@ local AntibanTasks = require("@lib/main/antiban/antiban_tasks")
 local Bankmain = require("@lib/main/interfaces/mainscreen/bankmain")
 local Biometrics = require("@lib/main/antiban/biometrics")
 local Camera = require("@lib/main/camera")
+local ChatOptions = require("@lib/main/interfaces/chatbox/chat_options")
+local Clickbox = require("@lib/main/clickbox")
 local GameState = require("@lib/main/game_state")
 local Geometry = require("@lib/utils/math/geometry")
 local GroundItems = require("@lib/main/entities/ground_items")
 local Host = require("@lib/host")
+local Interact = require("@lib/main/interact")
 local Inventory = require("@lib/main/interfaces/gametabs/inventory")
 local Log = require("@lib/utils/log")
 local Login = require("@lib/main/interfaces/login/login")
@@ -38,6 +41,8 @@ local NAME = "Rogues Den"
 
 -- Camera.face runs the camera antiban now and then; here it would zoom in on a route that has to stay in view.
 Camera.face_task = nil
+-- The course clicks objects from far away: up to this many tiles, one off screen gets the camera zoomed out.
+Clickbox.CAMERA_RANGE = 25
 
 -- what the user can change
 local CONFIG = {
@@ -45,10 +50,25 @@ local CONFIG = {
 	rounds = 0,
 	-- the banker next to the maze, where whatever the safe gave is banked before the next round
 	banker = "Emerald Benedict",
-	-- the run trick only works while running: a round starts with at least this much run energy (percent)
-	min_energy = 90,
+	-- the run trick only works while running: each round waits for a run energy drawn from this range (percent)
+	round_energy = { min = 80, max = 100 },
+	-- the energy gathered before the powder, when there is less than a draw from this range
+	powder_energy = { min = 30, max = 50 },
+	-- the same with the shortcut, which costs less energy; the powder's minimum still has to last to the safe (about 10%)
+	shortcut_round_energy = { min = 55, max = 75 },
+	shortcut_powder_energy = { min = 15, max = 25 },
+	-- how often the NPC's chat is skipped while waiting for run energy
+	skip_chat = 0.5,
+	-- false takes the long route whatever the Thieving level
+	use_shortcut = true,
+	-- set from the form: drink a dose from the bank before a round
+	stamina = false,
+	-- the energy targets are multiplied by this while drinking stamina doses
+	stamina_energy = 0.7,
 	-- how long after a step ends the next one starts (ms): the mouse is already there, so this is the reaction time
 	reaction_ms = { min = 120, max = 380 },
+	-- the highest chance of clicking an object a few times over; each account's habit is a share of this
+	spam_click = 0.25,
 	-- the script stops when stuck: no stage done for idle_minutes, this many failures in a row
 	timeouts = { idle_minutes = 5, max_failures = 6 },
 	antiban = true,
@@ -69,6 +89,8 @@ type Stage = {
 	route: { Tile }?,
 	-- the parity of the route's tile indexes that are safe to land on, when it crosses traps
 	safe: number?,
+	-- the run ends on one of these, past the traps
+	ends: { Tile }?,
 	retry: boolean?,
 	menu: boolean?,
 	approach: boolean?,
@@ -131,12 +153,13 @@ local function trap_click(choices: { Tile }, landing: Tile): Stage
 end
 
 -- A hard-coded route walked as overlapping clicks. Only the route's own tiles have to be exact: `land` is past its end.
-local function chain(route: { Tile }, safe: number?, land: Area): Stage
+local function chain(route: { Tile }, safe: number?, land: Area, ends: { Tile }?): Stage
 	return {
 		kind = "route",
 		to = route[#route],
 		route = route,
 		safe = safe,
+		ends = ends,
 		land = land,
 		once = true,
 		crossing = true,
@@ -167,6 +190,9 @@ local LANDINGS: { [string]: Tile } = {
 	["3024,5001"] = { x = 3023, y = 5001 },
 	["2993,5004"] = { x = 2988, y = 5004 },
 	["2958,5031"] = { x = 2958, y = 5035 },
+	["2967,5061"] = { x = 2968, y = 5061 },
+	["2974,5060"] = { x = 2974, y = 5059 },
+	["2989,5057"] = { x = 2990, y = 5057 },
 	["2957,5069"] = { x = 2957, y = 5072 },
 	["2955,5095"] = { x = 2955, y = 5098 },
 	["2972,5097"] = { x = 2972, y = 5094 },
@@ -253,6 +279,25 @@ for y = 5045, 5075 do
 	table.insert(CORRIDOR, t(2992, y))
 end
 
+-- Where the corridor run may end: its last tiles, then on east and bending south (two tiles wide) on the way to the powder.
+local CORRIDOR_ENDS: { Tile } = {}
+for y = 5075, 5079 do
+	table.insert(CORRIDOR_ENDS, t(2992, y))
+end
+for x = 2993, 2999 do
+	table.insert(CORRIDOR_ENDS, t(x, 5079))
+end
+for y = 5078, 5071, -1 do
+	table.insert(CORRIDOR_ENDS, t(2999, y))
+end
+for y = 5079, 5071, -1 do
+	table.insert(CORRIDOR_ENDS, t(3000, y))
+end
+
+-- The first of those tiles are the usual end of the run; any tile of the rest is as likely as another.
+local CORRIDOR_COMMON_ENDS = 5
+local CORRIDOR_COMMON_CHANCE = 0.6
+
 local BLADE_LAND = rect(2965, 5016, 2967, 5020)
 
 local STAGES: { Stage } = {
@@ -275,7 +320,6 @@ local STAGES: { Stage } = {
 	-- Crush corridor and the first two squeezes.
 	retrying(use({ x = 2958, y = 5031 }, 7239, { "Climb" }, rect(2956, 5034, 2960, 5038), true)),
 	planned(stand({ x = 2962, y = 5050 })),
-	-- TODO: with 80 Thieving, fork here: pick-lock the door at 2967,5061 (id 7246, "Pick-lock") as a shortcut.
 	use({ x = 2957, y = 5069 }, 7219, { "Enter" }, rect(2955, 5072, 2959, 5076), true),
 	trap_click({ { x = 2957, y = 5074 }, { x = 2957, y = 5075 }, { x = 2957, y = 5076 } }, { x = 2957, y = 5076 }),
 	approaching(use({ x = 2955, y = 5095 }, 7219, { "Enter" }, rect(2953, 5098, 2957, 5102), true)),
@@ -307,9 +351,10 @@ local STAGES: { Stage } = {
 	use({ x = 3010, y = 5033 }, 7255, { "Open" }),
 	stand({ x = 3000, y = 5034 }),
 	planned(stand({ x = 2992, y = 5045 })),
-	chain(CORRIDOR, 0, rect(2991, 5075, 2993, 5077)),
+	chain(CORRIDOR, 0, rect(2991, 5075, 3000, 5080), CORRIDOR_ENDS),
 	stun(rect(3011, 5056, 3030, 5066)),
-	walk({ x = 3028, y = 5056 }),
+	-- Planned: the throw can leave the player too far from this tile to click it.
+	planned(walk({ x = 3028, y = 5056 })),
 	-- After the guard: the pendulum carries a click on any of these four tiles to 3028,5051; the last is the likeliest.
 	trap_click(
 		{ { x = 3028, y = 5054 }, { x = 3028, y = 5053 }, { x = 3028, y = 5052 }, { x = 3028, y = 5051 } },
@@ -321,6 +366,39 @@ local STAGES: { Stage } = {
 	),
 	retrying(use({ x = 3018, y = 5047 }, 7237, { "Crack" }, rect(3040, 4960, 3075, 4992), true)),
 }
+
+-- The 80 Thieving branch, taken after the stage that ends on SHORTCUT_FROM.
+local SHORTCUT_LEVEL = 80
+local SHORTCUT_FROM = { x = 2962, y = 5050 }
+local SHORTCUT: { Stage } = {
+	retrying(use({ x = 2967, y = 5061 }, 7246, { "Pick-lock" }, nil, true)),
+	use({ x = 2974, y = 5060 }, 7251, { "Enter" }, nil, true),
+	-- The south grill: the game's pathing gets stuck on a click on the north one (2989,5058).
+	use({ x = 2989, y = 5057 }, 7255, { "Open" }),
+	-- One run hop diagonally onto a safe corridor tile north of the grill, so the run north has no L in it.
+	stand({ x = 2992, y = 5059 }),
+}
+
+-- Swaps the stages between SHORTCUT_FROM and the corridor run for the shortcut.
+local function take_shortcut()
+	local from, to = nil, nil
+	for i, stage in ipairs(STAGES) do
+		if stage.to.x == SHORTCUT_FROM.x and stage.to.y == SHORTCUT_FROM.y then
+			from = i
+		elseif stage.route == CORRIDOR then
+			to = i
+		end
+	end
+	if not from or not to then
+		error("the course has no shortcut fork", 0)
+	end
+	for _ = from + 1, to - 1 do
+		table.remove(STAGES, from + 1)
+	end
+	for offset, step in ipairs(SHORTCUT) do
+		table.insert(STAGES, from + offset, step)
+	end
+end
 
 local function find_listed(stage: Stage)
 	local at = stage.to
@@ -598,15 +676,17 @@ end
 
 -- The run trick: the player may stand on any tile, but every tile clicked on a trap strip must have the safe parity.
 -- When the destination the game took is not one (a click lands a tile off), the nearest safe tile of the route is clicked at once.
-local function fix_destination(route: { Tile }, safe: number, i: number)
+-- `before` is the destination from before the click: until it changes, the game hasn't taken the click yet.
+local function fix_destination(route: { Tile }, safe: number, i: number, before: Tile?)
 	local destination = nil
 	local deadline = Host.time() + 400
 	repeat
 		destination = Host.game_state().destination
-		if destination == nil then
+		local taken = destination ~= nil and not (before and destination.x == before.x and destination.y == before.y)
+		if not taken then
 			Host.sleep(40)
 		end
-	until destination ~= nil or Host.time() > deadline
+	until taken or Host.time() > deadline
 	if destination == nil then
 		return
 	end
@@ -623,7 +703,7 @@ local function fix_destination(route: { Tile }, safe: number, i: number)
 end
 
 -- Walks a hard-coded route as overlapping clicks: the next one is made while the player is still moving.
-local function follow_route(route: { Tile }, i: number, safe: number?)
+local function follow_route(route: { Tile }, i: number, safe: number?, ending: Tile?)
 	local me = pos()
 	local from, nearest = 0, 3
 	for k, tile in ipairs(route) do
@@ -631,6 +711,10 @@ local function follow_route(route: { Tile }, i: number, safe: number?)
 		if distance <= nearest then
 			from, nearest = k, distance
 		end
+	end
+	-- stopped on the way to the ending, past the route: only the ending is left to click
+	if from == 0 and ending then
+		from = #route
 	end
 	if from == 0 then
 		error(`step {i}: {me.x},{me.y} is not near the route`, 0)
@@ -647,12 +731,16 @@ local function follow_route(route: { Tile }, i: number, safe: number?)
 		end
 		table.insert(clicks, route[k])
 	end
+	if ending then
+		clicks[math.max(#clicks, 1)] = ending
+	end
 	for n, goal in ipairs(clicks) do
+		local before = Host.game_state().destination
 		if not click_goal(goal) then
 			error(`step {i}: {goal.x},{goal.y} could not be clicked from {here()}`, 0)
 		end
 		if safe then
-			fix_destination(route, safe, i)
+			fix_destination(route, safe, i, before)
 		end
 		local nxt = clicks[n + 1]
 		if nxt then
@@ -775,14 +863,30 @@ local function open_held_menu(nxt: Stage): boolean
 	return true
 end
 
--- The pre-hover has put the mouse on the object: click it at once, and check that the client took it for the right option.
-local function fast_click(loc: Host.Loc, options: { string }): boolean
-	if Minimenu.is_open() or not Objects.hovered(loc) then
-		return false
+-- From this close a second click could land after the crossing and send the player back through.
+local SPAM_MIN_TILES = 3
+
+local function spam_chance(loc: Host.Loc): number?
+	local me = pos()
+	if math.max(math.abs(me.x - loc.x), math.abs(me.y - loc.y)) < SPAM_MIN_TILES then
+		return nil
 	end
-	-- same-id neighbours (the grills) pass the hover check, so the mouse must also be inside this one's own box
+	return CONFIG.spam_click * Biometrics.get_probability(Biometrics.SPAM_CLICK)
+end
+
+-- Same-id neighbours (the grills) pass the hover check, so the mouse must also be inside this one's own box.
+local function under_mouse(loc: Host.Loc): boolean
 	local box, at = Objects.clickbox(loc), Mouse.position()
 	if not box or not at or not Geometry.Polygon.contains(box.polygon, at) then
+		return false
+	end
+	local top = Minimenu.entries()
+	return top ~= nil and top[1] ~= nil and Objects.owns(loc, top[1])
+end
+
+-- The pre-hover has put the mouse on the object: click it at once, and check that the client took it for the right option.
+local function fast_click(loc: Host.Loc, options: { string }): boolean
+	if Minimenu.is_open() or not Objects.hovered(loc) or not under_mouse(loc) then
 		return false
 	end
 	local top = Minimenu.entries()
@@ -893,6 +997,8 @@ local function use_object(stage: Stage, i: number)
 	local clicks = 0
 	for attempt = 1, 4 do
 		local used = false
+		local spam = spam_chance(loc)
+		local last_click = Minimenu.clicked()
 		local mark = last_chat_uid()
 		local previous = Host.game_state().destination
 		local reuse = held
@@ -931,7 +1037,7 @@ local function use_object(stage: Stage, i: number)
 			used = Objects.approach(
 				loc,
 				stage.options or { "Open" },
-				{ walk = { straight = not stage.planned }, arrive_ms = false }
+				{ walk = { straight = not stage.planned }, arrive_ms = false, spam = spam }
 			)
 			if not used then
 				print(`  approach to {loc.name} at {loc.x},{loc.y} returned false from {here()}`)
@@ -940,7 +1046,9 @@ local function use_object(stage: Stage, i: number)
 			local options = stage.options or { "Open" }
 			used = (attempt == 1 and fast_click(loc, options)) or Objects.interact(loc, options, false, true)
 		end
-		if not used then
+		-- no click at all: the option wasn't under the mouse yet, so there is nothing to wait for
+		local clicked = used or Minimenu.wait_click(last_click, 0) ~= nil
+		if not used and clicked then
 			-- a click made on the way can land after the call gave up on it
 			local waited = Host.time()
 			while not used and Host.time() - waited < 1500 do
@@ -954,7 +1062,7 @@ local function use_object(stage: Stage, i: number)
 		if not used then
 			if clicks == 0 and attempt < 3 then
 				print(`  could not use {loc.name} yet, trying again`)
-				Host.sleep(700)
+				Host.sleep(if clicked then 700 else Random.int(150, 350))
 				continue
 			end
 			error(`step {i}: could not use {loc.name} at {loc.x},{loc.y}`, 0)
@@ -962,6 +1070,12 @@ local function use_object(stage: Stage, i: number)
 		if not stage.approach and not went_to(loc, previous) then
 			print(`  the click on {loc.name} went to its neighbour, clicking again`)
 			continue
+		end
+		-- after that check: the game replaces the object's tile as the destination within moments of the click
+		if not stage.approach and not stage.menu then
+			Interact.spam_click(spam, function(): boolean
+				return under_mouse(loc)
+			end)
 		end
 		clicks += 1
 		if not stage.hold then
@@ -974,7 +1088,11 @@ local function use_object(stage: Stage, i: number)
 		if outcome == "refused" then
 			print(`  "{refusal}" for {loc.name} at {loc.x},{loc.y} from {here()}, trying again`)
 			wait_settled(3000)
-			Host.sleep(Random.int(400, 900))
+			if refusal == "won't open" then
+				Host.sleep(Random.trunc(Random.left(CONFIG.reaction_ms.min, CONFIG.reaction_ms.max)))
+			else
+				Host.sleep(Random.int(400, 900))
+			end
 		elseif not stage.retry and not stage.animation then
 			error(`step {i}: {loc.name} at {loc.x},{loc.y} did nothing, at {here()}`, 0)
 		else
@@ -1027,7 +1145,7 @@ local function solve_mosaic(stage: Stage, i: number)
 			end
 			local opened = false
 			for _ = 1, 3 do
-				opened = Objects.interact(loc, "Open", 15000, true)
+				opened = Objects.interact(loc, "Open", 15000, true, spam_chance(loc))
 				if opened then
 					break
 				end
@@ -1086,6 +1204,27 @@ local function find_guard(): Host.Npc?
 	return best
 end
 
+-- A guard this close to the powder would catch whoever goes for it.
+local POWDER_CLEAR = 3
+
+local function guard_at_powder(): boolean
+	for _, n in ipairs(Npcs.find("Rogue Guard") or {}) do
+		local close = math.max(math.abs(n.x - POWDER_AT.x), math.abs(n.y - POWDER_AT.y)) <= POWDER_CLEAR
+		if close and inside({ x = n.x, y = n.y }, GUARD_AREA) then
+			return true
+		end
+	end
+	return false
+end
+
+local function wait_powder_clear(i: number)
+	local started = Host.time()
+	while guard_at_powder() and Host.time() - started < 20000 do
+		check_inside(i)
+		Host.sleep(100)
+	end
+end
+
 local function powder_slot(): number?
 	for _, it in ipairs(Host.item_container(93) or {}) do
 		if it.id == POWDER then
@@ -1135,7 +1274,24 @@ local function stun_guard(i: number)
 		end
 		local me = pos()
 		local distance = math.max(math.abs(me.x - POWDER_AT.x), math.abs(me.y - POWDER_AT.y))
-		if not found or not GroundItems.approach(found, "Take", { walk = { straight = true }, arrive_ms = false }) then
+		local taken = false
+		for _ = 1, 4 do
+			wait_powder_clear(i)
+			taken = found ~= nil
+				and GroundItems.approach(found, "Take", {
+					walk = {
+						straight = true,
+						on_step = function(_: Tile): boolean
+							return not guard_at_powder()
+						end,
+					},
+					arrive_ms = false,
+				})
+			if taken or not guard_at_powder() then
+				break
+			end
+		end
+		if not taken then
 			error(`step {i}: no flash powder to take`, 0)
 		end
 		local deadline = Host.time() + 3000 + distance * 700
@@ -1183,6 +1339,9 @@ type RunState = {
 	last_stage: number?,
 	-- thrown out of the maze: the next round starts at once, with no lobby pause
 	restarted: boolean,
+	shortcut: boolean,
+	-- the run energy the next round waits for, drawn once per round
+	round_energy: number?,
 }
 
 local S: RunState = {
@@ -1193,6 +1352,8 @@ local S: RunState = {
 	counters_key = "",
 	last_stage = nil,
 	restarted = false,
+	shortcut = false,
+	round_energy = nil,
 }
 
 type State = "LOADING" | "LOGIN" | "MAZE" | "BANK" | "TO_START"
@@ -1283,13 +1444,25 @@ local function do_stage(i: number, retry: boolean?)
 	if stage.kind == "walk" then
 		walk_to(stage, i)
 	elseif stage.kind == "route" then
-		follow_route(stage.route :: { Tile }, i, stage.safe)
+		local ending = nil
+		if stage.ends then
+			local common = Random.chance(CORRIDOR_COMMON_CHANCE)
+			ending = stage.ends[if common
+				then math.random(CORRIDOR_COMMON_ENDS)
+				else math.random(CORRIDOR_COMMON_ENDS + 1, #stage.ends)]
+		end
+		if ending then
+			stage.land = area(ending.x, ending.y, 1)
+		end
+		follow_route(stage.route :: { Tile }, i, stage.safe, ending)
 	elseif stage.kind == "blades" then
 		cross_blades(i)
 	elseif stage.kind == "mosaic" then
 		solve_mosaic(stage, i)
 	elseif stage.kind == "stun" then
 		stun_guard(i)
+		-- the powder is spent: the run goes next from whichever tile the throw was made
+		S.last_stage = i + 1
 	else
 		use_object(stage, i)
 	end
@@ -1314,6 +1487,75 @@ local function finish_round()
 	print(if failed then "round done, but the safe was not cracked (no reward)" else "round done")
 end
 
+-- One small camera, zoom or pitch change.
+local function tiny_antiban()
+	local roll = math.random(3)
+	if roll == 1 then
+		AntibanTasks.tiny_camera_rotation()
+	elseif roll == 2 then
+		AntibanTasks.tiny_zoom_change()
+	else
+		AntibanTasks.tiny_pitch_change()
+	end
+end
+
+local function energy_target(range: { min: number, max: number }): number
+	local span = range.max - range.min
+	return range.min + Biometrics.random_mode_integer(span / 2, 0, span)
+end
+
+-- Waits (standing still) until the run energy is at least `target` percent, up to five minutes.
+-- Sometimes the NPC's chat left in the chatbox is clicked away on the way.
+local function wait_energy(target: number)
+	local started = Host.time()
+	local logged = started - 30000
+	local tiny_at = started + math.random(3000, 9000)
+	local skip_at = if Biometrics.random_boolean(CONFIG.skip_chat) then started + math.random(1000, 8000) else nil
+	while (Player.run_energy() or 100) < target and Host.time() - started < 300000 do
+		S.last_progress_at = Host.time()
+		if skip_at and Host.time() >= skip_at then
+			skip_at = if ChatOptions.contains_continue() and not ChatOptions.continue_chat()
+				then Host.time() + math.random(2000, 5000)
+				else nil
+		end
+		if Host.time() >= tiny_at then
+			tiny_at = Host.time() + math.random(4000, 12000)
+			tiny_antiban()
+		end
+		if Host.time() - logged >= 30000 then
+			logged = Host.time()
+			print(`  waiting for run energy: {math.floor(Player.run_energy() or 0)}% of {target}%`)
+		end
+		Host.sleep(1000)
+	end
+end
+
+-- Doses, smallest first.
+local STAMINA_DOSES = { 12631, 12629, 12627, 12625 }
+local STAMINA_VARBIT = 24
+-- In units of 6 s: with less than this left a round starts with a new dose.
+local STAMINA_MIN = 10
+
+local function stamina_left(): number
+	return Host.varbit(STAMINA_VARBIT) or 0
+end
+
+local function stamina_wanted(): boolean
+	return CONFIG.stamina and stamina_left() < STAMINA_MIN
+end
+
+local function round_target(): number
+	local range = if S.shortcut then CONFIG.shortcut_round_energy else CONFIG.round_energy
+	local target = energy_target(range)
+	return if CONFIG.stamina then math.floor(target * CONFIG.stamina_energy) else target
+end
+
+local function powder_target(): number
+	local range = if S.shortcut then CONFIG.shortcut_powder_energy else CONFIG.powder_energy
+	local target = energy_target(range)
+	return if stamina_left() > 0 then math.floor(target * CONFIG.stamina_energy) else target
+end
+
 local function carrying(): boolean
 	for _, item in ipairs(Host.item_container(93) or {}) do
 		if item.id ~= -1 and item.id ~= JEWEL then
@@ -1325,8 +1567,36 @@ end
 
 local BANKER_AT = { x = 3043, y = 4973 }
 
--- The maze takes nothing in, so whatever the safe gave goes to the bank first.
+-- With the bank open: takes one dose, drinks it and leaves the rest for the deposit. False when the bank has none.
+local function drink_stamina(): boolean
+	local dose = nil
+	for _, id in ipairs(STAMINA_DOSES) do
+		if Bankmain.contains(id) and Bankmain.withdraw(id, 1) then
+			dose = id
+			break
+		end
+	end
+	if not dose then
+		return false
+	end
+	local slot = Bankmain.inventory.index_of(dose)
+	if not slot or not Bankmain.inventory.interact_slot(slot, "Drink") then
+		error("could not drink the stamina dose", 0)
+	end
+	local started = Host.time()
+	while stamina_left() < STAMINA_MIN and Host.time() - started < 3000 do
+		Host.sleep(100)
+	end
+	if stamina_left() < STAMINA_MIN then
+		error("the stamina dose did not take", 0)
+	end
+	return true
+end
+
+-- The maze takes nothing in, so whatever the safe gave goes to the bank first, and a stamina dose is drunk there.
 local function bank_rewards()
+	S.round_energy = S.round_energy or round_target()
+	wait_energy(S.round_energy)
 	local banker = Npcs.nearest(CONFIG.banker, pos())
 	local waited = Host.time()
 	while not banker and Host.time() - waited < 5000 do
@@ -1345,10 +1615,22 @@ local function bank_rewards()
 	if not Bankmain.open({ npc = banker }) then
 		error(`could not open the bank with {CONFIG.banker}`, 0)
 	end
-	if not Bankmain.deposit_inventory() then
+	if carrying() and not Bankmain.deposit_inventory() then
 		error("could not deposit the inventory", 0)
 	end
 	local started = Host.time()
+	while carrying() and Host.time() - started < 4000 do
+		Host.sleep(100)
+	end
+	if stamina_wanted() and not drink_stamina() then
+		Log.log(NAME, "No stamina doses in the bank, going on without")
+		CONFIG.stamina = false
+		S.round_energy = nil
+	end
+	if carrying() and not Bankmain.deposit_inventory() then
+		error("could not deposit the inventory", 0)
+	end
+	started = Host.time()
 	while carrying() and Host.time() - started < 4000 do
 		Host.sleep(100)
 	end
@@ -1413,6 +1695,12 @@ local function setup()
 			sign_in()
 		end
 		Host.sleep(100)
+	end
+	for _, skill in ipairs(Host.game_state().skills or {}) do
+		if CONFIG.use_shortcut and skill.name == "Thieving" and skill.real_level >= SHORTCUT_LEVEL then
+			take_shortcut()
+			S.shortcut = true
+		end
 	end
 	if CONFIG.antiban and not S.antiban_ready then
 		setup_antiban()
@@ -1487,7 +1775,7 @@ local function get_state(): State
 		plan.stage = plan.stage or nearest_stage() + 1
 		return "MAZE"
 	end
-	if carrying() then
+	if carrying() or stamina_wanted() then
 		return "BANK"
 	end
 	if index == 1 then
@@ -1535,44 +1823,13 @@ local function lobby_antiban()
 	end
 end
 
--- One small camera, zoom or pitch change.
-local function tiny_antiban()
-	local roll = math.random(3)
-	if roll == 1 then
-		AntibanTasks.tiny_camera_rotation()
-	elseif roll == 2 then
-		AntibanTasks.tiny_zoom_change()
-	else
-		AntibanTasks.tiny_pitch_change()
-	end
-end
-
--- Waits (standing still) until the run energy is at least `target` percent, up to five minutes.
-local function wait_energy(target: number)
-	local started = Host.time()
-	local logged = started
-	local tiny_at = started + math.random(3000, 9000)
-	while (Player.run_energy() or 100) < target and Host.time() - started < 300000 do
-		S.last_progress_at = Host.time()
-		if Host.time() >= tiny_at then
-			tiny_at = Host.time() + math.random(4000, 12000)
-			tiny_antiban()
-		end
-		if Host.time() - logged >= 30000 then
-			logged = Host.time()
-			print(`  waiting for run energy: {math.floor(Player.run_energy() or 0)}% of {target}%`)
-		end
-		Host.sleep(1000)
-	end
-end
-
 -- Where the energy is gathered before the powder.
 local REST_AT = { x = 3002, y = 5067 }
 
--- Walks to one random tile around REST_AT with run off and waits there, with tiny antibans, until the energy reaches a
--- random 30 to 40 percent; then run goes back on. Whether the player had to go there.
+-- Walks to one random tile around REST_AT with run off and waits there, with tiny antibans, until the energy reaches the
+-- powder's target; then run goes back on. Whether the player had to go there.
 local function recover_energy(): boolean
-	local need = Random.int(30, 40)
+	local need = powder_target()
 	if (Player.run_energy() or 100) >= need then
 		return false
 	end
@@ -1604,7 +1861,8 @@ local HANDLERS: { [State]: () -> () } = {
 			end
 			S.restarted = false
 			Minimap.set_run(true)
-			wait_energy(CONFIG.min_energy)
+			wait_energy(S.round_energy or round_target())
+			S.round_energy = nil
 		elseif STAGES[index].kind == "stun" then
 			-- the run after the stun must start at once, so the energy is gathered before the powder is taken
 			if recover_energy() then
@@ -1644,11 +1902,37 @@ local function close_stray()
 	Toplevel.escape_clear()
 end
 
+local FORM = {
+	title = NAME,
+	submit = "Start",
+	fields = {
+		{
+			id = "stamina",
+			kind = "check",
+			label = "Drink a stamina dose from the bank before a round",
+			default = false,
+		},
+	},
+}
+
 local function main()
+	local values = Host.form(FORM)
+	if values == nil then
+		return
+	end
+	CONFIG.stamina = values.stamina == true
 	Log.log(NAME, `{NAME} started`)
 	setup()
 	S.last_progress_at, S.failures_in_row = Host.time(), 0
 	while not S.finished do
+		local updated = Host.form_update()
+		if updated then
+			CONFIG.stamina = updated.stamina == true
+		end
+		-- caught with the powder selected: the item is gone but stays selected, and every later click would use it
+		if Inventory.selected() ~= nil then
+			Inventory.deselect()
+		end
 		local state = get_state()
 		check_timeouts()
 		if S.finished then

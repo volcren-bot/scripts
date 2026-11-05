@@ -18,5 +18,9 @@
   "collector": {
     "id": "4837b3fd-7bd5-483b-8004-e006ac975394",
     "entry": "collector.luau"
+  },
+  "rogues_den": {
+    "id": "ce62930b-c260-4a87-be2d-1fff71467b84",
+    "entry": "rogues_den.luau"
   }
 }
