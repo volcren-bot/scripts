@@ -81,6 +81,8 @@ local CONST = {
 	-- a restock that fails this many times in a row (the bank is out of something) stops the script
 	RESTOCK_ATTEMPTS = 3,
 	DUELING_FEROX = "Ring of dueling: Ferox Enclave",
+	-- the teleport item back to the island after a restock
+	ZULANDRA_TELEPORT = "Zul-andra teleport",
 	-- banks to restock at, a tile in front of each (TODO: check each tile in the game; move to the lib with the banking)
 	BANKS = {
 		{ name = "Grand Exchange", x = 3164, y = 3487, plane = 0 },
@@ -135,11 +137,13 @@ local CONST = {
 	EARLY_TICKS = { 0, 10 },
 	TICK_MS = 600,
 	ZULRAH_SIZE = 5,
-	-- the venom clouds: the projectile that drops one, how far around its landing tile it reaches and how long it stays (not
-	-- read from the game yet: guesses on the safe side), and the arena's middle and reach for its collision grid
+	-- the venom clouds: the projectile that drops one, the square it covers north and east from the tile it is aimed at (read
+	-- from the hits a cloud gives), how long it stays (a guess on the safe side), and the arena's middle and reach for its grid
 	CLOUD_PROJECTILE = 1045,
-	CLOUD_RADIUS = 1,
+	CLOUD_SIZE = 3,
 	CLOUD_MS = 20000,
+	-- how far from a clouded phase tile to look for one to stand on instead
+	CLOUD_DODGE_REACH = 3,
 	ARENA_CENTER = { x = 52, y = 56 },
 	ARENA_RADIUS = 16,
 	-- the red form whips the tile it looks at (both animations seen on one kill); the hit lands about 3 s after it starts
@@ -237,26 +241,34 @@ local CONST = {
 			},
 		},
 	},
-	-- Zulrah's NPC id per form (from the wiki, not yet seen in the game), and the states that fix our prayers and gear for it
+	-- the overheads, padlocked in the prayer layouts: the script picks the protection for each form itself
+	OVERHEADS = { "protect_from_melee", "protect_from_missiles", "protect_from_magic" },
+	-- Zulrah's NPC id per form, the protection prayer against it, and the states that fix our prayers and gear for it
 	TRANSFORMATIONS = {
 		{
 			key = "serpentine",
+			name = "Serpentine",
 			label = "Serpentine (green)",
 			id = 2042,
+			protection = "protect_from_missiles",
 			prayer_state = "SERPENTINE_PRAYER" :: State,
 			gear_state = "SERPENTINE_GEAR" :: State,
 		},
 		{
 			key = "magma",
+			name = "Magma",
 			label = "Magma (red)",
 			id = 2043,
+			protection = "protect_from_missiles",
 			prayer_state = "MAGMA_PRAYER" :: State,
 			gear_state = "MAGMA_GEAR" :: State,
 		},
 		{
 			key = "tanzanite",
+			name = "Tanzanite",
 			label = "Tanzanite (blue)",
 			id = 2044,
+			protection = "protect_from_magic",
 			prayer_state = "TANZANITE_PRAYER" :: State,
 			gear_state = "TANZANITE_GEAR" :: State,
 		},
@@ -312,8 +324,10 @@ type RunState = {
 	-- set on entering the arena; false once Zulrah played its death animation and is gone
 	zulrah_alive: boolean,
 	zulrah_dying: boolean,
-	-- the CONST.TILES key last clicked, so a walk under way isn't clicked again
+	-- the name of the goal last clicked (Read.goal), so a walk under way isn't clicked again
 	moving_to: string?,
+	-- the scene tile stood on instead of the phase's tile (`key`) while a cloud covers that
+	cloud_dodge: { key: string, x: number, y: number }?,
 	-- when Collect may be clicked on the priestess again
 	collect_retry_at: number,
 	-- loot left on the floor because it didn't fit and there was no food left to eat for room, by item id
@@ -408,6 +422,7 @@ type State =
 	| "FEROX"
 	| "HOUSE"
 	| "BANKING"
+	| "TELEPORT_ZULANDRA"
 
 -- the form the fight state is for
 local fighting: Transformation? = nil
@@ -643,6 +658,15 @@ function Read.track_phases(npc: Host.Npc, t: Transformation)
 	end
 end
 
+-- the user's prayers for a form plus its protection, with nothing left to the lib's locked rule, so a switch is one round of clicks
+function Read.with_protection(layout: PrayerLayout.Layout?, t: Transformation): PrayerLayout.Layout
+	local prayers = { t.protection }
+	for _, key in ipairs(if layout then layout.prayers else {}) do
+		table.insert(prayers, key)
+	end
+	return { name = if layout then layout.name else "no layout", prayers = prayers }
+end
+
 -- Whether Zulrah is in its Jad phase: every candidate rotation has it at this phase.
 function Read.in_jad_phase(): boolean
 	if #phases.candidates == 0 or phases.phase == 0 then
@@ -665,7 +689,7 @@ function Read.fight_state(): State
 		end
 		local item = Read.next_loot()
 		if item then
-			return if Read.room_for(item) then "LOOT" else "EAT_FOR_SPACE"
+			return if GroundItems.fits(item) then "LOOT" else "EAT_FOR_SPACE"
 		end
 		if Read.needs_restock() then
 			return Read.restore_state()
@@ -688,6 +712,9 @@ function Read.fight_state(): State
 		return Read.fight_state()
 	end
 	fighting = t
+	if Read.must_escape() then
+		return Read.restore_state()
+	end
 	-- nothing left to switch for or hit while it dies
 	if npc == nil or t == nil or S.zulrah_dying then
 		-- before it first surfaces the arrival message holds it back: walking to the start tile dismisses it
@@ -698,6 +725,7 @@ function Read.fight_state(): State
 	end
 	Read.track_phases(npc, t)
 	Read.track_clouds()
+	Read.update_cloud_dodge(npc)
 	local early = Read.early_tile(npc, t)
 	if early then
 		stand(early)
@@ -706,7 +734,7 @@ function Read.fight_state(): State
 	local want = if phases.diving and phases.next then phases.next else t
 	fighting = want
 	local layouts = CONFIG.transformations[want.key]
-	-- the Jad phase alternates its attacks, so its protection prayers are the player's
+	-- the Jad phase alternates its attacks; flicking for it isn't written, so the prayers stay as the last phase left them
 	if layouts and layouts.prayers and not Read.in_jad_phase() and not PrayerLayout.is_active(layouts.prayers) then
 		return want.prayer_state
 	end
@@ -759,6 +787,27 @@ function Read.prayer_restore(): (string?, number)
 end
 
 -- Off the arena: prayer missing at least a whole dose, so the dose isn't wasted.
+-- What a piece of food heals: an anglerfish a tenth of the Hitpoints level plus 2 to 13 by that level (it can heal past full).
+function Read.food_heal(): number
+	local _, real = Player.hitpoints()
+	local level = real or 99
+	local bonus = if level < 25 then 2 elseif level < 50 then 4 elseif level < 75 then 6 elseif level < 93 then 8 else 13
+	return level // 10 + bonus
+end
+
+-- The food the island top-up eats: whole pieces that each heal without going past full.
+function Read.food_top_up(): number
+	local hp, real = Player.hitpoints()
+	if hp == nil or real == nil or hp >= real then
+		return 0
+	end
+	return (real - hp) // Read.food_heal()
+end
+
+function Read.wants_hp_top_up(): boolean
+	return Read.food_top_up() > 0 and ready(CONST.FOOD)
+end
+
 function Read.wants_prayer_top_up(): boolean
 	local base, dose = Read.prayer_restore()
 	local prayer, real = Player.prayer()
@@ -782,6 +831,21 @@ function Read.supplies_state(): State?
 	return nil
 end
 
+-- Whether to leave the fight now: hitpoints or prayer down to where the script eats or drinks, with none of it left.
+function Read.must_escape(): boolean
+	local hp = Player.hitpoints()
+	if hp and hp <= S.eat_at and Read.supply_slot(CONST.FOOD) == nil then
+		Log.log(NAME, `Escaping: {hp} hitpoints and no food left`)
+		return true
+	end
+	local prayer = Player.prayer()
+	if prayer and prayer <= S.restore_at and Read.prayer_restore() == nil then
+		Log.log(NAME, `Escaping: {prayer} prayer and nothing left to restore it`)
+		return true
+	end
+	return false
+end
+
 -- The first boost of this kill still to take that is in the inventory; the ones that aren't are dropped.
 function Read.next_boost(): string?
 	while #S.boosts > 0 do
@@ -802,11 +866,11 @@ function Read.wants_attack(npc: Host.Npc): boolean
 		return false
 	end
 	if Player.in_transit() then
-		local server, key = Host.server_tile(), phases.target
-		if server == nil or key == nil then
+		local server, tile = Host.server_tile(), Read.goal()
+		if server == nil or tile == nil then
 			return false
 		end
-		local goal = Read.world_tile(CONST.TILES[key])
+		local goal = Read.world_tile(tile)
 		if server.x ~= goal.x or server.y ~= goal.y then
 			return false
 		end
@@ -830,10 +894,12 @@ function Read.track_clouds()
 	end
 	for _, p in ipairs(Host.projectiles() or {}) do
 		if p.id == CONST.CLOUD_PROJECTILE then
+			-- a new cloud on the tile of an old one lasts as long as the new one
 			local key = `{p.target_x}:{p.target_y}`
-			if S.clouds[key] == nil then
-				local lands = now + math.max(0, p.end_cycle - p.cycle) * 20
-				S.clouds[key] = { x = p.target_x, y = p.target_y, gone_at = lands + CONST.CLOUD_MS }
+			local gone_at = now + math.max(0, p.end_cycle - p.cycle) * 20 + CONST.CLOUD_MS
+			local cloud = S.clouds[key]
+			if cloud == nil or cloud.gone_at < gone_at then
+				S.clouds[key] = { x = p.target_x, y = p.target_y, gone_at = gone_at }
 			end
 		end
 	end
@@ -842,20 +908,109 @@ end
 -- Whether a cloud covers the world tile.
 local function clouded(tile: Host.Tile): boolean
 	for _, cloud in S.clouds do
-		if math.abs(cloud.x - tile.x) <= CONST.CLOUD_RADIUS and math.abs(cloud.y - tile.y) <= CONST.CLOUD_RADIUS then
+		local dx, dy = tile.x - cloud.x, tile.y - cloud.y
+		if dx >= 0 and dx < CONST.CLOUD_SIZE and dy >= 0 and dy < CONST.CLOUD_SIZE then
 			return true
 		end
 	end
 	return false
 end
 
--- Whether Zulrah can be hit from the scene tile with the weapon worn now.
-function Read.can_hit_from(scene: Host.Tile, npc: Host.Npc): boolean
-	local range = CombatSafeSpot.weapon_range()
+-- While a cloud covers the phase's tile: the nearest tile around it out of every cloud, that can be walked to and Zulrah hit
+-- from; back to the phase's tile once its cloud is gone.
+function Read.update_cloud_dodge(npc: Host.Npc)
+	local key = phases.target
+	local home = key and CONST.TILES[key]
+	if key == nil or home == nil or not clouded(Read.world_tile(home)) then
+		if S.cloud_dodge and S.cloud_dodge.key == key then
+			Log.log(NAME, `The cloud on {tile_label(key :: string)} is gone`)
+		end
+		S.cloud_dodge = nil
+		return
+	end
+	local dodge = S.cloud_dodge
+	if dodge and dodge.key == key and not clouded(Read.world_tile(dodge)) then
+		return
+	end
+	local me = Read.scene_tile()
+	for reach = 1, CONST.CLOUD_DODGE_REACH do
+		local ring: { Host.Tile } = {}
+		for dx = -reach, reach do
+			for dy = -reach, reach do
+				if math.max(math.abs(dx), math.abs(dy)) == reach then
+					table.insert(ring, { x = home.x + dx, y = home.y + dy })
+				end
+			end
+		end
+		table.sort(ring, function(a: Host.Tile, b: Host.Tile): boolean
+			return math.max(math.abs(a.x - me.x), math.abs(a.y - me.y))
+				< math.max(math.abs(b.x - me.x), math.abs(b.y - me.y))
+		end)
+		for _, tile in ipairs(ring) do
+			local world = Read.world_tile(tile)
+			if not clouded(world) and Read.can_hit_from(tile, npc) and Read.arena_path(world) ~= nil then
+				Log.log(NAME, `Cloud on {tile_label(key)}: standing on {tile.x},{tile.y} until it goes`)
+				S.cloud_dodge = { key = key, x = tile.x, y = tile.y }
+				return
+			end
+		end
+	end
+	if S.cloud_dodge then
+		Log.log(NAME, `No tile around {tile_label(key)} is out of the clouds`)
+	end
+	S.cloud_dodge = nil
+end
+
+-- The arena's collision, read once a visit (the world map's walker doesn't know the instance).
+function Read.arena_grid(): SafeSpot.Grid?
 	if S.arena_grid == nil then
 		S.arena_grid = SafeSpot.grid_around(Read.world_tile(CONST.ARENA_CENTER), CONST.ARENA_RADIUS)
 	end
-	local grid = S.arena_grid
+	return S.arena_grid
+end
+
+local STEPS = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 }, { -1, -1 }, { -1, 1 }, { 1, -1 }, { 1, 1 } }
+
+-- The tiles a walk from where we stand to the world tile steps on, over the arena's collision (nil when it can't be reached).
+function Read.arena_path(goal: Host.Tile): { Host.Tile }?
+	local grid = Read.arena_grid()
+	local pos = snap.state.position
+	if grid == nil or pos == nil then
+		return nil
+	end
+	local function key(x: number, y: number): number
+		return (x - grid.x) * grid.height + (y - grid.y)
+	end
+	local from: { [number]: number } = { [key(pos.x, pos.y)] = -1 }
+	local queue, head = { { x = pos.x, y = pos.y } }, 1
+	while head <= #queue do
+		local at = queue[head]
+		head += 1
+		if at.x == goal.x and at.y == goal.y then
+			local path: { Host.Tile } = {}
+			local k = key(at.x, at.y)
+			while from[k] ~= -1 do
+				table.insert(path, 1, { x = grid.x + k // grid.height, y = grid.y + k % grid.height })
+				k = from[k]
+			end
+			return path
+		end
+		for _, d in STEPS do
+			local x, y = at.x + d[1], at.y + d[2]
+			local k = key(x, y)
+			if from[k] == nil and SafeSpot.can_step(grid, at.x, at.y, d[1], d[2]) then
+				from[k] = key(at.x, at.y)
+				table.insert(queue, { x = x, y = y })
+			end
+		end
+	end
+	return nil
+end
+
+-- Whether Zulrah can be hit from the scene tile with the weapon worn now.
+function Read.can_hit_from(scene: Host.Tile, npc: Host.Npc): boolean
+	local range = CombatSafeSpot.weapon_range()
+	local grid = Read.arena_grid()
 	if range == nil or grid == nil then
 		return false
 	end
@@ -873,7 +1028,7 @@ function Read.early_tile(npc: Host.Npc, t: Transformation): string?
 		return nil
 	end
 	local goal = Read.world_tile(CONST.TILES[key])
-	local path = Walker.path(goal)
+	local path = Read.arena_path(goal)
 	if path == nil or clouded(goal) then
 		return nil
 	end
@@ -896,26 +1051,38 @@ local function stackable(id: number): boolean
 	return stacks[id]
 end
 
--- The nearest item on the arena's floor to pick up; everything for now (TODO: leave low value items on the ground).
+-- The nearest item on the arena's floor to pick up, one that fits first; everything for now (TODO: leave low value items on the
+-- ground).
 function Read.next_loot(): Host.GroundItem?
 	local me = Walker.position()
 	if me == nil then
 		return nil
 	end
 	local best: Host.GroundItem? = nil
-	local best_d = math.huge
+	local best_d, best_fits = math.huge, false
 	for _, item in ipairs(Host.ground_items() or {}) do
-		local d = GroundItems.distance(item, me)
-		if not S.no_room[item.id] and d < best_d then
-			best, best_d = item, d
+		local d, fits = GroundItems.distance(item, me), GroundItems.fits(item)
+		if not S.no_room[item.id] and ((fits and not best_fits) or (fits == best_fits and d < best_d)) then
+			best, best_d, best_fits = item, d, fits
 		end
 	end
 	return best
 end
 
--- Whether the item fits: a free slot, or a stack of it already in the inventory.
-function Read.room_for(item: Host.GroundItem): boolean
-	return (Inventory.free_slots() or 0) > 0 or (stackable(item.id) and Inventory.find(item.id) ~= nil)
+-- Whether every item on the tile fits at once: a slot each, but a stack carried already takes none and a new stack only one.
+function Read.pile_fits(tile: Host.Tile): boolean
+	local needed, counted = 0, {}
+	for _, item in ipairs(Host.ground_items() or {}) do
+		if item.x == tile.x and item.y == tile.y and not S.no_room[item.id] then
+			if not stackable(item.id) then
+				needed += 1
+			elseif not counted[item.id] and Inventory.find(item.id) == nil then
+				counted[item.id] = true
+				needed += 1
+			end
+		end
+	end
+	return needed <= (Inventory.free_slots() or 0)
 end
 
 -- The teleport scroll Zulrah leaves on the floor when it dies.
@@ -926,15 +1093,28 @@ end
 
 -- Off the tile to stand on, and not already walking to it.
 function Read.wants_move(): boolean
-	local key = phases.target
-	if key == nil then
+	local tile, name = Read.goal()
+	if tile == nil then
 		return false
 	end
-	local tile, me = CONST.TILES[key], Read.scene_tile()
+	local me = Read.scene_tile()
 	if me.x == tile.x and me.y == tile.y then
 		return false
 	end
-	return not (S.moving_to == key and Player.in_transit())
+	return not (S.moving_to == name and Player.in_transit())
+end
+
+-- The scene tile to stand on and its name: the phase's tile, or the one beside it while a cloud covers it.
+function Read.goal(): (Host.Tile?, string?)
+	local key = phases.target
+	if key == nil then
+		return nil, nil
+	end
+	local dodge = S.cloud_dodge
+	if dodge and dodge.key == key then
+		return { x = dodge.x, y = dodge.y }, `cloud dodge {dodge.x},{dodge.y}`
+	end
+	return CONST.TILES[key], key
 end
 
 -- On the Arceuus spellbook: a thrall when none is out, or, once one has THRALL_EARLY_MS left, on a single roll for it.
@@ -970,7 +1150,7 @@ function Read.area(): State
 		if House.inside() then
 			return "HOUSE"
 		end
-		return "BANKING"
+		return Read.restock_state()
 	end
 	local pos = assert(snap.state.position)
 	if Position.Chunk.new(pos.x // 64, pos.y // 64):id() == CONST.ZULANDRA_CHUNK then
@@ -979,11 +1159,33 @@ function Read.area(): State
 	if Ferox.inside() and Read.wants_pool() then
 		return "FEROX"
 	end
+	return Read.restock_state()
+end
+
+-- the first phase's gear, when it isn't worn
+function Read.first_gear_off(): EquipmentLayout.Layout?
+	local first = CONFIG.transformations[CONST.TRANSFORMATIONS[1].key]
+	local layout = first and first.equipment
+	return if layout and EquipmentLayout.matches(layout) == false then layout else nil
+end
+
+-- off the island: the first phase's gear on before the inventory (whose layout holds the other set), out of the bank if it isn't
+-- carried; the bank until the inventory layout is held, then the scroll back
+function Read.restock_state(): State
+	local open = Bankmain.is_open()
+	local gear = Read.first_gear_off()
+	if gear then
+		return if #EquipmentLayout.missing(gear) > 0 then "BANKING" else "PREPARE_GEAR"
+	end
+	local layout = CONFIG.inventory
+	if not open and layout and InventoryLayout.matches(layout) then
+		return "TELEPORT_ZULANDRA"
+	end
 	return "BANKING"
 end
 
--- On the island: what was left behind first, then a restock if a kill needs one, prayer topped up by whole doses, the first
--- phase's gear (Zulrah starts green), then the boat.
+-- On the island: what was left behind first, then a restock if a kill needs one (counted after the top-ups), prayer topped up
+-- by whole doses and hitpoints by whole pieces of food, the first phase's gear (Zulrah starts green), then the boat.
 function Read.island_state(): State
 	if died then
 		return "RECOVER_GEAR"
@@ -998,6 +1200,12 @@ function Read.island_state(): State
 	end
 	if Read.wants_prayer_top_up() then
 		return "PRAYER_POTION"
+	end
+	if time() - (S.used_at[CONST.FOOD] or -math.huge) < CONST.CONSUME_MS then
+		return "LOADING"
+	end
+	if Read.wants_hp_top_up() then
+		return "EAT"
 	end
 	local first = CONFIG.transformations[CONST.TRANSFORMATIONS[1].key]
 	if first and first.equipment and EquipmentLayout.matches(first.equipment) == false then
@@ -1026,7 +1234,7 @@ end
 -- Too few supplies for another kill: less food, or fewer prayer doses once the island's top-up has drunk its whole doses,
 -- than the settings ask for.
 function Read.needs_restock(): boolean
-	if (Inventory.count(CONST.FOOD) or 0) < CONFIG.min_food then
+	if (Inventory.count(CONST.FOOD) or 0) - Read.food_top_up() < CONFIG.min_food then
 		return true
 	end
 	local _, dose = Read.prayer_restore()
@@ -1167,16 +1375,21 @@ function Game.ask(): boolean
 			integer = true,
 		},
 	}
+	fields[#fields + 1] = { kind = "label", text = "Forms", heading = 1 }
 	for _, transformation in CONST.TRANSFORMATIONS do
+		fields[#fields + 1] = { kind = "label", text = transformation.name, heading = 2 }
 		fields[#fields + 1] = {
 			id = `{transformation.key}_equipment`,
 			kind = "equipment",
-			label = `{transformation.label} equipment`,
+			label = "Equipment",
+			row = transformation.key,
 		}
 		fields[#fields + 1] = {
 			id = `{transformation.key}_prayers`,
 			kind = "prayer",
-			label = `{transformation.label} prayers`,
+			label = "Prayers",
+			locked = CONST.OVERHEADS,
+			row = transformation.key,
 		}
 	end
 	local values = Host.form({ title = NAME, submit = "Start", fields = fields })
@@ -1196,7 +1409,7 @@ function Game.apply_settings(values: { [string]: any })
 	for _, transformation in CONST.TRANSFORMATIONS do
 		CONFIG.transformations[transformation.key] = {
 			equipment = values[`{transformation.key}_equipment`],
-			prayers = values[`{transformation.key}_prayers`],
+			prayers = Read.with_protection(values[`{transformation.key}_prayers`], transformation),
 		}
 	end
 end
@@ -1311,7 +1524,7 @@ function Loop.get_state(): State
 		S.zulrah_alive, S.zulrah_dying = Read.teleport() == nil, false
 		phases = new_phases()
 		phases.target = string.split(CONST.ROTATIONS[1].phases[1], " ")[3]
-		S.attack_phase, S.moving_to = -1, nil
+		S.attack_phase, S.moving_to, S.cloud_dodge = -1, nil, nil
 		S.clouds, S.arena_grid, S.no_room = {}, nil, {}
 		S.boosts = { CONST.HEART, CONST.RANGING_POTION }
 	end
@@ -1378,15 +1591,15 @@ Handler.states = {
 		end
 	end,
 	MOVE = function()
-		local key = phases.target
-		if key == nil then
+		local tile, name = Read.goal()
+		if tile == nil or name == nil then
 			return
 		end
-		if Walker.click_tile(Read.world_tile(CONST.TILES[key])) then
+		if Walker.click_tile(Read.world_tile(tile)) then
 			-- a walk ends the attack: it is clicked again as the walk ends
-			S.moving_to, S.hovered_on_walk, S.attack_phase = key, false, -1
+			S.moving_to, S.hovered_on_walk, S.attack_phase = name, false, -1
 		else
-			Log.log(NAME, `Couldn't click the {tile_label(key)} tile`)
+			Log.log(NAME, `Couldn't click the {tile_label(name)} tile`)
 			S.skip["MOVE"] = true
 		end
 	end,
@@ -1413,6 +1626,16 @@ Handler.states = {
 		if item == nil then
 			return
 		end
+		-- the whole pile is wanted: left clicks, in the game's menu order
+		local tile = { x = item.x, y = item.y }
+		if Read.pile_fits(tile) then
+			local taken, why = GroundItems.take_pile(tile)
+			if why == "failed" then
+				Log.log(NAME, `Couldn't take the pile at {tile.x},{tile.y} ({taken} taken)`)
+				S.skip["LOOT"] = true
+			end
+			return
+		end
 		if not GroundItems.interact(item, "Take") then
 			Log.log(NAME, `Couldn't take the {item.name or item.id}`)
 			S.skip["LOOT"] = true
@@ -1433,7 +1656,14 @@ Handler.states = {
 			S.no_room[item.id] = true
 			return
 		end
-		Handler.use(CONST.FOOD, "Eat", "EAT_FOR_SPACE")
+		-- the slot frees on the next tick: until then the inventory still looks full
+		local free = Inventory.free_slots() or 0
+		if Handler.use(CONST.FOOD, "Eat", "EAT_FOR_SPACE") then
+			local started = time()
+			while (Inventory.free_slots() or 0) <= free and time() - started < CONST.CONSUME_MS do
+				sleep(50)
+			end
+		end
 	end,
 	LEAVE = function()
 		local scroll = Read.teleport()
@@ -1489,7 +1719,8 @@ Handler.states = {
 	BOARD_BOAT = function()
 		Handler.antiban("BOARD_BOAT")
 		local boat = Objects.nearest(CONST.BOAT, assert(Walker.position()))
-		if boat == nil or not Objects.interact(boat, "Board") then
+		-- from where the scroll lands the boat may be off screen: approach walks closer when it can't be aimed at
+		if boat == nil or not Objects.approach(boat, "Board") then
 			Log.log(NAME, `Couldn't board the {CONST.BOAT}`)
 			S.skip["BOARD_BOAT"] = true
 			return
@@ -1510,6 +1741,10 @@ Handler.states = {
 		end
 	end,
 	PREPARE_GEAR = function()
+		if Bankmain.is_open() and not Bankmain.close() then
+			S.skip["PREPARE_GEAR"] = true
+			return
+		end
 		local t = CONST.TRANSFORMATIONS[1]
 		local layout = CONFIG.transformations[t.key].equipment
 		if layout and not EquipmentLayout.equip(layout) then
@@ -1611,18 +1846,21 @@ Handler.states = {
 			if not InventoryLayout.reorder(layout) then
 				Log.log(NAME, `Couldn't put the inventory in the order of the {layout.name} layout`)
 			end
-			-- TODO: back to Zul-Andra
-			Log.log(NAME, "Restocked; the trip back to Zul-Andra isn't written yet: stopping the script")
-			S.finished = true
+			Log.log(NAME, "Restocked")
 			return
 		end
-		Handler.antiban("BANKING")
-		if not Bankmain.is_open() and not Bankmain.open() then
-			Log.log(NAME, "Couldn't open a bank")
-			S.skip["BANKING"] = true
-			return
+		-- antiban opens tabs, which closes the bank: only before it is opened
+		if not Bankmain.is_open() then
+			Handler.antiban("BANKING")
+			if not Bankmain.open() then
+				Log.log(NAME, "Couldn't open a bank")
+				S.skip["BANKING"] = true
+				return
+			end
 		end
-		if InventoryLayout.withdraw(layout) then
+		local gear = Read.first_gear_off()
+		local done = if gear then EquipmentLayout.withdraw(gear) else InventoryLayout.withdraw(layout)
+		if done then
 			S.restock_failures = 0
 			return
 		end
@@ -1634,6 +1872,21 @@ Handler.states = {
 			error(message, 0)
 		end
 		Log.log(NAME, `Couldn't restock the {layout.name} layout, trying again`)
+	end,
+	TELEPORT_ZULANDRA = function()
+		Log.log(NAME, "Teleporting back to Zul-Andra")
+		local landed, pointless = Transports.teleport_item(CONST.ZULANDRA_TELEPORT)
+		if landed then
+			return
+		end
+		if pointless then
+			local message =
+				`Couldn't teleport back to Zul-Andra: put Zul-andra teleport scrolls in the inventory layout`
+			Log.warn(NAME, message)
+			error(message, 0)
+		end
+		Log.log(NAME, "The Zul-andra teleport didn't take us to Zul-Andra")
+		S.skip["TELEPORT_ZULANDRA"] = true
 	end,
 }
 
@@ -1681,10 +1934,13 @@ function Handler.antiban(state: State)
 		S.skip[state] = true
 	end
 end
--- an interface opened by accident (a click on the wrong thing) blocks every click: closed
+-- an interface opened by accident (a click on the wrong thing) blocks every click: closed, but not the bank while banking
 local last_stray_at = 0
-local function close_stray()
+local function close_stray(state: State)
 	if not Toplevel.has_interface() or time() - last_stray_at < 2000 then
+		return
+	end
+	if state == "BANKING" and Bankmain.is_open() then
 		return
 	end
 	last_stray_at = time()
@@ -1713,7 +1969,7 @@ function Loop.run()
 			Log.log(NAME, `State: {state}`)
 			last_state = state
 		end
-		close_stray()
+		close_stray(state)
 		Game.poll_settings()
 		Handler.states[state]()
 
