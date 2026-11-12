@@ -11,6 +11,7 @@ local Bankmain = require("@lib/main/interfaces/mainscreen/bankmain")
 local Biometrics = require("@lib/main/antiban/biometrics")
 local Chat = require("@lib/main/interfaces/chatbox/chat")
 local ChatOptions = require("@lib/main/interfaces/chatbox/chat_options")
+local Clickbox = require("@lib/main/clickbox")
 local Consumables = require("@lib/main/consumables")
 local GameState = require("@lib/main/game_state")
 local Inventory = require("@lib/main/interfaces/gametabs/inventory")
@@ -19,6 +20,7 @@ local Log = require("@lib/utils/log")
 local Login = require("@lib/main/interfaces/login/login")
 local Make = require("@lib/main/interfaces/chatbox/make")
 local Minimap = require("@lib/main/interfaces/minimap")
+local Minimenu = require("@lib/main/interfaces/minimenu")
 local Npcs = require("@lib/main/entities/npcs")
 local Objects = require("@lib/main/entities/objects")
 local Player = require("@lib/main/player")
@@ -42,6 +44,7 @@ type Bar = {
 	ratio: number,
 	bar_varbit: number,
 	gauntlets: boolean,
+	ore_smelts_alone: boolean?,
 }
 
 local BARS: { Bar } = {
@@ -84,6 +87,7 @@ local BARS: { Bar } = {
 		ratio = 1,
 		bar_varbit = 943,
 		gauntlets = false,
+		ore_smelts_alone = true,
 	},
 	{
 		name = "Gold bar",
@@ -167,11 +171,15 @@ local CONST = {
 		paid = "you can use the furnace for ten minutes",
 		permission = "permission",
 		coffer_query = "Deposit how much",
+		bag_count = "the coal bag.- contains (%d+) piece",
+		bag_empty = "the coal bag is now empty",
 	},
 	BARS_DUE_MS = 9000,
 	BELT_MS = 3600,
 	LOAD_MS = 4000,
 	TAKE_MS = 3000,
+	BELT_FROM_BANK = 0.7,
+	BAG_MS = 2400,
 }
 
 local Read, Game, Loop, Handler = {}, {}, {}, {}
@@ -179,6 +187,7 @@ local Read, Game, Loop, Handler = {}, {}, {}, {}
 local CONFIG = {
 	bar = "Gold bar",
 	coal_bag = true,
+	cape = true,
 	stamina = false,
 	stamina_below = 40,
 	coffer_min = 5000,
@@ -366,7 +375,13 @@ function Read.read_messages()
 	for _, m in ipairs(Chat.new_messages(S.seen_uid) or {}) do
 		S.seen_uid = m.uid
 		local text = string.lower(m.text)
-		if string.find(text, CONST.TEXT.paid, 1, true) then
+		local game = m.kind == Chat.MessageType.GAME
+		local bag_count = if game then string.match(text, CONST.TEXT.bag_count) else nil
+		if bag_count then
+			S.bag_coal = tonumber(bag_count)
+		elseif game and string.find(text, CONST.TEXT.bag_empty, 1, true) then
+			S.bag_coal = 0
+		elseif string.find(text, CONST.TEXT.paid, 1, true) then
 			S.paid_until = time() + CONST.FOREMAN.paid_ms
 			S.permission_needed = false
 			Log.log(NAME, "The foreman lets us use the furnace for ten minutes")
@@ -380,6 +395,10 @@ end
 
 function Read.wearing_ice(): boolean
 	return Wornitems.contains_any(CONST.ICE_GLOVES)
+end
+
+function Read.wearing_big_cape(): boolean
+	return Wornitems.contains_any(CONST.BIG_BAG_CAPES)
 end
 
 function Read.has_ice(): boolean
@@ -499,7 +518,7 @@ function Game.setup()
 	end
 	S.bag_size = 0
 	if CONFIG.coal_bag and S.bar.secondary == "Coal" then
-		S.bag_size = if Wornitems.contains_any(CONST.BIG_BAG_CAPES) then CONST.BIG_BAG_SIZE else CONST.BAG_SIZE
+		S.bag_size = if Read.wearing_big_cape() then CONST.BIG_BAG_SIZE else CONST.BAG_SIZE
 	end
 	if Read.pays_foreman() then
 		Log.log(
@@ -665,20 +684,16 @@ function Handler.prepare_gloves(): boolean
 	return true
 end
 
-function Handler.coal_moved(action: string): number?
-	local before_bank = Bankmain.count_ex("Coal") or 0
-	local before_inv = Bankmain.inventory.count_ex("Coal") or 0
-	if not Bankmain.inventory.interact(CONST.COAL_BAG, action) then
-		return nil
+function Handler.use_bag(interact: (any, string) -> boolean, action: string): boolean
+	Read.read_messages()
+	if not interact(CONST.COAL_BAG, action) then
+		return false
 	end
-	local moved = 0
-	Handler.wait(function()
-		local bank = Bankmain.count_ex("Coal") or before_bank
-		local inv = Bankmain.inventory.count_ex("Coal") or before_inv
-		moved = (before_bank - bank) + (before_inv - inv)
-		return moved ~= 0
-	end, 1800)
-	return moved
+	S.bag_coal = nil
+	return Handler.wait(function()
+		Read.read_messages()
+		return S.bag_coal ~= nil
+	end, CONST.BAG_MS)
 end
 
 function Handler.prepare_bag(): boolean
@@ -696,16 +711,39 @@ function Handler.prepare_bag(): boolean
 		end
 		S.bag_coal = nil
 	end
-	if S.bag_coal == nil then
-		local moved = Handler.coal_moved("Empty")
-		if moved == nil then
+	return Handler.prepare_cape()
+end
+
+function Handler.prepare_cape(): boolean
+	local capes = CONST.BIG_BAG_CAPES
+	if not Read.wearing_big_cape() then
+		if not CONFIG.cape then
+			S.bag_size = CONST.BAG_SIZE
+			return true
+		end
+		if not Bankmain.inventory.contains_any(capes) then
+			if not Bankmain.contains_any(capes) then
+				S.bag_size = CONST.BAG_SIZE
+				return true
+			end
+			if not Bankmain.withdraw(capes, 1, false) then
+				return false
+			end
+		end
+		if not Bankmain.inventory.interact(capes, "Wear") or not Handler.wait(Read.wearing_big_cape, 3000) then
 			return false
 		end
-		S.bag_coal = 0
-		Log.log(NAME, `Emptied the coal bag ({-moved} coal)`)
-		return Handler.deposit_unwanted()
+		Log.log(NAME, `Wearing the cape, the coal bag holds {CONST.BIG_BAG_SIZE} coal`)
+		if not Handler.deposit_unwanted() then
+			return false
+		end
 	end
+	S.bag_size = CONST.BIG_BAG_SIZE
 	return true
+end
+
+function Handler.bag_offers(option: string): boolean
+	return Minimenu.has(option, "coal bag")
 end
 
 function Handler.fill_bag(): boolean
@@ -715,13 +753,15 @@ function Handler.fill_bag(): boolean
 	if not Bankmain.contains("Coal") then
 		return true
 	end
-	local moved = Handler.coal_moved("Fill")
-	if moved == nil or moved <= 0 then
-		Log.log(NAME, "The coal bag didn't fill")
-		return false
+	if Handler.use_bag(Bankmain.inventory.interact, "Fill") then
+		return true
 	end
-	S.bag_coal = math.min((S.bag_coal or 0) + moved, S.bag_size)
-	return true
+	if Handler.bag_offers("Empty") and not Handler.bag_offers("Fill") then
+		S.bag_coal = S.bag_size
+		return true
+	end
+	Log.log(NAME, "The coal bag didn't fill")
+	return false
 end
 
 function Handler.coins_needed(): number
@@ -796,7 +836,8 @@ function Handler.plan_trip(): string?
 	end
 	local f = Read.furnace()
 	local slots = Bankmain.inventory.count_empty() or 0
-	local carried = f.secondary + (if secondary == "Coal" then S.bag_size else 0)
+	local bag_counts = secondary == "Coal" and not bar.ore_smelts_alone
+	local carried = f.secondary + (if bag_counts then S.bag_size else 0)
 	if carried >= bar.ratio * (f.ore + slots) then
 		return bar.ore
 	end
@@ -875,6 +916,20 @@ function Handler.bank()
 		return
 	end
 	S.failures_in_row = 0
+	Handler.leave_bank()
+end
+
+function Handler.belt_in_view(): boolean
+	local belt = Objects.nearest(CONST.BELT, snap.me)
+	local box = if belt then Objects.clickbox(belt) else nil
+	return box ~= nil and Clickbox.target(box, "conveyor belt") ~= nil
+end
+
+function Handler.leave_bank()
+	if Biometrics.random_boolean(CONST.BELT_FROM_BANK) and Handler.belt_in_view() then
+		Handler.load()
+		return
+	end
 	Bankmain.close()
 end
 
@@ -974,11 +1029,15 @@ function Handler.warn_iron(f: Furnace)
 	end
 end
 
-function Handler.load()
+function Handler.carried(): (number, number)
 	local bar = S.bar
-	local ore_before = snap.ore
-	local carried = snap.ore + snap.secondary
-	Handler.warn_iron(snap.furnace)
+	return Inventory.count_ex(bar.ore) or 0, if bar.secondary then Inventory.count_ex(bar.secondary) or 0 else 0
+end
+
+function Handler.load()
+	local ore_before, secondary_before = Handler.carried()
+	local carried = ore_before + secondary_before
+	Handler.warn_iron(Read.furnace())
 	local belt = Objects.nearest(CONST.BELT, snap.me)
 	if belt == nil then
 		Game.fail("The conveyor belt isn't here")
@@ -989,12 +1048,10 @@ function Handler.load()
 		return
 	end
 	local loaded = Handler.wait(function()
-		local left = (Inventory.count_ex(bar.ore) or 0)
-			+ (if bar.secondary then Inventory.count_ex(bar.secondary) or 0 else 0)
-		return left < carried or ChatOptions.contains_continue() or #(ChatOptions.get() or {}) > 0
+		local ore, secondary = Handler.carried()
+		return ore + secondary < carried or ChatOptions.contains_continue() or #(ChatOptions.get() or {}) > 0
 	end, CONST.LOAD_MS)
-	local ore_after = Inventory.count_ex(bar.ore) or 0
-	if ore_after < ore_before then
+	if (Handler.carried()) < ore_before then
 		S.bars_due_until = time() + CONST.BARS_DUE_MS
 	end
 	if loaded then
@@ -1006,21 +1063,14 @@ function Handler.load()
 end
 
 function Handler.empty_bag()
-	local before = Inventory.count_ex("Coal") or 0
-	if not Inventory.interact(CONST.COAL_BAG, "Empty") then
-		Game.fail("Couldn't empty the coal bag")
+	if Handler.use_bag(Inventory.interact, "Empty") then
 		return
 	end
-	local moved = 0
-	local ok = Handler.wait(function()
-		moved = (Inventory.count_ex("Coal") or 0) - before
-		return moved > 0
-	end, 2400)
-	if ok and moved > 0 then
-		S.bag_coal = math.max((S.bag_coal or 0) - moved, 0)
-	else
+	if Handler.bag_offers("Fill") and not Handler.bag_offers("Empty") then
 		S.bag_coal = 0
+		return
 	end
+	Game.fail("Couldn't empty the coal bag")
 end
 
 function Handler.swap_to_ice(): boolean
@@ -1130,6 +1180,13 @@ function Game.ask(): boolean
 				label = "Use a coal bag (bars that need coal)",
 				default = CONFIG.coal_bag,
 			},
+			{
+				id = "cape",
+				kind = "check",
+				label = "Wear a smithing or max cape from the bank (the coal bag holds 36)",
+				default = CONFIG.cape,
+				enabled_by = "coal_bag",
+			},
 			{ id = "stamina", kind = "check", label = "Drink stamina potions from the bank", default = CONFIG.stamina },
 			{
 				id = "stamina_below",
@@ -1171,6 +1228,7 @@ end
 function Game.apply_settings(values: { [string]: any })
 	CONFIG.bar = values.bar
 	CONFIG.coal_bag = values.coal_bag
+	CONFIG.cape = values.cape
 	CONFIG.stamina = values.stamina
 	CONFIG.stamina_below = values.stamina_below
 	CONFIG.coffer_deposit = values.coffer_deposit
