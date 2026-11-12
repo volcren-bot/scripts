@@ -9,7 +9,9 @@ type Tile = Host.Tile
 local Antiban = require("@lib/main/antiban/antiban")
 local AntibanTasks = require("@lib/main/antiban/antiban_tasks")
 local Biometrics = require("@lib/main/antiban/biometrics")
+local Camera = require("@lib/main/camera")
 local Clickbox = require("@lib/main/clickbox")
+local Consumables = require("@lib/main/consumables")
 local Draw = require("@lib/utils/draw")
 local GameState = require("@lib/main/game_state")
 local Geometry = require("@lib/utils/math/geometry")
@@ -22,6 +24,7 @@ local Mouse = require("@lib/utils/input/mouse")
 local Objects = require("@lib/main/entities/objects")
 local Player = require("@lib/main/player")
 local Players = require("@lib/main/entities/players")
+local Projection = require("@lib/main/projection/projection")
 local Random = require("@lib/utils/math/random")
 local Stats = require("@lib/main/interfaces/gametabs/stats")
 local StatsReport = require("@lib/utils/stats_report")
@@ -41,9 +44,7 @@ type Step = {
 	y2: number,
 	start: Tile,
 	leave: number,
-	enter: number,
 	xp: number,
-	settle: number,
 	next: number?,
 	portals: { Tile }?,
 }
@@ -62,14 +63,20 @@ local CONST = {
 	TICK_MS = 600,
 	LOOP_MIN_MS = 200,
 	LOOP_SLEEP_MS = 100,
-	LANDING_TICKS = 2,
+	FALL_TICKS = 2,
+	OBSTACLE_MS = 60000,
+	FOOD_DELAY_TICKS = 3,
+	START_TICKS = 3,
+	FALL_RECOVER_TICKS = 6,
 	PREHOVER = { RAISE = 0.35, SPREAD = 0.15, MIN_HALF = 8 },
 	WALK_MS_PER_TILE = 450,
 	NOT_OBSTACLE_OPTIONS = { ["Walk here"] = true, Examine = true, Cancel = true, Use = true },
 	PORTAL = { NAME = "Portal", NEAR = 2, LEAVE_MS = 4 * 600 + 4000 },
 	TELEPORT = { SPELL = "Camelot Teleport", OPTION = "Seers'", FAR = 15, ARRIVE_MS = 8000 },
 	PAD = 1,
-	WALK_UP = { NEAR = 8, MS = 20000 },
+	WALK_UP = { CLOSE = 3, DIRECT = 15, MS = 20000 },
+	WALK_THROUGH = { ["Chop down"] = true } :: { [string]: boolean },
+	REACT_MS = { 200, 900 },
 	CLICK_TRIES = 3,
 	OVERLAY = { EVERY_MS = 100, FILL = { 255, 255, 0, 70 } },
 	NEAREST = "Nearest course",
@@ -88,9 +95,7 @@ local CONST = {
 					y2 = 3584,
 					start = { x = 3510, y = 3485 },
 					leave = 10,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14844,
@@ -102,9 +107,7 @@ local CONST = {
 					y2 = 3500,
 					start = { x = 3506, y = 3492 },
 					leave = 12,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 14845,
@@ -116,9 +119,7 @@ local CONST = {
 					y2 = 3509,
 					start = { x = 3502, y = 3504 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 14848,
@@ -130,9 +131,7 @@ local CONST = {
 					y2 = 3507,
 					start = { x = 3492, y = 3504 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14846,
@@ -144,9 +143,7 @@ local CONST = {
 					y2 = 3502,
 					start = { x = 3479, y = 3499 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14894,
@@ -158,9 +155,7 @@ local CONST = {
 					y2 = 3489,
 					start = { x = 3478, y = 3486 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14847,
@@ -172,9 +167,7 @@ local CONST = {
 					y2 = 3481,
 					start = { x = 3489, y = 3476 },
 					leave = 12,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14897,
@@ -186,9 +179,7 @@ local CONST = {
 					y2 = 3485,
 					start = { x = 3510, y = 3476 },
 					leave = 16,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 			},
 		} :: Course,
@@ -206,9 +197,7 @@ local CONST = {
 					y2 = 3455,
 					start = { x = 3236, y = 3417 },
 					leave = 14,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14413,
@@ -220,9 +209,7 @@ local CONST = {
 					y2 = 3421,
 					start = { x = 3219, y = 3414 },
 					leave = 14,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 14414,
@@ -234,9 +221,7 @@ local CONST = {
 					y2 = 3421,
 					start = { x = 3208, y = 3414 },
 					leave = 12,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14832,
@@ -248,9 +233,7 @@ local CONST = {
 					y2 = 3418,
 					start = { x = 3197, y = 3416 },
 					leave = 8,
-					enter = 14,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14833,
@@ -262,9 +245,7 @@ local CONST = {
 					y2 = 3408,
 					start = { x = 3192, y = 3406 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 14834,
@@ -276,9 +257,7 @@ local CONST = {
 					y2 = 3405,
 					start = { x = 3195, y = 3398 },
 					leave = 16,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 14835,
@@ -290,9 +269,7 @@ local CONST = {
 					y2 = 3406,
 					start = { x = 3218, y = 3399 },
 					leave = 14,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 14836,
@@ -304,9 +281,7 @@ local CONST = {
 					y2 = 3409,
 					start = { x = 3236, y = 3403 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14841,
@@ -318,9 +293,7 @@ local CONST = {
 					y2 = 3418,
 					start = { x = 3238, y = 3410 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 			},
 		} :: Course,
@@ -339,9 +312,7 @@ local CONST = {
 					y2 = 3520,
 					start = { x = 2704, y = 3463 },
 					leave = 12,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 					next = 3,
 				},
 				{
@@ -354,9 +325,7 @@ local CONST = {
 					y2 = 3500,
 					start = { x = 2728, y = 3490 },
 					leave = 8,
-					enter = 8,
 					xp = 0,
-					settle = 0,
 					next = 1,
 				},
 				{
@@ -369,9 +338,7 @@ local CONST = {
 					y2 = 3499,
 					start = { x = 2729, y = 3491 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14932,
@@ -383,9 +350,7 @@ local CONST = {
 					y2 = 3500,
 					start = { x = 2713, y = 3494 },
 					leave = 10,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14929,
@@ -397,9 +362,7 @@ local CONST = {
 					y2 = 3483,
 					start = { x = 2710, y = 3480 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14930,
@@ -411,9 +374,7 @@ local CONST = {
 					y2 = 3479,
 					start = { x = 2711, y = 3472 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14931,
@@ -425,9 +386,7 @@ local CONST = {
 					y2 = 3468,
 					start = { x = 2702, y = 3465 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 			},
 		} :: Course,
@@ -445,9 +404,7 @@ local CONST = {
 					y2 = 3392,
 					start = { x = 2668, y = 3297 },
 					leave = 10,
-					enter = 10,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 15609,
@@ -459,9 +416,7 @@ local CONST = {
 					y2 = 3315,
 					start = { x = 2671, y = 3299 },
 					leave = 12,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 26635,
@@ -473,9 +428,7 @@ local CONST = {
 					y2 = 3325,
 					start = { x = 2665, y = 3318 },
 					leave = 8,
-					enter = 8,
 					xp = 6,
-					settle = 2,
 				},
 				{
 					id = 15610,
@@ -487,9 +440,7 @@ local CONST = {
 					y2 = 3324,
 					start = { x = 2656, y = 3318 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 15611,
@@ -501,9 +452,7 @@ local CONST = {
 					y2 = 3316,
 					start = { x = 2653, y = 3314 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 28912,
@@ -515,9 +464,7 @@ local CONST = {
 					y2 = 3310,
 					start = { x = 2651, y = 3309 },
 					leave = 12,
-					enter = 8,
 					xp = 4,
-					settle = 1,
 				},
 				{
 					id = 15612,
@@ -529,9 +476,7 @@ local CONST = {
 					y2 = 3298,
 					start = { x = 2656, y = 3297 },
 					leave = 8,
-					enter = 26,
 					xp = 8,
-					settle = 0,
 				},
 			},
 		} :: Course,
@@ -549,9 +494,7 @@ local CONST = {
 					y2 = 3443,
 					start = { x = 2484, y = 3437 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 23134,
@@ -563,9 +506,7 @@ local CONST = {
 					y2 = 3430,
 					start = { x = 2474, y = 3429 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 23559,
@@ -577,9 +518,7 @@ local CONST = {
 					y2 = 3426,
 					start = { x = 2473, y = 3423 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 23557,
@@ -591,9 +530,7 @@ local CONST = {
 					y2 = 3423,
 					start = { x = 2473, y = 3420 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 23560,
@@ -605,9 +542,7 @@ local CONST = {
 					y2 = 3423,
 					start = { x = 2483, y = 3420 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 23135,
@@ -619,9 +554,7 @@ local CONST = {
 					y2 = 3426,
 					start = { x = 2487, y = 3420 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 1,
 				},
 				{
 					id = 23138,
@@ -633,9 +566,7 @@ local CONST = {
 					y2 = 3432,
 					start = { x = 2485, y = 3428 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 			},
 		} :: Course,
@@ -653,9 +584,7 @@ local CONST = {
 					y2 = 3711,
 					start = { x = 1554, y = 3640 },
 					leave = 8,
-					enter = 14,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 42211,
@@ -667,9 +596,7 @@ local CONST = {
 					y2 = 3636,
 					start = { x = 1554, y = 3632 },
 					leave = 8,
-					enter = 14,
 					xp = 8,
-					settle = 0,
 				},
 				{
 					id = 42212,
@@ -681,9 +608,7 @@ local CONST = {
 					y2 = 3637,
 					start = { x = 1541, y = 3633 },
 					leave = 8,
-					enter = 14,
 					xp = 8,
-					settle = 0,
 				},
 				{
 					id = 42213,
@@ -695,9 +620,7 @@ local CONST = {
 					y2 = 3641,
 					start = { x = 1528, y = 3633 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 42214,
@@ -709,9 +632,7 @@ local CONST = {
 					y2 = 3647,
 					start = { x = 1523, y = 3644 },
 					leave = 8,
-					enter = 14,
 					xp = 8,
-					settle = 0,
 				},
 				{
 					id = 42215,
@@ -723,9 +644,7 @@ local CONST = {
 					y2 = 3647,
 					start = { x = 1539, y = 3644 },
 					leave = 8,
-					enter = 14,
 					xp = 8,
-					settle = 0,
 				},
 				{
 					id = 42216,
@@ -737,9 +656,7 @@ local CONST = {
 					y2 = 3648,
 					start = { x = 1552, y = 3644 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 			},
 		} :: Course,
@@ -757,9 +674,7 @@ local CONST = {
 					y2 = 3711,
 					start = { x = 1554, y = 3640 },
 					leave = 8,
-					enter = 14,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 42211,
@@ -771,9 +686,7 @@ local CONST = {
 					y2 = 3636,
 					start = { x = 1554, y = 3632 },
 					leave = 8,
-					enter = 14,
 					xp = 8,
-					settle = 0,
 				},
 				{
 					id = 42212,
@@ -785,9 +698,7 @@ local CONST = {
 					y2 = 3637,
 					start = { x = 1541, y = 3633 },
 					leave = 8,
-					enter = 14,
 					xp = 8,
-					settle = 0,
 				},
 				{
 					id = 42217,
@@ -799,9 +710,7 @@ local CONST = {
 					y2 = 3641,
 					start = { x = 1528, y = 3633 },
 					leave = 16,
-					enter = 10,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 42218,
@@ -813,9 +722,7 @@ local CONST = {
 					y2 = 3639,
 					start = { x = 1511, y = 3637 },
 					leave = 12,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 42219,
@@ -827,9 +734,7 @@ local CONST = {
 					y2 = 3631,
 					start = { x = 1510, y = 3630 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 42220,
@@ -841,9 +746,7 @@ local CONST = {
 					y2 = 3621,
 					start = { x = 1510, y = 3620 },
 					leave = 16,
-					enter = 10,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 42221,
@@ -855,9 +758,7 @@ local CONST = {
 					y2 = 3621,
 					start = { x = 1521, y = 3619 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 			},
 		} :: Course,
@@ -875,9 +776,7 @@ local CONST = {
 					y2 = 3309,
 					start = { x = 3103, y = 3261 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 11405,
@@ -889,9 +788,7 @@ local CONST = {
 					y2 = 3283,
 					start = { x = 3102, y = 3279 },
 					leave = 12,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 11406,
@@ -903,9 +800,7 @@ local CONST = {
 					y2 = 3281,
 					start = { x = 3090, y = 3276 },
 					leave = 14,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 11430,
@@ -917,9 +812,7 @@ local CONST = {
 					y2 = 3270,
 					start = { x = 3092, y = 3266 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 11630,
@@ -931,9 +824,7 @@ local CONST = {
 					y2 = 3263,
 					start = { x = 3088, y = 3261 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 11631,
@@ -945,9 +836,7 @@ local CONST = {
 					y2 = 3256,
 					start = { x = 3088, y = 3255 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 11632,
@@ -959,9 +848,7 @@ local CONST = {
 					y2 = 3263,
 					start = { x = 3096, y = 3256 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 			},
 		} :: Course,
@@ -979,9 +866,7 @@ local CONST = {
 					y2 = 3227,
 					start = { x = 3299, y = 3194 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14398,
@@ -993,9 +878,7 @@ local CONST = {
 					y2 = 3194,
 					start = { x = 3273, y = 3192 },
 					leave = 14,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 14402,
@@ -1007,9 +890,7 @@ local CONST = {
 					y2 = 3175,
 					start = { x = 3272, y = 3172 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14403,
@@ -1021,9 +902,7 @@ local CONST = {
 					y2 = 3178,
 					start = { x = 3284, y = 3166 },
 					leave = 18,
-					enter = 8,
 					xp = 4,
-					settle = 6,
 				},
 				{
 					id = 14404,
@@ -1035,9 +914,7 @@ local CONST = {
 					y2 = 3166,
 					start = { x = 3315, y = 3163 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 11634,
@@ -1049,9 +926,7 @@ local CONST = {
 					y2 = 3181,
 					start = { x = 3317, y = 3174 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14409,
@@ -1063,9 +938,7 @@ local CONST = {
 					y2 = 3188,
 					start = { x = 3316, y = 3180 },
 					leave = 12,
-					enter = 12,
 					xp = 8,
-					settle = 2,
 				},
 				{
 					id = 14399,
@@ -1077,9 +950,7 @@ local CONST = {
 					y2 = 3196,
 					start = { x = 3302, y = 3187 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 			},
 		} :: Course,
@@ -1097,9 +968,7 @@ local CONST = {
 					y2 = 3560,
 					start = { x = 2543, y = 3553 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 					next = 3,
 				},
 				{
@@ -1112,9 +981,7 @@ local CONST = {
 					y2 = 9958,
 					start = { x = 2549, y = 9951 },
 					leave = 8,
-					enter = 8,
 					xp = 0,
-					settle = 2,
 					next = 1,
 				},
 				{
@@ -1127,9 +994,7 @@ local CONST = {
 					y2 = 3550,
 					start = { x = 2551, y = 3549 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 20211,
@@ -1141,9 +1006,7 @@ local CONST = {
 					y2 = 3550,
 					start = { x = 2541, y = 3546 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 23547,
@@ -1155,9 +1018,7 @@ local CONST = {
 					y2 = 3549,
 					start = { x = 2537, y = 3546 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 42487,
@@ -1169,9 +1030,7 @@ local CONST = {
 					y2 = 3549,
 					start = { x = 2532, y = 3546 },
 					leave = 8,
-					enter = 8,
 					xp = 0,
-					settle = 2,
 				},
 				{
 					id = 1948,
@@ -1183,9 +1042,7 @@ local CONST = {
 					y2 = 3557,
 					start = { x = 2532, y = 3546 },
 					leave = 8,
-					enter = 8,
 					xp = 8,
-					settle = 2,
 				},
 				{
 					id = 1948,
@@ -1197,9 +1054,7 @@ local CONST = {
 					y2 = 3555,
 					start = { x = 2537, y = 3553 },
 					leave = 8,
-					enter = 8,
 					xp = 8,
-					settle = 2,
 				},
 				{
 					id = 1948,
@@ -1211,9 +1066,7 @@ local CONST = {
 					y2 = 3555,
 					start = { x = 2540, y = 3553 },
 					leave = 8,
-					enter = 8,
 					xp = 8,
-					settle = 2,
 				},
 			},
 		} :: Course,
@@ -1231,9 +1084,7 @@ local CONST = {
 					y2 = 2805,
 					start = { x = 2770, y = 2747 },
 					leave = 16,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 15414,
@@ -1245,9 +1096,7 @@ local CONST = {
 					y2 = 2744,
 					start = { x = 2753, y = 2742 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 15417,
@@ -1259,9 +1108,7 @@ local CONST = {
 					y2 = 2743,
 					start = { x = 2753, y = 2742 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 1747,
@@ -1273,9 +1120,7 @@ local CONST = {
 					y2 = 2743,
 					start = { x = 2747, y = 2741 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 15487,
@@ -1287,9 +1132,7 @@ local CONST = {
 					y2 = 2743,
 					start = { x = 2742, y = 2741 },
 					leave = 12,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 16062,
@@ -1301,9 +1144,7 @@ local CONST = {
 					y2 = 2738,
 					start = { x = 2756, y = 2731 },
 					leave = 12,
-					enter = 16,
 					xp = 4,
-					settle = 0,
 				},
 			},
 		} :: Course,
@@ -1321,9 +1162,7 @@ local CONST = {
 					y2 = 3456,
 					start = { x = 3029, y = 3333 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14899,
@@ -1335,9 +1174,7 @@ local CONST = {
 					y2 = 3350,
 					start = { x = 3036, y = 3342 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 14901,
@@ -1349,9 +1186,7 @@ local CONST = {
 					y2 = 3351,
 					start = { x = 3047, y = 3344 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14903,
@@ -1363,9 +1198,7 @@ local CONST = {
 					y2 = 3360,
 					start = { x = 3050, y = 3357 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14904,
@@ -1377,9 +1210,7 @@ local CONST = {
 					y2 = 3369,
 					start = { x = 3048, y = 3361 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14905,
@@ -1391,9 +1222,7 @@ local CONST = {
 					y2 = 3366,
 					start = { x = 3041, y = 3361 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 14911,
@@ -1405,9 +1234,7 @@ local CONST = {
 					y2 = 3357,
 					start = { x = 3028, y = 3354 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 14919,
@@ -1419,9 +1246,7 @@ local CONST = {
 					y2 = 3360,
 					start = { x = 3020, y = 3353 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14920,
@@ -1433,9 +1258,7 @@ local CONST = {
 					y2 = 3350,
 					start = { x = 3017, y = 3349 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14921,
@@ -1447,9 +1270,7 @@ local CONST = {
 					y2 = 3347,
 					start = { x = 3014, y = 3345 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14922,
@@ -1461,9 +1282,7 @@ local CONST = {
 					y2 = 3343,
 					start = { x = 3012, y = 3342 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14924,
@@ -1475,9 +1294,7 @@ local CONST = {
 					y2 = 3334,
 					start = { x = 3013, y = 3333 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14925,
@@ -1489,9 +1306,7 @@ local CONST = {
 					y2 = 3335,
 					start = { x = 3019, y = 3333 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 			},
 		} :: Course,
@@ -1509,9 +1324,7 @@ local CONST = {
 					y2 = 3071,
 					start = { x = 3363, y = 2998 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14936,
@@ -1523,9 +1336,7 @@ local CONST = {
 					y2 = 2970,
 					start = { x = 3351, y = 2964 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0.5,
 				},
 				{
 					id = 14937,
@@ -1537,9 +1348,7 @@ local CONST = {
 					y2 = 2978,
 					start = { x = 3352, y = 2973 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14938,
@@ -1551,9 +1360,7 @@ local CONST = {
 					y2 = 2981,
 					start = { x = 3360, y = 2977 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14939,
@@ -1565,9 +1372,7 @@ local CONST = {
 					y2 = 2978,
 					start = { x = 3366, y = 2976 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0.5,
 				},
 				{
 					id = 14940,
@@ -1579,9 +1384,7 @@ local CONST = {
 					y2 = 2988,
 					start = { x = 3368, y = 2982 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14941,
@@ -1593,9 +1396,7 @@ local CONST = {
 					y2 = 2987,
 					start = { x = 3365, y = 2983 },
 					leave = 12,
-					enter = 10,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14944,
@@ -1607,9 +1408,7 @@ local CONST = {
 					y2 = 2997,
 					start = { x = 3358, y = 2991 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14945,
@@ -1621,9 +1420,7 @@ local CONST = {
 					y2 = 3006,
 					start = { x = 3359, y = 3000 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 			},
 		} :: Course,
@@ -1641,9 +1438,7 @@ local CONST = {
 					y2 = 3712,
 					start = { x = 2652, y = 3676 },
 					leave = 14,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14947,
@@ -1655,9 +1450,7 @@ local CONST = {
 					y2 = 3680,
 					start = { x = 2625, y = 3676 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14987,
@@ -1669,9 +1462,7 @@ local CONST = {
 					y2 = 3671,
 					start = { x = 2622, y = 3668 },
 					leave = 10,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14990,
@@ -1683,9 +1474,7 @@ local CONST = {
 					y2 = 3658,
 					start = { x = 2627, y = 3654 },
 					leave = 8,
-					enter = 14,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14991,
@@ -1697,9 +1486,7 @@ local CONST = {
 					y2 = 3655,
 					start = { x = 2639, y = 3653 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 14992,
@@ -1711,9 +1498,7 @@ local CONST = {
 					y2 = 3664,
 					start = { x = 2644, y = 3657 },
 					leave = 8,
-					enter = 10,
 					xp = 4,
-					settle = 1,
 				},
 				{
 					id = 14994,
@@ -1725,9 +1510,7 @@ local CONST = {
 					y2 = 3688,
 					start = { x = 2655, y = 3670 },
 					leave = 8,
-					enter = 12,
 					xp = 4,
-					settle = 1,
 				},
 			},
 		} :: Course,
@@ -1746,9 +1529,7 @@ local CONST = {
 					y2 = 6140,
 					start = { x = 3240, y = 6109 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 36225,
@@ -1760,9 +1541,7 @@ local CONST = {
 					y2 = 6114,
 					start = { x = 3255, y = 6109 },
 					leave = 12,
-					enter = 24,
 					xp = 4,
-					settle = 2,
 					portals = { { x = 3257, y = 6111 } },
 				},
 				{
@@ -1775,9 +1554,7 @@ local CONST = {
 					y2 = 6109,
 					start = { x = 3272, y = 6105 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 					next = 5,
 				},
 				{
@@ -1790,9 +1567,7 @@ local CONST = {
 					y2 = 6116,
 					start = { x = 3269, y = 6110 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 36228,
@@ -1804,9 +1579,7 @@ local CONST = {
 					y2 = 6117,
 					start = { x = 3269, y = 6112 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 36229,
@@ -1818,9 +1591,7 @@ local CONST = {
 					y2 = 6120,
 					start = { x = 3269, y = 6117 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 3,
 					portals = { { x = 3270, y = 6116 } },
 				},
 				{
@@ -1833,9 +1604,7 @@ local CONST = {
 					y2 = 3400,
 					start = { x = 2269, y = 3389 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 36233,
@@ -1847,9 +1616,7 @@ local CONST = {
 					y2 = 3397,
 					start = { x = 2269, y = 3393 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 36234,
@@ -1861,9 +1628,7 @@ local CONST = {
 					y2 = 3391,
 					start = { x = 2257, y = 3390 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 					next = 11,
 					portals = { { x = 2258, y = 3386 } },
 				},
@@ -1877,9 +1642,7 @@ local CONST = {
 					y2 = 3396,
 					start = { x = 2250, y = 3392 },
 					leave = 8,
-					enter = 8,
 					xp = 0,
-					settle = 0,
 				},
 				{
 					id = 36235,
@@ -1891,9 +1654,7 @@ local CONST = {
 					y2 = 3399,
 					start = { x = 2246, y = 3398 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 					portals = { { x = 2244, y = 3395 } },
 				},
 				{
@@ -1906,9 +1667,7 @@ local CONST = {
 					y2 = 3410,
 					start = { x = 2246, y = 3406 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 36237,
@@ -1920,9 +1679,7 @@ local CONST = {
 					y2 = 3420,
 					start = { x = 2250, y = 3416 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 					portals = { { x = 2249, y = 3419 } },
 				},
 				{
@@ -1935,9 +1692,7 @@ local CONST = {
 					y2 = 3442,
 					start = { x = 2260, y = 3426 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 1,
 				},
 			},
 		} :: Course,
@@ -1956,9 +1711,7 @@ local CONST = {
 					y2 = 3007,
 					start = { x = 1645, y = 2933 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 55180,
@@ -1970,9 +1723,7 @@ local CONST = {
 					y2 = 2934,
 					start = { x = 1653, y = 2931 },
 					leave = 8,
-					enter = 32,
 					xp = 8,
-					settle = 0,
 				},
 				{
 					id = 55184,
@@ -1984,9 +1735,7 @@ local CONST = {
 					y2 = 2913,
 					start = { x = 1649, y = 2910 },
 					leave = 8,
-					enter = 20,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 55186,
@@ -1998,9 +1747,7 @@ local CONST = {
 					y2 = 2913,
 					start = { x = 1635, y = 2910 },
 					leave = 8,
-					enter = 32,
 					xp = 8,
-					settle = 0,
 				},
 				{
 					id = 55190,
@@ -2012,9 +1759,7 @@ local CONST = {
 					y2 = 2935,
 					start = { x = 1627, y = 2931 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 55179,
@@ -2026,9 +1771,7 @@ local CONST = {
 					y2 = 2935,
 					start = { x = 1625, y = 2932 },
 					leave = 12,
-					enter = 20,
 					xp = 4,
-					settle = 0.5,
 				},
 			},
 		} :: Course,
@@ -2047,9 +1790,7 @@ local CONST = {
 					y2 = 3007,
 					start = { x = 1645, y = 2933 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 55180,
@@ -2061,9 +1802,7 @@ local CONST = {
 					y2 = 2934,
 					start = { x = 1653, y = 2931 },
 					leave = 8,
-					enter = 32,
 					xp = 8,
-					settle = 0,
 				},
 				{
 					id = 55191,
@@ -2075,9 +1814,7 @@ local CONST = {
 					y2 = 2913,
 					start = { x = 1649, y = 2910 },
 					leave = 8,
-					enter = 8,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 55192,
@@ -2089,9 +1826,7 @@ local CONST = {
 					y2 = 2910,
 					start = { x = 1648, y = 2908 },
 					leave = 10,
-					enter = 16,
 					xp = 4,
-					settle = 0,
 				},
 				{
 					id = 55194,
@@ -2103,9 +1838,7 @@ local CONST = {
 					y2 = 2910,
 					start = { x = 1635, y = 2907 },
 					leave = 8,
-					enter = 32,
 					xp = 4,
-					settle = 2,
 				},
 				{
 					id = 55179,
@@ -2117,9 +1850,7 @@ local CONST = {
 					y2 = 2935,
 					start = { x = 1624, y = 2931 },
 					leave = 12,
-					enter = 20,
 					xp = 4,
-					settle = 0.5,
 				},
 			},
 		} :: Course,
@@ -2142,7 +1873,6 @@ local CONFIG = {
 	max_laps = 0,
 	prehover = 0.8,
 	seers_teleport = false,
-	food = { "shark", "monkfish", "lobster", "swordfish", "tuna", "trout", "salmon", "cake", "bread" },
 	eat_at_hitpoints = { 12, 20 },
 	timeouts = { idle_minutes = 5, max_failures = 4 },
 	antiban = true,
@@ -2163,7 +1893,9 @@ type RunState = {
 	overlay_drawn: boolean,
 	marks_start: number,
 	eat_at: number,
+	ate_tick: number,
 	skip: { [string]: boolean },
+	camera_ready: number,
 }
 
 local S: RunState = {
@@ -2179,7 +1911,9 @@ local S: RunState = {
 	overlay_drawn = false,
 	marks_start = 0,
 	eat_at = 0,
+	ate_tick = -math.huge,
 	skip = {},
+	camera_ready = 0,
 }
 
 type Snapshot = {
@@ -2192,9 +1926,11 @@ type Snapshot = {
 
 local snap: Snapshot = nil :: any
 
-type State = "LOADING" | "LOGIN" | "LOST" | "EAT" | "TELEPORT" | "MARK" | "PORTAL" | "ADVANCE"
+type State = "LOADING" | "LOGIN" | "LOST" | "EAT" | "NO_FOOD" | "TELEPORT" | "MARK" | "PORTAL" | "ADVANCE"
 
-type Plan = { mark: Host.GroundItem?, portal: Loc?, food: number? }
+type Food = { slot: number, option: string }
+
+type Plan = { mark: Host.GroundItem?, portal: Loc?, food: Food? }
 
 local plan: Plan = {}
 
@@ -2300,6 +2036,10 @@ function Read.refresh_snapshot(state: ClientState): boolean
 		return false
 	end
 	local pos, plane = { x = p.x, y = p.y }, p.plane or 0
+	local server = Host.movement()
+	if server and server.plane ~= nil then
+		pos, plane = { x = server.x, y = server.y }, server.plane or 0
+	end
 	snap = {
 		state = state,
 		tick = Read.current_tick(state),
@@ -2347,13 +2087,21 @@ function Read.step_here(course: Course): number
 	return Read.step_of(course, { x = p.x, y = p.y }, p.plane or 0)
 end
 
-function Read.visible(step: Step): boolean
-	local p = game_state().position
-	if p == nil then
-		return false
+function Read.walk_through(entry: Host.MenuEntry): boolean
+	return CONST.WALK_THROUGH[entry.option] == true
+end
+
+function Read.on_screen(loc: Loc): boolean
+	local box = Objects.clickbox(loc)
+	return box ~= nil and Clickbox.target(box, loc.name or tostring(loc.id)) ~= nil
+end
+
+function Read.server_step(course: Course): number?
+	local m = Host.movement()
+	if m == nil or m.plane == nil then
+		return nil
 	end
-	local loc = Read.obstacle(step, { x = p.x, y = p.y })
-	return loc ~= nil and Objects.clickbox(loc) ~= nil
+	return Read.step_of(course, { x = m.x, y = m.y }, m.plane)
 end
 
 function Read.mark(step: Step, pos: Tile): Host.GroundItem?
@@ -2430,14 +2178,14 @@ function Read.portal(step: Step, pos: Tile): Loc?
 	return best
 end
 
-function Read.food(): number?
-	local names: { [string]: boolean } = {}
-	for _, name in ipairs(CONFIG.food) do
-		names[string.lower(name)] = true
-	end
+function Read.food(): Food?
+	local levels = Consumables.levels()
 	for _, item in ipairs(Inventory.items() or {}) do
-		if names[string.lower(item.name or "")] then
-			return item.slot
+		local family = Consumables.get(item.id)
+		local result = family and Consumables.result(item.id, levels)
+		local hitpoints = result and result.Hitpoints
+		if family and hitpoints and hitpoints.low > hitpoints.from then
+			return { slot = item.slot, option = family.option }
 		end
 	end
 	return nil
@@ -2475,8 +2223,6 @@ function Game.setup_antiban()
 	AntibanTasks.apply_zoom_range()
 	AntibanTasks.apply_pitch_range()
 	Antiban.add_task(AntibanTasks.handle_randoms, 30 * SECOND, 0.33)
-	Antiban.add_task(AntibanTasks.adjust_camera, 3 * MINUTE, 0.33)
-	Antiban.add_task(AntibanTasks.random_camera_task, 7 * MINUTE, 0.33)
 	Antiban.add_task(AntibanTasks.random_mouse_task, 8 * MINUTE, 0.33)
 	Antiban.add_task(AntibanTasks.random_chat_task, 9 * MINUTE, 0.33)
 	Antiban.add_task(AntibanTasks.lose_focus, 10 * MINUTE, 0.33)
@@ -2485,6 +2231,7 @@ function Game.setup_antiban()
 	Antiban.add_task(AntibanTasks.adjust_minimap_zoom, 13 * MINUTE, 0.33)
 
 	Antiban.add_walk_task(AntibanTasks.adjust_camera, 2 * MINUTE, 0.33)
+	Antiban.add_walk_task(AntibanTasks.random_camera_task, 7 * MINUTE, 0.33)
 	Antiban.add_walk_task(AntibanTasks.random_chat_tab, 3 * MINUTE, 0.33)
 	Antiban.add_walk_task(AntibanTasks.small_camera_rotation, 4 * MINUTE, 0.33)
 	Antiban.add_walk_task(AntibanTasks.random_right_click, 5 * MINUTE, 0.33)
@@ -2632,7 +2379,7 @@ function Game.progress(): boolean
 	local first = course.steps[1]
 	Log.log(NAME, `Agility unlocks {course.name}, walking there`)
 	Overlay.clear()
-	local arrived = Walker.walk(first.start, { near = 2, plane = first.plane })
+	local arrived = Walker.walk(first.start, { near = 2, plane = first.plane, accept = Read.walk_through })
 	local state = game_state()
 	if arrived and Read.refresh_snapshot(state) and Read.step_of(course, snap.pos, snap.plane) > 0 then
 		Game.set_course(course)
@@ -2644,7 +2391,7 @@ function Game.progress(): boolean
 	S.unreachable[key] = true
 	Log.log(NAME, `Couldn't get to {course.name}, staying on {previous.name}`)
 	local back = previous.steps[1]
-	Walker.walk(back.start, { near = 2, plane = back.plane })
+	Walker.walk(back.start, { near = 2, plane = back.plane, accept = Read.walk_through })
 	return false
 end
 
@@ -2773,11 +2520,10 @@ function Loop.get_state(): State
 	end
 
 	local hitpoints = Read.hitpoints(s)
-	if hitpoints and hitpoints <= S.eat_at and not skipped["EAT"] then
+	local digesting = snap.tick < S.ate_tick + CONST.FOOD_DELAY_TICKS
+	if hitpoints and hitpoints <= S.eat_at and not digesting and not skipped["EAT"] then
 		plan.food = Read.food()
-		if plan.food then
-			return "EAT"
-		end
+		return if plan.food then "EAT" else "NO_FOOD"
 	end
 
 	local step = course.steps[snap.step]
@@ -2812,15 +2558,22 @@ function Handler.fail(why: string)
 	Log.log(NAME, `Failed: {why} ({S.failures_in_row} in a row)`)
 end
 
-function Handler.wait_until(done: () -> boolean, timeout_ms: number): boolean
+function Handler.fidget()
+	if CONFIG.antiban and S.antiban_ready then
+		Antiban.do_async_tasks("game")
+		Antiban.do_walking_antiban()
+	end
+end
+
+function Handler.wait_until(done: () -> boolean, timeout_ms: number, quiet: boolean?): boolean
 	local deadline = time() + timeout_ms
 	while time() < deadline do
 		if done() then
 			return true
 		end
 		Overlay.update()
-		if CONFIG.antiban and S.antiban_ready then
-			Antiban.do_walking_antiban()
+		if not quiet then
+			Handler.fidget()
 		end
 		sleep(Random.int(80, 130))
 	end
@@ -2836,14 +2589,21 @@ end
 function Handler.eat()
 	local hitpoints = Player.hitpoints() or 0
 	Log.log(NAME, `Hitpoints at {hitpoints}, eating`)
-	if not Inventory.interact_slot(plan.food :: number, "Eat") then
+	local food = plan.food :: Food
+	if not Inventory.interact_slot(food.slot, food.option) then
 		S.skip["EAT"] = true
 		return
 	end
+	S.ate_tick = Read.current_tick(game_state())
 	Handler.wait_until(function()
 		return (Player.hitpoints() or 0) > hitpoints
 	end, 2000)
 	S.eat_at = Random.int(CONFIG.eat_at_hitpoints[1], CONFIG.eat_at_hitpoints[2])
+end
+
+function Handler.no_food()
+	Log.log(NAME, `Hitpoints at {Player.hitpoints() or 0} and no food left, stopping the script`)
+	S.finished = true
 end
 
 function Handler.teleport()
@@ -2945,44 +2705,120 @@ function Handler.prehover(course: Course, nxt: number)
 	Log.log(NAME, `Pre-hover step {nxt}: {if aimed then "moving" else "no spot to aim at"}`)
 end
 
+function Read.shows_ahead(loc: Loc, from: Tile): boolean
+	local base = Projection.base()
+	local facing = Camera.yaw_degrees()
+	if base == nil or facing == nil then
+		return false
+	end
+	local tile = Projection.TILE
+	local x = loc.scene_x * tile + loc.size_x * tile / 2 - ((from.x - base.x) * tile + tile / 2)
+	local y = loc.scene_y * tile + loc.size_y * tile / 2 - ((from.y - base.y) * tile + tile / 2)
+	local reach = math.sqrt(x * x + y * y)
+	local ahead_x = (from.x - base.x) * tile + tile / 2 + reach * math.sin(math.rad(facing))
+	local ahead_y = (from.y - base.y) * tile + tile / 2 + reach * math.cos(math.rad(facing))
+	local cuboid = Projection.cuboid(ahead_x, ahead_y, math.max(loc.size_x, loc.size_y), nil, from)
+	return cuboid ~= nil and Clickbox.target(Clickbox.from_cuboid(cuboid), loc.name or tostring(loc.id)) ~= nil
+end
+
+function Handler.precamera(course: Course, nxt: number): boolean
+	local nxt_step = course.steps[nxt]
+	local loc = Read.obstacle_on_plane(nxt_step)
+	if loc == nil then
+		return false
+	end
+	local landing: any = { x = nxt_step.start.x, y = nxt_step.start.y, plane = nxt_step.plane }
+	local middle = { x = loc.x + (loc.size_x - 1) / 2, y = loc.y + (loc.size_y - 1) / 2 }
+	local what = loc.name or tostring(loc.id)
+	local function shows(): boolean
+		local box = Objects.projected(loc, landing)
+		return box ~= nil and Clickbox.target(box, what) ~= nil
+	end
+	if shows() then
+		Camera.face(middle, false, landing)
+		if shows() then
+			return true
+		end
+	end
+	if not Read.shows_ahead(loc, landing) then
+		return false
+	end
+	Log.log(NAME, `Step {nxt}'s obstacle won't show from the landing, turning the camera to it`)
+	Camera.look_at(middle, landing)
+	return shows()
+end
+
 function Handler.finish_obstacle(course: Course, index: number, step: Step, nxt: number, distance: number): string
-	local tick = CONST.TICK_MS
 	local xp_before = Read.agility_xp()
-
-	Handler.prehover(course, nxt)
-
 	local walk_ms = math.max(0, distance - 2) * CONST.WALK_MS_PER_TILE
+	local clicked_tick = Read.current_tick(game_state())
+	local ignored, moved = false, false
 	local started = Handler.wait_until(function()
-		return Read.busy() or Read.step_here(course) == nxt
-	end, walk_ms + step.leave * tick)
-	if not started then
+		if Read.busy() or Read.step_here(course) == nxt or Read.server_step(course) == nxt then
+			return true
+		end
+		local m = Host.movement()
+		moved = moved or (m ~= nil and m.moving) or Player.destination() ~= nil
+		ignored = not moved and Read.current_tick(game_state()) - clicked_tick >= CONST.START_TICKS
+		return ignored
+	end, walk_ms + step.leave * CONST.TICK_MS)
+	if not started or ignored then
 		return "failed"
 	end
 
-	if step.xp > 0 then
-		Handler.wait_until(function()
-			return Read.agility_xp() > xp_before
-		end, (step.leave + step.xp) * tick)
-	end
+	Handler.fidget()
+	Mouse.wait()
+	S.camera_ready = if Handler.precamera(course, nxt) then nxt else 0
+	Handler.prehover(course, nxt)
+	return Handler.await_landing(course, index, step, nxt, xp_before)
+end
 
-	local function settled(): boolean
-		if Read.busy() then
+function Handler.await_landing(course: Course, index: number, step: Step, nxt: number, xp_before: number): string
+	local hp_before = Read.hitpoints(game_state())
+	local function hurt(): boolean
+		local hp = Read.hitpoints(game_state())
+		return hp_before ~= nil and hp ~= nil and hp < hp_before
+	end
+	local still_since: number? = nil
+	local function landed(): boolean
+		if hurt() then
+			return true
+		end
+		local at = Read.server_step(course)
+		if at == nxt and (step.xp == 0 or Read.agility_xp() > xp_before) then
+			return true
+		end
+		local s = game_state()
+		local m = Host.movement()
+		if at == nil or Read.scene_loading(s) or Read.busy() or (m ~= nil and m.moving) then
+			still_since = nil
 			return false
 		end
-		local now = Read.step_here(course)
-		if now == nxt then
-			return Read.visible(course.steps[nxt])
-		end
-		return now ~= index and now ~= 0
+		local tick = Read.current_tick(s)
+		still_since = still_since or tick
+		return tick - (still_since :: number) >= CONST.FALL_TICKS
 	end
-	Handler.wait_until(settled, (step.leave + step.enter) * tick)
-	Biometrics.sleep(0, CONST.LANDING_TICKS * tick)
-
-	local now = Read.step_here(course)
-	if now == nxt then
+	Handler.wait_until(landed, CONST.OBSTACLE_MS, true)
+	if hurt() then
+		return "fell"
+	end
+	local at = Read.server_step(course) or Read.step_here(course)
+	if at == nxt then
+		Biometrics.sleep(CONST.REACT_MS[1], CONST.REACT_MS[2])
 		return "ok"
 	end
-	return if now ~= index then "fell" else "failed"
+	return if at ~= index and at ~= 0 then "fell" else "failed"
+end
+
+function Handler.walk_closer(loc: Loc, step: Step)
+	Log.log(NAME, `Obstacle {step.id} can't be brought on screen, walking closer`)
+	Walker.walk({ x = loc.x, y = loc.y }, {
+		near = CONST.WALK_UP.CLOSE,
+		straight = step.plane ~= 0,
+		plane = step.plane,
+		timeout_ms = CONST.WALK_UP.MS,
+		accept = Read.walk_through,
+	})
 end
 
 function Handler.advance()
@@ -2996,12 +2832,17 @@ function Handler.advance()
 		return Handler.fail(`obstacle {step.id} not found at step {index}`)
 	end
 
-	if Objects.distance(loc, snap.pos) > CONST.WALK_UP.NEAR then
+	local distance = Objects.distance(loc, snap.pos)
+	if distance > CONST.WALK_UP.DIRECT and #step.options > 0 then
+		return Handler.approach(course, index, step, nxt, loc, distance)
+	end
+	if distance > CONST.WALK_UP.DIRECT then
 		Walker.walk({ x = loc.x, y = loc.y }, {
-			near = CONST.WALK_UP.NEAR - 3,
+			near = CONST.WALK_UP.CLOSE,
 			straight = step.plane ~= 0,
 			plane = step.plane,
 			timeout_ms = CONST.WALK_UP.MS,
+			accept = Read.walk_through,
 		})
 		snap.pos = Walker.position() or snap.pos
 	end
@@ -3018,34 +2859,62 @@ function Handler.advance()
 			end
 		end
 		if #step.options > 0 then
-			clicked = Objects.interact(loc, step.options, false)
+			local face = not (S.camera_ready == index and Read.on_screen(loc))
+			clicked = Objects.interact(loc, step.options, false, face)
 		end
 		if clicked or attempt == CONST.CLICK_TRIES then
 			break
 		end
-		sleep(Random.int(300, 700))
+		local here = Walker.position() or snap.pos
+		if not Read.on_screen(loc) and Objects.distance(loc, here) > CONST.WALK_UP.CLOSE then
+			Handler.walk_closer(loc, step)
+		else
+			sleep(Random.int(300, 700))
+		end
 	end
+	S.camera_ready = 0
 	if not clicked then
 		return Handler.fail(`couldn't click obstacle {step.id}`)
 	end
 
-	local outcome = Handler.finish_obstacle(course, index, step, nxt, Objects.distance(loc, snap.pos))
+	Handler.after_click(course, index, step, nxt, Objects.distance(loc, snap.pos))
+end
+
+function Handler.approach(course: Course, index: number, step: Step, nxt: number, loc: Loc, distance: number)
+	S.camera_ready = 0
+	local picked = Objects.approach(loc, step.options, {
+		near = CONST.WALK_UP.CLOSE,
+		walk = { straight = step.plane ~= 0, accept = Read.walk_through },
+		timeout_ms = CONST.WALK_UP.MS,
+		arrive_ms = false,
+		closer = CONST.WALK_UP.CLOSE,
+	})
+	if not picked then
+		return Handler.fail(`couldn't walk to and click obstacle {step.id}`)
+	end
+	Handler.after_click(course, index, step, nxt, distance)
+end
+
+function Handler.after_click(course: Course, index: number, step: Step, nxt: number, distance: number)
+	local outcome = Handler.finish_obstacle(course, index, step, nxt, distance)
 	if outcome == "fell" then
 		stats.falls += 1
 		Log.log(NAME, `Fell from step {index}, now at step {Read.step_here(course)}`)
-		sleep(Random.int(CONST.TICK_MS, 3 * CONST.TICK_MS))
+		Handler.wait_until(function()
+			return not Read.busy()
+		end, CONST.FALL_RECOVER_TICKS * CONST.TICK_MS, true)
+		Biometrics.sleep(CONST.REACT_MS[1], CONST.REACT_MS[2])
 		return
 	elseif outcome == "failed" then
-		return Handler.fail(`step {index} didn't go: no animation, or we never reached step {nxt}`)
+		return Handler.fail(
+			`step {index} didn't go: the click was ignored, there was no animation, or we never reached step {nxt}`
+		)
 	end
 
 	S.failures_in_row = 0
 	if nxt == 1 then
 		stats.laps += 1
 		Log.log(NAME, `Lap {stats.laps} done`)
-	end
-	if step.settle > 0 then
-		sleep(Random.int(0, step.settle * CONST.TICK_MS))
 	end
 	if nxt == 1 and CONFIG.progressive then
 		Game.progress()
@@ -3061,6 +2930,7 @@ Handler.states = {
 	end,
 	LOST = Handler.lost,
 	EAT = Handler.eat,
+	NO_FOOD = Handler.no_food,
 	TELEPORT = Handler.teleport,
 	MARK = Handler.mark,
 	PORTAL = Handler.portal,
