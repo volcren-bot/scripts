@@ -1,0 +1,112 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths: ["scripts/**", "deploy.json", ".github/workflows/deploy.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    outputs:
+      failed: ${{ steps.lint.outputs.failed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac
+
+      - id: lint
+        run: |
+          failed=""
+          for dir in $(jq -r 'keys[]' deploy.json); do
+            if [ -d "scripts/$dir" ] && ! tools/lint.sh "scripts/$dir"; then
+              echo "::error::scripts/$dir failed the format check or lint, it won't be published"
+              failed="$failed $dir"
+            fi
+          done
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: lint
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      SITE_URL: ${{ vars.SITE_URL }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Upload changed scripts
+        env:
+          BEFORE: ${{ github.event.before }}
+          LINT_FAILED: ${{ needs.lint.outputs.failed }}
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+        run: |
+          SITE_URL="$(printf %s "$SITE_URL" | tr -d '[:space:]')"
+          if [ -z "$SITE_URL" ]; then
+            echo "Set the SITE_URL repository variable." >&2
+            exit 1
+          fi
+
+          failed=0
+          for dir in $(jq -r 'keys[]' deploy.json); do
+            if [[ " $LINT_FAILED " == *" $dir "* ]]; then
+              echo "$dir: skipped, it failed the lint job"
+              failed=1
+              continue
+            fi
+            id="$(jq -r --arg d "$dir" '.[$d].id' deploy.json)"
+            entry="$(jq -r --arg d "$dir" '.[$d].entry // empty' deploy.json)"
+            folder="scripts/$dir"
+            [ -d "$folder" ] || { echo "::error::$folder doesn't exist"; failed=1; continue; }
+
+            if [ "$GITHUB_EVENT_NAME" = push ] && ! [[ "$BEFORE" =~ ^0+$ ]] \
+              && git diff --quiet "$BEFORE" HEAD -- "$folder" 2>/dev/null; then
+              echo "$dir: unchanged"
+              continue
+            fi
+
+            secret="DEPLOY_TOKEN_$(printf %s "$dir" | tr 'a-z' 'A-Z' | tr -c 'A-Z0-9\n' '_')"
+            token="$(jq -r --arg k "$secret" '.[$k] // empty' <<<"$ALL_SECRETS" | tr -d '[:space:]')"
+            if [ -z "$token" ]; then
+              echo "::error::Missing the $secret secret for $dir"
+              failed=1
+              continue
+            fi
+
+            if [ -n "$(find "$folder" -mindepth 1 -type d -print -quit)" ]; then
+              echo "::error::$folder has a subfolder; revisions can only hold flat .luau files"
+              failed=1
+              continue
+            fi
+            args=()
+            for file in "$folder"/*.luau; do
+              [ -f "$file" ] && args+=(-F "files=@$file")
+            done
+            if [ ${#args[@]} -eq 0 ]; then
+              echo "::error::$folder has no .luau files"
+              failed=1
+              continue
+            fi
+            [ -n "$entry" ] && args+=(-F "entry=$entry")
+
+            status="$(curl -sS -o response.json -w '%{http_code}' \
+              -H "Authorization: Bearer $token" -H "Origin: $SITE_URL" \
+              "${args[@]}" "$SITE_URL/api/scripts/$id/revisions")"
+            if [ "$status" = 201 ]; then
+              echo "$dir: published revision $(jq -r .revision response.json)"
+            else
+              echo "::error::$dir: upload failed with HTTP $status: $(head -c 500 response.json)"
+              failed=1
+            fi
+          done
+          exit $failed
