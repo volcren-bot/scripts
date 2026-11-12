@@ -2379,9 +2379,13 @@ function Game.progress(): boolean
 	local first = course.steps[1]
 	Log.log(NAME, `Agility unlocks {course.name}, walking there`)
 	Overlay.clear()
-	local arrived = Walker.walk(first.start, { near = 2, plane = first.plane, accept = Read.walk_through })
+	local walked, arrived =
+		pcall(Walker.walk, first.start, { near = 2, plane = first.plane, accept = Read.walk_through })
+	if not walked then
+		Log.log(NAME, `No way to {course.name}: {arrived}`)
+	end
 	local state = game_state()
-	if arrived and Read.refresh_snapshot(state) and Read.step_of(course, snap.pos, snap.plane) > 0 then
+	if walked and arrived and Read.refresh_snapshot(state) and Read.step_of(course, snap.pos, snap.plane) > 0 then
 		Game.set_course(course)
 		snap.step = Read.step_of(course, snap.pos, snap.plane)
 		S.marks_start = Read.marks_in_inventory() - stats.marks
@@ -2391,7 +2395,10 @@ function Game.progress(): boolean
 	S.unreachable[key] = true
 	Log.log(NAME, `Couldn't get to {course.name}, staying on {previous.name}`)
 	local back = previous.steps[1]
-	Walker.walk(back.start, { near = 2, plane = back.plane, accept = Read.walk_through })
+	local went_back, why = pcall(Walker.walk, back.start, { near = 2, plane = back.plane, accept = Read.walk_through })
+	if not went_back then
+		Log.log(NAME, `No way back to {previous.name}: {why}`)
+	end
 	return false
 end
 
@@ -2430,12 +2437,11 @@ function Game.setup()
 	end
 	S.marks_start = Read.marks_in_inventory()
 	S.eat_at = Random.int(CONFIG.eat_at_hitpoints[1], CONFIG.eat_at_hitpoints[2])
-	if CONFIG.progressive then
-		Game.progress()
-	end
-
 	if CONFIG.antiban and not S.antiban_ready then
 		Game.setup_antiban()
+	end
+	if CONFIG.progressive then
+		Game.progress()
 	end
 end
 
@@ -2790,7 +2796,7 @@ function Handler.await_landing(course: Course, index: number, step: Step, nxt: n
 		end
 		local s = game_state()
 		local m = Host.movement()
-		if at == nil or Read.scene_loading(s) or Read.busy() or (m ~= nil and m.moving) then
+		if at == nil or at == 0 or Read.scene_loading(s) or Read.busy() or (m ~= nil and m.moving) then
 			still_since = nil
 			return false
 		end
