@@ -5,6 +5,7 @@ local sleep = Host.sleep
 local time = Host.time
 local varbit = Host.varbit
 type ClientState = Host.ClientState
+
 local Antiban = require("@lib/main/antiban/antiban")
 local AntibanTasks = require("@lib/main/antiban/antiban_tasks")
 local Bankmain = require("@lib/main/interfaces/mainscreen/bankmain")
