@@ -16,13 +16,16 @@ local Chatbox = require("@lib/main/interfaces/chatbox/chatbox")
 local Clickbox = require("@lib/main/clickbox")
 local Consumables = require("@lib/main/consumables")
 local GameState = require("@lib/main/game_state")
+local Geometry = require("@lib/utils/math/geometry")
 local Inventory = require("@lib/main/interfaces/gametabs/inventory")
 local Item = require("@lib/utils/item")
+local Keyboard = require("@lib/utils/input/keyboard")
 local Log = require("@lib/utils/log")
 local Login = require("@lib/main/interfaces/login/login")
 local Make = require("@lib/main/interfaces/chatbox/make")
 local Minimap = require("@lib/main/interfaces/minimap")
 local Minimenu = require("@lib/main/interfaces/minimenu")
+local Mouse = require("@lib/utils/input/mouse")
 local Npcs = require("@lib/main/entities/npcs")
 local Objects = require("@lib/main/entities/objects")
 local Player = require("@lib/main/player")
@@ -33,6 +36,8 @@ local Toplevel = require("@lib/main/interfaces/mainscreen/toplevel")
 local Walker = require("@lib/main/walker")
 local Widgets = require("@lib/main/interfaces/widgets")
 local Wornitems = require("@lib/main/interfaces/gametabs/wornitems")
+
+local Triangle = Geometry.Triangle
 
 local NAME = "Blast Furnace"
 
@@ -178,18 +183,32 @@ local CONST = {
 		permission = "permission",
 		coffer_query = "Deposit how much",
 		bag_count = "the coal bag.- contains (%d+) piece",
-		bag_empty = "the coal bag is now empty",
+		bag_empty = "^the coal bag is.-empty",
 		took_bars = "from the dispenser",
 		pot_full = "make sure all your ore smelts",
 	},
 	BARS_DUE_MS = 9000,
 	BELT_MS = 3600,
 	LOAD_MS = 15000,
-	LOAD_SETTLE_MS = 1200,
+	ARRIVE_SETTLE_MS = 1200,
+	BANK_OPEN_MS = 10000,
+	BANK_CONFIRM_MS = 3000,
+	BANK_PANEL_MS = 1200,
+	FIDGET_MS = 1500,
+	WEAR_MS = 1800,
+	NEAR_TILES = 2,
+	CROWD_TILES = 1,
+	INVENTORY_SLOTS = 28,
 	TAKE_MS = 3000,
 	BELT_FROM_BANK = 0.7,
-	BELT_TURNS = 5,
-	BELT_TURN_DEGREES = { 12, 20 },
+	BANK_OPTIONS = { "Bank", "Use" },
+	BELT_TILE = { x = 1942, y = 4967 },
+	MAKE_SPACE = 0.95,
+	BELT_SHOWN = 0.35,
+	YAW_RANGE = { 55, 90 },
+	ZOOM_RANGE = { 128, 145 },
+	ZOOM_LIMIT = 155,
+	ZOOM_PERCENT = { 0, 3 },
 	BAG_MS = 2400,
 }
 
@@ -230,6 +249,8 @@ type RunState = {
 	bag_coal: number?,
 	trip: Trip?,
 	pot_full: boolean,
+	gold_take: boolean,
+	deposited: { Unwanted },
 	paid_until: number,
 	permission_needed: boolean,
 	coffer_coins: number,
@@ -253,6 +274,8 @@ local S: RunState = {
 	bag_coal = nil,
 	trip = nil,
 	pot_full = false,
+	gold_take = false,
+	deposited = {},
 	paid_until = 0,
 	permission_needed = false,
 	coffer_coins = 0,
@@ -403,7 +426,7 @@ function Read.read_messages()
 		local bag_count = if game then string.match(text, CONST.TEXT.bag_count) else nil
 		if bag_count then
 			S.bag_coal = tonumber(bag_count)
-		elseif game and string.find(text, CONST.TEXT.bag_empty, 1, true) then
+		elseif game and string.find(text, CONST.TEXT.bag_empty) then
 			S.bag_coal = 0
 		elseif string.find(text, CONST.TEXT.pot_full, 1, true) then
 			S.pot_full = true
@@ -431,13 +454,42 @@ function Read.dialog_open(): boolean
 	return not string.find(string.lower(Chatbox.text() or ""), CONST.TEXT.took_bars, 1, true)
 end
 
+function Read.belt_walk(): boolean
+	local me = Read.position() or snap.me
+	local tile = CONST.BELT_TILE
+	return math.max(math.abs(me.x - tile.x), math.abs(me.y - tile.y)) > CONST.NEAR_TILES
+end
+
+function Read.position(): Host.Tile?
+	local p = game_state().position
+	return if p then { x = p.x, y = p.y } else nil
+end
+
+function Read.in_bank(item: Item.Item | { Item.Item }): boolean
+	return (Bankmain.count_ex(item) or 0) > 0
+end
+
+function Read.gold_buffer(): boolean
+	return S.gauntlets and CONFIG.stamina
+end
+
+function Read.wait_tile(dispenser: Host.Loc): Host.Tile
+	local x, y = dispenser.x, dispenser.y
+	local tiles = { { x = x, y = y - 1 }, { x = x - 1, y = y }, { x = x - 1, y = y - 1 } }
+	local liked = tiles[Biometrics.get_biometric(Biometrics.LIKES) % #tiles + 1]
+	local pull = 1 + 2 * Biometrics.get_probability(Biometrics.PATTERN)
+	return Random.weighted(tiles, function(t: Host.Tile): number
+		return if t == liked then pull else 1
+	end) or liked
+end
+
 function Read.bag_counts(): boolean
 	return S.bar.secondary == "Coal" and not S.bar.ore_smelts_alone
 end
 
 function Read.bag_needed(): boolean
 	local bar, trip = S.bar, S.trip
-	if trip == nil then
+	if trip == nil or (S.bag_coal or 0) < S.bag_size then
 		return true
 	end
 	local coal_after = trip.pot_coal + trip.coal - bar.ratio * (trip.pot_ore + trip.ore)
@@ -494,7 +546,7 @@ end
 function Game.setup_antiban()
 	Biometrics.setup_player()
 	local MINUTE, SECOND = Antiban.MINUTE, Antiban.SECOND
-	Antiban.set_zoom_range(0, 30)
+	Antiban.set_zoom_range(CONST.ZOOM_PERCENT[1], CONST.ZOOM_PERCENT[2])
 	Antiban.set_pitch_range(80, 100)
 
 	AntibanTasks.skills = { "Smithing" }
@@ -529,9 +581,12 @@ function Game.setup_antiban()
 	Log.log(NAME, "Antiban set up")
 end
 
-function Game.tiny_antiban()
-	if CONFIG.antiban and S.antiban_ready then
-		Antiban.do_async_tasks("game")
+function Game.walk_tasks()
+	Loop.keep_camera()
+	if CONFIG.antiban and S.antiban_ready and Antiban.do_async_tasks("game") then
+		Handler.wait(function()
+			return not Mouse.busy()
+		end, CONST.FIDGET_MS)
 	end
 end
 
@@ -579,6 +634,7 @@ function Game.setup()
 		)
 	end
 	Minimap.set_run(true)
+	Camera.face_enabled = false
 
 	if CONFIG.antiban and not S.antiban_ready then
 		Game.setup_antiban()
@@ -619,6 +675,19 @@ function Loop.check_timeouts()
 	end
 end
 
+function Loop.keep_camera()
+	local zoom = Camera.zoom()
+	if zoom and zoom > CONST.ZOOM_LIMIT then
+		Camera.set_zoom(Random.int(CONST.ZOOM_RANGE[1], CONST.ZOOM_RANGE[2]))
+	end
+	local yaw = Camera.yaw_degrees()
+	local range = CONST.YAW_RANGE
+	if yaw == nil or (yaw >= range[1] and yaw <= range[2]) then
+		return
+	end
+	Camera.set_yaw_degrees(Random.int(range[1], range[2]), "keys")
+end
+
 function Loop.antiban_began()
 	S.antiban_began_at = time()
 end
@@ -655,7 +724,7 @@ function Loop.get_state(): State
 	if Make.is_open() then
 		return "TAKE"
 	end
-	if Read.dialog_open() then
+	if Read.dialog_open() and not skipped["CHAT"] then
 		return "CHAT"
 	end
 	if snap.coins > 0 then
@@ -671,13 +740,16 @@ function Loop.get_state(): State
 		return "BANK"
 	end
 	if snap.bars > 0 then
-		return if f.dispensed > 0 and snap.free_slots > 0 then "COLLECT" else "BANK"
+		return if not Read.gold_buffer() and f.dispensed > 0 and snap.free_slots > 0 then "COLLECT" else "BANK"
 	end
 	if snap.ore > 0 or snap.secondary > 0 then
 		return if S.pot_full and snap.ore == 0 then "BANK" else "LOAD"
 	end
 	if (S.bag_coal or 0) > 0 and snap.free_slots > 0 and Read.bag_needed() then
 		return "EMPTY_BAG"
+	end
+	if Read.gold_buffer() then
+		return if S.gold_take and f.dispensed > 0 then "COLLECT" else "BANK"
 	end
 	if f.dispensed > 0 then
 		return "COLLECT"
@@ -699,9 +771,50 @@ function Handler.deposit_unwanted(): boolean
 	return Bankmain.deposit_different(Read.keep())
 end
 
+type Unwanted = { id: number, name: string? }
+
+function Read.bank_inventory_shown(): boolean
+	local first = (Inventory.items() or {})[1]
+	return first == nil or Bankmain.inventory.box(first.slot) ~= nil
+end
+
+function Read.unwanted(): { Unwanted }
+	local keep = Item.matcher(Read.keep())
+	local seen: { [number]: boolean } = {}
+	local out: { Unwanted } = {}
+	for _, s in ipairs(Inventory.items() or {}) do
+		if not Item.matches(keep, s.id, s.name) and not seen[s.id] then
+			seen[s.id] = true
+			table.insert(out, { id = s.id, name = s.name })
+		end
+	end
+	return out
+end
+
+function Read.kept_slots(): number
+	local keep = Item.matcher(Read.keep())
+	local kept = 0
+	for _, s in ipairs(Inventory.items() or {}) do
+		if Item.matches(keep, s.id, s.name) then
+			kept += 1
+		end
+	end
+	return kept
+end
+
+function Handler.queue_deposit(): boolean
+	S.deposited = Read.unwanted()
+	for _, u in ipairs(S.deposited) do
+		if not Bankmain.inventory.interact(u.id, "Deposit-All") then
+			return false
+		end
+	end
+	return true
+end
+
 function Handler.prepare_gloves(): boolean
 	if not Read.has_ice() then
-		if not Bankmain.contains_any(CONST.ICE_GLOVES) then
+		if not Read.in_bank(CONST.ICE_GLOVES) then
 			Game.stop("No ice gloves (or smiths gloves (i)) to take the bars with")
 			return false
 		end
@@ -710,7 +823,7 @@ function Handler.prepare_gloves(): boolean
 		end
 	end
 	if S.gauntlets and not Wornitems.contains(CONST.GAUNTLETS) and not Bankmain.inventory.contains(CONST.GAUNTLETS) then
-		if not Bankmain.contains(CONST.GAUNTLETS) then
+		if not Read.in_bank(CONST.GAUNTLETS) then
 			Log.log(NAME, "No goldsmith gauntlets, smelting gold without them")
 			S.gauntlets = false
 			return Handler.prepare_gloves()
@@ -753,7 +866,7 @@ function Handler.prepare_bag(): boolean
 		return true
 	end
 	if not Bankmain.inventory.contains_any(CONST.COAL_BAG) then
-		if not Bankmain.contains_any(CONST.COAL_BAG) then
+		if not Read.in_bank(CONST.COAL_BAG) then
 			Log.log(NAME, "No coal bag, carrying coal in the inventory only")
 			S.bag_size, S.bag_coal = 0, nil
 			return true
@@ -774,7 +887,7 @@ function Handler.prepare_cape(): boolean
 			return true
 		end
 		if not Bankmain.inventory.contains_any(capes) then
-			if not Bankmain.contains_any(capes) then
+			if not Read.in_bank(capes) then
 				S.bag_size = CONST.BAG_SIZE
 				return true
 			end
@@ -799,17 +912,27 @@ function Handler.bag_offers(option: string): boolean
 end
 
 function Handler.fill_bag(): boolean
-	if not Read.uses_bag() or (S.bag_coal or 0) >= S.bag_size then
+	if not Read.uses_bag() or S.bag_coal == S.bag_size then
 		return true
 	end
-	if not Bankmain.contains("Coal") then
+	if not Read.in_bank("Coal") then
 		return true
+	end
+	if S.bag_coal == 0 then
+		if not Bankmain.inventory.interact(CONST.COAL_BAG, "Fill") then
+			return false
+		end
+		S.bag_coal = nil
+		return true
+	end
+	if not Handler.use_bag(Bankmain.inventory.interact, "Empty") then
+		if not Handler.bag_offers("Fill") then
+			Log.log(NAME, "The coal bag didn't empty into the bank")
+			return false
+		end
+		S.bag_coal = 0
 	end
 	if Handler.use_bag(Bankmain.inventory.interact, "Fill") then
-		return true
-	end
-	if Handler.bag_offers("Empty") and not Handler.bag_offers("Fill") then
-		S.bag_coal = S.bag_size
 		return true
 	end
 	Log.log(NAME, "The coal bag didn't fill")
@@ -861,7 +984,7 @@ function Handler.drink_stamina(): boolean
 	if (Player.run_energy() or 100) >= CONFIG.stamina_below or (Consumables.remaining("stamina") or 0) > 0 then
 		return true
 	end
-	if not Bankmain.contains(CONST.STAMINA) then
+	if not Read.in_bank(CONST.STAMINA) then
 		return true
 	end
 	if not Bankmain.withdraw(CONST.STAMINA, 1, false) then
@@ -882,13 +1005,13 @@ function Handler.plan_trip(): string?
 	if secondary == nil then
 		return bar.ore
 	end
-	local wait = S.belt_clear_at - time()
+	local wait = math.ceil(S.belt_clear_at - time())
 	if wait > 0 then
 		sleep(wait)
 	end
 	local f = Read.furnace()
 	S.trip = { pot_ore = f.ore, pot_coal = f.secondary, ore = 0, coal = 0 }
-	local slots = Bankmain.inventory.count_empty() or 0
+	local slots = CONST.INVENTORY_SLOTS - Read.kept_slots()
 	local carried = f.secondary + (if Read.bag_counts() then S.bag_size else 0)
 	if carried >= bar.ratio * (f.ore + slots) then
 		return bar.ore
@@ -904,35 +1027,90 @@ function Handler.withdraw_trip(): boolean
 	if S.bar.secondary == "Coal" and not Handler.fill_bag() then
 		return false
 	end
-	if not Bankmain.contains(item) then
-		if item == "Coal" and (S.bag_coal or 0) > 0 then
-			return true
+	if not Read.in_bank(item) then
+		if item == "Coal" and Read.uses_bag() then
+			return Handler.confirm_bank(nil)
 		end
 		Game.stop(`Out of {item}`)
 		return false
 	end
-	if (Bankmain.inventory.count_empty() or 0) == 0 then
-		return true
-	end
-	if not Bankmain.withdraw(item, 0, false) then
+	if not Bankmain.set_quantity(0) or not Bankmain.withdraw_selected(item, false) then
 		return false
 	end
+	return Handler.confirm_bank(item)
+end
+
+function Handler.confirm_bank(item: string?): boolean
+	local function deposited(): boolean
+		for _, u in ipairs(S.deposited) do
+			if u.name ~= item and Inventory.contains(u.id) then
+				return false
+			end
+		end
+		return true
+	end
 	return Handler.wait(function()
-		return Bankmain.inventory.contains(item)
-	end, 2000)
+		Read.read_messages()
+		return deposited()
+			and (item == nil or Bankmain.inventory.contains(item))
+			and (not Read.uses_bag() or S.bag_coal ~= nil)
+	end, CONST.BANK_CONFIRM_MS)
+end
+
+function Handler.hover_deposit()
+	local keep = Item.matcher(Read.keep())
+	for _, s in ipairs(Inventory.items() or {}) do
+		if not Item.matches(keep, s.id, s.name) then
+			local w = Inventory.box(s.slot)
+			if w then
+				Mouse.move_async({ x1 = w.x, y1 = w.y, x2 = w.x + w.width - 1, y2 = w.y + w.height - 1 })
+			end
+			return
+		end
+	end
+end
+
+function Handler.open_bank(): boolean
+	local bank = Bankmain.nearest()
+	local chest = if bank then bank.loc else nil
+	if chest == nil or not Read.in_view(chest) or not Toplevel.escape_clear() then
+		return Bankmain.open(bank)
+	end
+	if not Objects.interact(chest, CONST.BANK_OPTIONS, false) then
+		return false
+	end
+	Game.walk_tasks()
+	Handler.hover_deposit()
+	return Handler.arrive(Bankmain.is_open, CONST.BANK_OPEN_MS)
+end
+
+function Handler.arrive(done: () -> boolean, timeout_ms: number): boolean
+	local still_since: number? = nil
+	Handler.wait(function()
+		if done() then
+			return true
+		end
+		if Player.in_transit() then
+			still_since = nil
+		elseif still_since == nil then
+			still_since = time()
+		end
+		return still_since ~= nil and time() - still_since >= CONST.ARRIVE_SETTLE_MS
+	end, timeout_ms)
+	return done()
 end
 
 function Handler.bank()
 	if not Bankmain.is_open() then
-		local bank = Bankmain.nearest()
-		if not Bankmain.open(bank, not Read.in_view(if bank then bank.loc else nil)) then
+		if not Handler.open_bank() then
 			Game.fail("The bank didn't open")
 			S.skip["BANK"] = true
 			return
 		end
 	end
+	Handler.wait(Read.bank_inventory_shown, CONST.BANK_PANEL_MS)
 	local before_bars = Bankmain.inventory.count_ex(ALL_BARS) or 0
-	if not Handler.deposit_unwanted() then
+	if not Handler.queue_deposit() then
 		Game.fail("Couldn't deposit the inventory")
 		return
 	end
@@ -963,7 +1141,13 @@ function Handler.bank()
 		Game.fail("Couldn't drink a stamina potion")
 		return
 	end
-	if Read.dispensed() > 0 then
+	if Read.dispensed() > 0 and not Read.gold_buffer() then
+		Bankmain.close()
+		return
+	end
+	if Read.gold_buffer() and Read.dispensed() > 0 and not Read.in_bank(S.bar.ore) then
+		Log.log(NAME, `Out of {S.bar.ore}, taking the last bars`)
+		S.gold_take = true
 		Bankmain.close()
 		return
 	end
@@ -973,8 +1157,23 @@ function Handler.bank()
 		end
 		return
 	end
+	if Read.gold_buffer() and not Handler.gold_gloves() then
+		Game.fail("Couldn't put on the ice gloves")
+		return
+	end
 	S.failures_in_row = 0
 	Handler.leave_bank()
+end
+
+function Handler.gold_gloves(): boolean
+	S.gold_take = Read.dispensed() > 0
+	if not S.gold_take or Read.wearing_ice() then
+		return true
+	end
+	if not Bankmain.inventory.interact(CONST.ICE_GLOVES, "Wear") then
+		return false
+	end
+	return Handler.wait(Read.wearing_ice, CONST.WEAR_MS)
 end
 
 function Read.in_view(loc: Host.Loc?): boolean
@@ -985,63 +1184,78 @@ function Read.in_view(loc: Host.Loc?): boolean
 	return box ~= nil and Clickbox.target(box, loc.name or "object") ~= nil
 end
 
-function Handler.belt_in_view(): boolean
-	return Read.in_view(Objects.nearest(CONST.BELT, snap.me))
+function Read.shown_share(loc: Host.Loc?): number
+	local box = if loc then Objects.clickbox(loc) else nil
+	local view = Toplevel.viewport()
+	if box == nil or box.triangles == nil or view == nil then
+		return 0
+	end
+	local blockers = Toplevel.blockers() or {}
+	local total, shown = 0, 0
+	for _, t in ipairs(box.triangles) do
+		local area = Triangle.area(t)
+		local c = Triangle.centroid(t)
+		total += area
+		if Toplevel.is_visible({ x = math.round(c.x), y = math.round(c.y) }, view, blockers) then
+			shown += area
+		end
+	end
+	return if total > 0 then shown / total else 0
 end
 
-function Handler.belt_x(): number?
-	local belt = Objects.nearest(CONST.BELT, snap.me)
-	local box = if belt then Objects.clickbox(belt) else nil
-	if box == nil or #box.polygon == 0 then
-		return nil
-	end
-	local sum = 0
-	for _, p in ipairs(box.polygon) do
-		sum += p.x
-	end
-	return sum / #box.polygon
+function Handler.belt(): Host.Loc?
+	return Objects.nearest(CONST.BELT, snap.me)
 end
 
-function Handler.reveal_belt(): boolean
-	local turn = CONST.BELT_TURN_DEGREES
-	for _ = 1, CONST.BELT_TURNS do
-		if Handler.belt_in_view() then
-			return true
-		end
-		local yaw, view, x = Camera.yaw_degrees(), Toplevel.viewport(), Handler.belt_x()
-		if yaw == nil or view == nil then
-			return false
-		end
-		local step = Random.int(turn[1], turn[2])
-		local left = x ~= nil and x < (view.x1 + view.x2) / 2
-		Camera.set_yaw_degrees((yaw + (if left then -step else step)) % 360, "keys")
-	end
-	return Handler.belt_in_view()
+function Handler.belt_shown(): boolean
+	return Read.shown_share(Handler.belt()) >= CONST.BELT_SHOWN
 end
 
 function Handler.leave_bank()
-	if Biometrics.random_boolean(CONST.BELT_FROM_BANK) and Handler.reveal_belt() then
+	if Biometrics.random_boolean(CONST.BELT_FROM_BANK) and Handler.belt_shown() then
 		Handler.load()
 		return
 	end
 	Bankmain.close()
+	Handler.hover_belt()
+end
+
+function Handler.take_all(name: string, only: boolean): boolean
+	if not Make.set_amount("All") then
+		return false
+	end
+	if only and Biometrics.random_boolean(CONST.MAKE_SPACE) then
+		Keyboard.key_press(Keyboard.keys.SPACE)
+		return true
+	end
+	return Make.make(name)
 end
 
 function Handler.take()
 	local before = Inventory.count_ex(ALL_BARS) or 0
+	local kinds: { string } = {}
 	for _, d in ipairs(CONST.DISPENSED) do
 		if (varbit(d.varbit) or 0) > 0 then
-			if not Make.make(d.name, "All") then
-				Game.fail(`Couldn't take the {d.name}s`)
-				return
-			end
-			break
+			table.insert(kinds, d.name)
 		end
 	end
-	Handler.hover_bank(nil)
-	if Handler.wait(function()
+	if #kinds > 0 and not Handler.take_all(kinds[1], #kinds == 1) then
+		Game.fail(`Couldn't take the {kinds[1]}s`)
+		return
+	end
+	local gold = Read.gold_buffer() and S.gold_take
+	if not gold then
+		Handler.hover_bank(nil)
+	end
+	local taken = Handler.wait(function()
 		return (Inventory.count_ex(ALL_BARS) or 0) > before
-	end, CONST.TAKE_MS) then
+	end, CONST.TAKE_MS)
+	if gold then
+		S.gold_take = false
+		Handler.wear_gauntlets()
+		Handler.hover_bank(nil)
+	end
+	if taken then
 		local got = (Inventory.count_ex(ALL_BARS) or 0) - before
 		stats.bars += got
 		S.failures_in_row = 0
@@ -1059,8 +1273,16 @@ function Handler.chat()
 		ChatOptions.select("Yes")
 		return
 	end
+	for _, o in ipairs(ChatOptions.get() or {}) do
+		if string.match(string.lower(o.text), "^no%f[%A]") then
+			Log.log(NAME, `Declining the dialogue: {o.text}`)
+			ChatOptions.select(o.text)
+			return
+		end
+	end
 	Log.log(NAME, `Closing the dialogue: {ChatOptions.title() or "?"}`)
 	Toplevel.escape_clear()
+	S.skip["CHAT"] = true
 end
 
 function Handler.foreman()
@@ -1138,28 +1360,30 @@ function Handler.load()
 		Game.fail("The conveyor belt isn't here")
 		return
 	end
-	if not Objects.interact(belt, "Put-ore-on", false) then
+	local walking = Read.belt_walk()
+	if not Handler.click_belt(belt) then
 		Game.fail("Couldn't use the conveyor belt")
 		return
 	end
-	Handler.prehover_next(ore_before > 0)
+	local hovered = false
+	local function prehover()
+		if not hovered and not Bankmain.is_open() then
+			hovered = true
+			if walking then
+				Game.walk_tasks()
+			end
+			Handler.prehover_next(ore_before > 0)
+		end
+	end
+	prehover()
 	local function went_on(): boolean
 		local ore, secondary = Handler.carried()
 		return ore + secondary < carried
 	end
-	local still_since: number? = nil
-	Handler.wait(function()
-		if went_on() then
-			return true
-		end
-		if Player.in_transit() then
-			still_since = nil
-		elseif still_since == nil then
-			still_since = time()
-		end
-		return Read.dialog_open() or still_since ~= nil and time() - still_since >= CONST.LOAD_SETTLE_MS
-	end, CONST.LOAD_MS)
-	local loaded = went_on()
+	local loaded = Handler.arrive(function(): boolean
+		prehover()
+		return went_on() or Read.dialog_open()
+	end, CONST.LOAD_MS) and went_on()
 	local ore_after, secondary_after = Handler.carried()
 	if S.trip then
 		S.trip.ore += ore_before - ore_after
@@ -1177,11 +1401,14 @@ function Handler.load()
 end
 
 function Handler.prehover_next(ore_loaded: boolean)
-	if (S.bag_coal or 0) > 0 then
+	if (S.bag_coal or 0) > 0 and Read.bag_needed() then
+		Handler.hover_bag()
 		return
 	end
-	local at = Player.destination() or snap.me
-	local bars_next = ore_loaded or time() < S.bars_due_until or Read.furnace().ore > 0
+	local at = CONST.BELT_TILE
+	local bars_next = if Read.gold_buffer()
+		then S.gold_take
+		else ore_loaded or time() < S.bars_due_until or Read.furnace().ore > 0
 	if not bars_next then
 		Handler.hover_bank(at)
 		return
@@ -1192,6 +1419,21 @@ function Handler.prehover_next(ore_loaded: boolean)
 	end
 end
 
+function Handler.hover_bag()
+	local slot = Inventory.index_of(CONST.COAL_BAG)
+	local w = if slot then Inventory.box(slot) else nil
+	if w then
+		Mouse.move_async({ x1 = w.x, y1 = w.y, x2 = w.x + w.width - 1, y2 = w.y + w.height - 1 })
+	end
+end
+
+function Handler.hover_belt()
+	local belt = Handler.belt()
+	if belt then
+		Objects.hover_async(belt)
+	end
+end
+
 function Handler.hover_bank(at: Host.Tile?)
 	local bank = Bankmain.nearest()
 	if bank and bank.loc then
@@ -1199,15 +1441,71 @@ function Handler.hover_bank(at: Host.Tile?)
 	end
 end
 
+function Read.crowded(loc: Host.Loc): boolean
+	local function near(x: number, y: number): boolean
+		return math.abs(x - loc.x) <= CONST.CROWD_TILES and math.abs(y - loc.y) <= CONST.CROWD_TILES
+	end
+	for _, n in ipairs(Host.npcs() or {}) do
+		if string.sub(n.name, 1, 5) ~= "<col=" and near(n.x, n.y) then
+			return true
+		end
+	end
+	local me = game_state().player_name
+	for _, p in ipairs(Host.players() or {}) do
+		if p.name ~= me and near(p.x, p.y) then
+			return true
+		end
+	end
+	return false
+end
+
+function Handler.click_belt(belt: Host.Loc): boolean
+	return Objects.interact(belt, "Put-ore-on", false, nil, nil, Read.crowded(belt))
+end
+
 function Handler.empty_bag()
-	if Handler.use_bag(Inventory.interact, "Empty") then
+	local coal, room = S.bag_coal or 0, Inventory.free_slots() or 0
+	local belt = Handler.belt()
+	if belt == nil or room == 0 then
+		Game.fail("Can't empty the coal bag here")
 		return
 	end
-	if Handler.bag_offers("Fill") and not Handler.bag_offers("Empty") then
-		S.bag_coal = 0
-		return
+	Read.read_messages()
+	S.bag_coal = nil
+	local first = true
+	while coal > 0 do
+		if not first then
+			Handler.hover_bag()
+			Handler.wait(function()
+				return (Inventory.count_ex("Coal") or 0) == 0
+			end, CONST.BAG_MS)
+		end
+		first = false
+		if not Inventory.interact(CONST.COAL_BAG, "Empty") then
+			Game.fail("Couldn't empty the coal bag")
+			return
+		end
+		if not Handler.click_belt(belt) then
+			Game.fail("Couldn't use the conveyor belt")
+			return
+		end
+		local moved = math.min(coal, room)
+		coal -= moved
+		if S.trip then
+			S.trip.coal += moved
+		end
 	end
-	Game.fail("Couldn't empty the coal bag")
+	Handler.prehover_next(false)
+	local done = Handler.wait(function()
+		Read.read_messages()
+		return S.bag_coal == 0 and (Inventory.count_ex("Coal") or 0) == 0
+	end, CONST.BAG_MS)
+	S.belt_clear_at = time() + CONST.BELT_MS
+	if done then
+		S.failures_in_row = 0
+	else
+		Game.fail("The coal bag's coal didn't all go on the belt")
+	end
 end
 
 function Handler.swap_to_ice(): boolean
@@ -1220,7 +1518,45 @@ function Handler.swap_to_ice(): boolean
 	return Handler.wait(Read.wearing_ice, 2400)
 end
 
+function Handler.collect_gold()
+	local dispenser = Objects.nearest(CONST.DISPENSER, snap.me)
+	if dispenser == nil then
+		Game.fail("The bar dispenser isn't here")
+		return
+	end
+	if not Handler.swap_to_ice() then
+		Game.fail("Couldn't put on the ice gloves")
+		return
+	end
+	if not Objects.interact(dispenser, "Take", false) then
+		sleep(Random.int(300, 600))
+		return
+	end
+	if not Make.wait_open(CONST.TAKE_MS) then
+		Game.fail("The dispenser didn't offer the bars")
+		return
+	end
+	Handler.take()
+end
+
+function Handler.wear_gauntlets()
+	if Wornitems.contains(CONST.GAUNTLETS) then
+		return
+	end
+	if not Inventory.interact(CONST.GAUNTLETS, "Wear") then
+		Game.fail("Couldn't put on the goldsmith gauntlets")
+		return
+	end
+	Handler.wait(function()
+		return Wornitems.contains(CONST.GAUNTLETS)
+	end, CONST.WEAR_MS)
+end
+
 function Handler.collect()
+	if Read.gold_buffer() then
+		Handler.collect_gold()
+		return
+	end
 	local f = snap.furnace
 	if not f.cooled or (S.gauntlets and f.ore > 0) then
 		Handler.wait_bars()
@@ -1253,7 +1589,7 @@ function Handler.wait_bars()
 		return
 	end
 	if Objects.distance(dispenser, snap.me) > CONST.DISPENSER_REACH then
-		Walker.walk({ x = dispenser.x + Random.int(0, 1), y = dispenser.y + 1 }, { near = 2 })
+		Walker.walk(Read.wait_tile(dispenser), { near = 0 })
 	end
 	if S.gauntlets and snap.furnace.ore == 0 and Read.dispensed() > 0 then
 		return
@@ -1271,7 +1607,6 @@ function Handler.wait_bars()
 			S.skip["WAIT_BARS"] = true
 			return
 		end
-		Game.tiny_antiban()
 		sleep(Random.int(80, 160))
 	end
 	S.bars_due_until = 0
