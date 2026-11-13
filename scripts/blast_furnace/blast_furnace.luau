@@ -156,7 +156,8 @@ local CONST = {
 	},
 	COFFER_VARBIT = 5357,
 	DISPENSER_VARBIT = 936,
-	DISPENSER_HOT = 1,
+	DISPENSER_READY = 2,
+	WAIT_EAST = 0.9,
 	DISPENSER_REACH = 3,
 	ICE_GLOVES = { "Ice gloves", "Smiths gloves (i)" },
 	GAUNTLETS = "Goldsmith gauntlets",
@@ -197,7 +198,6 @@ local CONST = {
 	FIDGET_MS = 1500,
 	WEAR_MS = 1800,
 	NEAR_TILES = 2,
-	CROWD_TILES = 1,
 	INVENTORY_SLOTS = 28,
 	TAKE_MS = 3000,
 	BELT_FROM_BANK = 0.7,
@@ -256,6 +256,7 @@ type RunState = {
 	coffer_coins: number,
 	bars_due_until: number,
 	belt_clear_at: number,
+	wait_tile: Host.Tile?,
 	seen_uid: number,
 	warned_iron: boolean,
 	skip: { [string]: boolean },
@@ -281,6 +282,7 @@ local S: RunState = {
 	coffer_coins = 0,
 	bars_due_until = 0,
 	belt_clear_at = 0,
+	wait_tile = nil,
 	seen_uid = -1,
 	warned_iron = false,
 	skip = {},
@@ -291,7 +293,7 @@ type Furnace = {
 	secondary: number,
 	dispensed: number,
 	coffer: number,
-	cooled: boolean,
+	ready: boolean,
 }
 
 type Snapshot = {
@@ -355,7 +357,7 @@ function Read.furnace(): Furnace
 		secondary = if bar.secondary_varbit then varbit(bar.secondary_varbit) or 0 else 0,
 		dispensed = Read.dispensed(),
 		coffer = varbit(CONST.COFFER_VARBIT) or 0,
-		cooled = varbit(CONST.DISPENSER_VARBIT) ~= CONST.DISPENSER_HOT,
+		ready = (varbit(CONST.DISPENSER_VARBIT) or 0) >= CONST.DISPENSER_READY,
 	}
 end
 
@@ -475,6 +477,9 @@ end
 
 function Read.wait_tile(dispenser: Host.Loc): Host.Tile
 	local x, y = dispenser.x, dispenser.y
+	if Biometrics.random_boolean(CONST.WAIT_EAST) then
+		return { x = x + dispenser.size_x - 1, y = y - 1 }
+	end
 	local tiles = { { x = x, y = y - 1 }, { x = x - 1, y = y }, { x = x - 1, y = y - 1 } }
 	local liked = tiles[Biometrics.get_biometric(Biometrics.LIKES) % #tiles + 1]
 	local pull = 1 + 2 * Biometrics.get_probability(Biometrics.PATTERN)
@@ -1258,6 +1263,7 @@ function Handler.take()
 	if taken then
 		local got = (Inventory.count_ex(ALL_BARS) or 0) - before
 		stats.bars += got
+		S.wait_tile = nil
 		S.failures_in_row = 0
 		S.last_progress_at = time()
 		Log.log(NAME, `Took {got} bars ({stats.bars} in all)`)
@@ -1414,9 +1420,16 @@ function Handler.prehover_next(ore_loaded: boolean)
 		return
 	end
 	local dispenser = Objects.nearest(CONST.DISPENSER, at)
-	if dispenser then
-		Objects.hover_async(dispenser, at)
+	if dispenser == nil then
+		return
 	end
+	if Read.gold_buffer() then
+		Objects.hover_async(dispenser, at)
+		return
+	end
+	local tile = S.wait_tile or Read.wait_tile(dispenser)
+	S.wait_tile = tile
+	Walker.hover_tile_async(tile, at)
 end
 
 function Handler.hover_bag()
@@ -1441,26 +1454,8 @@ function Handler.hover_bank(at: Host.Tile?)
 	end
 end
 
-function Read.crowded(loc: Host.Loc): boolean
-	local function near(x: number, y: number): boolean
-		return math.abs(x - loc.x) <= CONST.CROWD_TILES and math.abs(y - loc.y) <= CONST.CROWD_TILES
-	end
-	for _, n in ipairs(Host.npcs() or {}) do
-		if string.sub(n.name, 1, 5) ~= "<col=" and near(n.x, n.y) then
-			return true
-		end
-	end
-	local me = game_state().player_name
-	for _, p in ipairs(Host.players() or {}) do
-		if p.name ~= me and near(p.x, p.y) then
-			return true
-		end
-	end
-	return false
-end
-
 function Handler.click_belt(belt: Host.Loc): boolean
-	return Objects.interact(belt, "Put-ore-on", false, nil, nil, Read.crowded(belt))
+	return Objects.interact(belt, "Put-ore-on", false)
 end
 
 function Handler.empty_bag()
@@ -1558,7 +1553,7 @@ function Handler.collect()
 		return
 	end
 	local f = snap.furnace
-	if not f.cooled or (S.gauntlets and f.ore > 0) then
+	if not f.ready or (S.gauntlets and f.ore > 0) then
 		Handler.wait_bars()
 		return
 	end
@@ -1571,7 +1566,8 @@ function Handler.collect()
 		Game.fail("The bar dispenser isn't here")
 		return
 	end
-	if not Objects.interact(dispenser, "Take") then
+	local beside = Objects.distance(dispenser, snap.me) <= 1
+	if not Objects.interact(dispenser, "Take", if beside then false else nil) then
 		sleep(Random.int(300, 600))
 		return
 	end
@@ -1589,27 +1585,33 @@ function Handler.wait_bars()
 		return
 	end
 	if Objects.distance(dispenser, snap.me) > CONST.DISPENSER_REACH then
-		Walker.walk(Read.wait_tile(dispenser), { near = 0 })
+		local tile = S.wait_tile or Read.wait_tile(dispenser)
+		S.wait_tile = tile
+		if not Walker.click_tile(tile) then
+			Game.fail("Couldn't walk to the bar dispenser")
+			return
+		end
+		Objects.hover_async(dispenser, tile)
+	elseif not Objects.hovered(dispenser) then
+		Objects.hover(dispenser)
 	end
 	if S.gauntlets and snap.furnace.ore == 0 and Read.dispensed() > 0 then
 		return
 	end
-	if not Objects.hovered(dispenser) then
-		Objects.hover(dispenser)
-	end
-	local deadline = math.max(S.bars_due_until, time() + 1200)
-	while time() < deadline do
+	local gave_up = false
+	local function settled(): boolean
 		local f = Read.furnace()
-		if f.dispensed > 0 and f.cooled and not (S.gauntlets and f.ore > 0) then
-			return
+		if f.dispensed > 0 and f.ready and not (S.gauntlets and f.ore > 0) then
+			return not Player.in_transit()
 		end
-		if f.dispensed == 0 and f.ore == 0 and time() >= S.bars_due_until then
-			S.skip["WAIT_BARS"] = true
-			return
-		end
-		sleep(Random.int(80, 160))
+		gave_up = f.dispensed == 0 and f.ore == 0 and time() >= S.bars_due_until
+		return gave_up
 	end
-	S.bars_due_until = 0
+	if not Handler.wait(settled, math.max(S.bars_due_until - time(), 1200)) then
+		S.bars_due_until = 0
+	elseif gave_up then
+		S.skip["WAIT_BARS"] = true
+	end
 end
 
 function Handler.run_energy()

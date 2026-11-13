@@ -1356,12 +1356,8 @@ function Loop.get_state(): State
 		return "WALK_ROOT"
 	end
 
-	if
-		Read.axe_wielded()
-		and SpecialAttack.available()
-		and not SpecialAttack.is_enabled()
-		and (SpecialAttack.energy() or 0) >= 100
-	then
+	local spec_cost = if Read.axe_wielded() then SpecialAttack.cost() else nil
+	if spec_cost ~= nil and not SpecialAttack.is_enabled() and (SpecialAttack.energy() or 0) >= spec_cost then
 		return "USE_SPEC"
 	end
 	return "CUT_ROOTS"
@@ -1890,7 +1886,7 @@ Handler.states = {
 	FLETCH_LOGS = Task.fletch_logs,
 	BURN_FUEL = Task.burn_fuel,
 	USE_SPEC = function()
-		SpecialAttack.enable(100)
+		SpecialAttack.enable()
 	end,
 	WARM_UP = Task.warm_up,
 	HOVER_BRAZIER = Task.hover_brazier,
