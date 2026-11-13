@@ -1,19 +1,11 @@
 {
-  "stall_thiever": {
-    "id": "ab73f393-f509-48d1-8393-1f58e1cce1dd",
-    "entry": "stall_thiever.luau"
-  },
-  "tempoross": {
-    "id": "25cba578-b254-43af-8424-c6d165013f0f",
-    "entry": "tempoross.luau"
-  },
   "agility": {
     "id": "d3558318-bf00-4574-8d0e-724b277db73c",
     "entry": "agility.luau"
   },
-  "volcanic_ash": {
-    "id": "37ec9a32-9ba4-401a-86f8-0d858e38b5e9",
-    "entry": "volcanic_ash.luau"
+  "blast_furnace": {
+    "id": "",
+    "entry": "blast_furnace.luau"
   },
   "collector": {
     "id": "4837b3fd-7bd5-483b-8004-e006ac975394",
@@ -26,6 +18,18 @@
   "smither": {
     "id": "eb54727c-bfdb-402b-84b0-785db8b30d0d",
     "entry": "smither.luau"
+  },
+  "stall_thiever": {
+    "id": "ab73f393-f509-48d1-8393-1f58e1cce1dd",
+    "entry": "stall_thiever.luau"
+  },
+  "tempoross": {
+    "id": "25cba578-b254-43af-8424-c6d165013f0f",
+    "entry": "tempoross.luau"
+  },
+  "volcanic_ash": {
+    "id": "37ec9a32-9ba4-401a-86f8-0d858e38b5e9",
+    "entry": "volcanic_ash.luau"
   },
   "wintertodt": {
     "id": "49495cb4-0e91-435e-86f4-398afad1e0a3",
