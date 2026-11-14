@@ -203,6 +203,7 @@ local CONST = {
 	NEAR_TILES = 2,
 	INVENTORY_SLOTS = 28,
 	TAKE_MS = 3000,
+	TILE_MS = 600,
 	BELT_FROM_BANK = 0.7,
 	BANK_OPTIONS = { "Bank", "Use" },
 	BELT_TILE = { x = 1942, y = 4967 },
@@ -1376,6 +1377,10 @@ function Handler.load()
 		Game.fail("Couldn't use the conveyor belt")
 		return
 	end
+	if walking and Read.gold_buffer() and S.gold_take and not Handler.wear_ice_walking(belt) then
+		Game.fail("Couldn't use the conveyor belt")
+		return
+	end
 	local hovered = false
 	local function prehover()
 		if not hovered and not Bankmain.is_open() then
@@ -1522,6 +1527,19 @@ function Handler.swap_to_ice(): boolean
 	return Handler.wait(Read.wearing_ice, 2400)
 end
 
+function Handler.wear_ice_walking(belt: Host.Loc): boolean
+	if Read.wearing_ice() then
+		return true
+	end
+	if not Handler.wait(function()
+		return not Bankmain.is_open()
+	end, CONST.WEAR_MS) then
+		return true
+	end
+	Handler.swap_to_ice()
+	return Handler.click_belt(belt)
+end
+
 function Handler.wear_gauntlets()
 	if Wornitems.contains(CONST.GAUNTLETS) then
 		return
@@ -1550,12 +1568,15 @@ function Handler.collect()
 		Game.fail("The bar dispenser isn't here")
 		return
 	end
-	local beside = Objects.distance(dispenser, snap.me) <= 1
-	if not Objects.interact(dispenser, "Take", if beside then false else nil) then
+	local walk_ms = Objects.distance(dispenser, snap.me) * CONST.TILE_MS
+	if not Objects.interact(dispenser, "Take", false) then
 		sleep(Random.int(300, 600))
 		return
 	end
-	if not Make.wait_open(CONST.TAKE_MS) then
+	if Read.gold_buffer() then
+		Handler.hover_item(CONST.GAUNTLETS)
+	end
+	if not Make.wait_open(CONST.TAKE_MS + walk_ms) then
 		Game.fail("The dispenser didn't offer the bars")
 		return
 	end
