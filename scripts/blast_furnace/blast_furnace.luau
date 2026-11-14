@@ -54,6 +54,8 @@ type Bar = {
 	bar_varbit: number,
 	gauntlets: boolean,
 	ore_smelts_alone: boolean?,
+	ore_per_bar: number?,
+	mix: { amount: number, picks: { string } }?,
 }
 
 local BARS: { Bar } = {
@@ -85,6 +87,16 @@ local BARS: { Bar } = {
 		ratio = 0,
 		bar_varbit = 948,
 		gauntlets = false,
+	},
+	{
+		name = "Lead bar",
+		level = 25,
+		ore = "Lead ore",
+		ore_varbit = 18167,
+		ratio = 0,
+		bar_varbit = 18169,
+		gauntlets = false,
+		ore_per_bar = 2,
 	},
 	{
 		name = "Steel bar",
@@ -128,6 +140,18 @@ local BARS: { Bar } = {
 		ratio = 3,
 		bar_varbit = 945,
 		gauntlets = false,
+	},
+	{
+		name = "Cupronickel bar",
+		level = 74,
+		ore = "Nickel ore",
+		ore_varbit = 18168,
+		secondary = "Copper ore",
+		secondary_varbit = 959,
+		ratio = 2,
+		bar_varbit = 18170,
+		gauntlets = false,
+		mix = { amount = 9, picks = { "Copper ore", "Copper ore", "Nickel ore" } },
 	},
 	{
 		name = "Runite bar",
@@ -274,7 +298,7 @@ local S: RunState = {
 	last_progress_at = 0,
 	last_xp = 0,
 	failures_in_row = 0,
-	bar = BARS[5],
+	bar = BARS[1],
 	gauntlets = false,
 	bag_size = 0,
 	bag_coal = nil,
@@ -342,7 +366,7 @@ function Read.bar_by_name(name: string): Bar
 			return bar
 		end
 	end
-	return BARS[5]
+	return BARS[1]
 end
 
 function Read.uses_bag(): boolean
@@ -420,8 +444,12 @@ function Read.foreman_due(): boolean
 	return S.paid_until > 0 and time() >= S.paid_until - CONST.FOREMAN.renew_ms
 end
 
+function Read.smeltable(f: Furnace): boolean
+	return f.ore >= (S.bar.ore_per_bar or 1)
+end
+
 function Read.bars_coming(f: Furnace): boolean
-	if f.ore == 0 then
+	if not Read.smeltable(f) then
 		return time() < S.bars_due_until
 	end
 	return f.secondary >= S.bar.ratio * f.ore
@@ -638,10 +666,7 @@ function Game.setup()
 		Game.stop("Start at the Blast Furnace")
 		return
 	end
-	S.bag_size = 0
-	if CONFIG.coal_bag and S.bar.secondary == "Coal" then
-		S.bag_size = if Read.wearing_big_cape() then CONST.BIG_BAG_SIZE else CONST.BAG_SIZE
-	end
+	Game.size_bag()
 	if Read.pays_foreman() then
 		Log.log(
 			NAME,
@@ -653,6 +678,15 @@ function Game.setup()
 
 	if CONFIG.antiban and not S.antiban_ready then
 		Game.setup_antiban()
+	end
+end
+
+function Game.size_bag()
+	S.bag_size = 0
+	if CONFIG.coal_bag and S.bar.secondary == "Coal" then
+		S.bag_size = if Read.wearing_big_cape() then CONST.BIG_BAG_SIZE else CONST.BAG_SIZE
+	else
+		S.bag_coal = nil
 	end
 end
 
@@ -1037,7 +1071,28 @@ function Handler.plan_trip(): string?
 	return secondary
 end
 
+function Handler.withdraw_mix(mix: { amount: number, picks: { string } }): boolean
+	for _, item in ipairs(mix.picks) do
+		if not Read.in_bank(item) then
+			Game.stop(`Out of {item}`)
+			return false
+		end
+	end
+	for _, item in ipairs(mix.picks) do
+		local withdrew = if Bankmain.selected_amount() == mix.amount
+			then Bankmain.withdraw_selected(item, false)
+			else Bankmain.withdraw(item, mix.amount, false)
+		if not withdrew then
+			return false
+		end
+	end
+	return Handler.confirm_bank(mix.picks)
+end
+
 function Handler.withdraw_trip(): boolean
+	if S.bar.mix then
+		return Handler.withdraw_mix(S.bar.mix)
+	end
 	local item = Handler.plan_trip()
 	if item == nil then
 		return false
@@ -1047,7 +1102,7 @@ function Handler.withdraw_trip(): boolean
 	end
 	if not Read.in_bank(item) then
 		if item == "Coal" and Read.uses_bag() then
-			return Handler.confirm_bank(nil)
+			return Handler.confirm_bank({})
 		end
 		Game.stop(`Out of {item}`)
 		return false
@@ -1055,13 +1110,21 @@ function Handler.withdraw_trip(): boolean
 	if not Bankmain.set_quantity(0) or not Bankmain.withdraw_selected(item, false) then
 		return false
 	end
-	return Handler.confirm_bank(item)
+	return Handler.confirm_bank({ item })
 end
 
-function Handler.confirm_bank(item: string?): boolean
+function Handler.confirm_bank(items: { string }): boolean
 	local function deposited(): boolean
 		for _, u in ipairs(S.deposited) do
-			if u.name ~= item and Inventory.contains(u.id) then
+			if not table.find(items, u.name) and Inventory.contains(u.id) then
+				return false
+			end
+		end
+		return true
+	end
+	local function withdrawn(): boolean
+		for _, item in ipairs(items) do
+			if not Bankmain.inventory.contains(item) then
 				return false
 			end
 		end
@@ -1069,9 +1132,7 @@ function Handler.confirm_bank(item: string?): boolean
 	end
 	return Handler.wait(function()
 		Read.read_messages()
-		return deposited()
-			and (item == nil or Bankmain.inventory.contains(item))
-			and (not Read.uses_bag() or S.bag_coal ~= nil)
+		return deposited() and withdrawn() and (not Read.uses_bag() or S.bag_coal ~= nil)
 	end, CONST.BANK_CONFIRM_MS)
 end
 
@@ -1615,7 +1676,7 @@ function Handler.wait_bars()
 		if f.dispensed > 0 and f.ready and not (S.gauntlets and f.ore > 0) then
 			return not Player.in_transit()
 		end
-		gave_up = f.dispensed == 0 and f.ore == 0 and time() >= S.bars_due_until
+		gave_up = f.dispensed == 0 and not Read.smeltable(f) and time() >= S.bars_due_until
 		return gave_up
 	end
 	if not Handler.wait(settled, math.max(S.bars_due_until - time(), 1200)) then
@@ -1651,10 +1712,14 @@ Handler.states = {
 }
 
 function Game.ask(): boolean
-	local names = {}
+	local names, coal_bars = {}, {}
 	for _, bar in ipairs(BARS) do
 		table.insert(names, bar.name)
+		if bar.secondary == "Coal" then
+			table.insert(coal_bars, bar.name)
+		end
 	end
+	local uses_coal = { id = "bar", equals = coal_bars }
 	local values = Host.form({
 		title = NAME,
 		submit = "Start",
@@ -1663,8 +1728,9 @@ function Game.ask(): boolean
 			{
 				id = "coal_bag",
 				kind = "check",
-				label = "Use a coal bag (bars that need coal)",
+				label = "Use a coal bag",
 				default = CONFIG.coal_bag,
+				visible_when = uses_coal,
 			},
 			{
 				id = "cape",
@@ -1672,6 +1738,7 @@ function Game.ask(): boolean
 				label = "Wear a smithing or max cape from the bank (the coal bag holds 36)",
 				default = CONFIG.cape,
 				enabled_by = "coal_bag",
+				visible_when = uses_coal,
 			},
 			{ id = "stamina", kind = "check", label = "Drink stamina potions from the bank", default = CONFIG.stamina },
 			{
@@ -1730,6 +1797,7 @@ function Game.poll_settings()
 	end
 	local bar = S.bar
 	Game.apply_settings(values)
+	Game.size_bag()
 	if bar ~= S.bar then
 		Log.log(NAME, `Bar changed to {S.bar.name}`)
 		S.bars_due_until = 0
