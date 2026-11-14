@@ -1,0 +1,39 @@
+{
+	"settings": {
+		"fields": [
+			{
+				"id": "stall",
+				"kind": "choice",
+				"label": "Stall",
+				"options": [
+					"Fruit stalls",
+					"Baker's stalls",
+					"Tea stall",
+					"Port Roberts"
+				],
+				"default": "Fruit stalls"
+			},
+			{
+				"kind": "label",
+				"text": "Only for Port Roberts:"
+			},
+			{
+				"id": "port_stall",
+				"kind": "choice",
+				"label": "Port Roberts stall",
+				"options": [
+					"Cannonball stall",
+					"Ore stall",
+					"Gem stall",
+					"Spice stall",
+					"Silver stall",
+					"Fish stall",
+					"Fur stall",
+					"Silk stall",
+					"Veg stall"
+				],
+				"default": "Cannonball stall"
+			}
+		]
+	}
+}

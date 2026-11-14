@@ -1582,29 +1582,6 @@ function Loop.apply_stall(values: { [string]: any })
 	end
 end
 
-function Loop.choose_stall(): boolean
-	local values = Host.form({
-		title = "Stall thiever",
-		submit = "Start",
-		fields = {
-			{ id = "stall", kind = "choice", label = "Stall", options = STALLS, default = STALLS[1] },
-			{ kind = "label", text = "Only for Port Roberts:" },
-			{
-				id = "port_stall",
-				kind = "choice",
-				label = "Port Roberts stall",
-				options = CONST.PORT_ROBERTS.STALLS,
-				default = CONST.PORT_ROBERTS.STALLS[1],
-			},
-		},
-	})
-	if values == nil then
-		return false
-	end
-	Loop.apply_stall(values)
-	return true
-end
-
 function Loop.poll_settings()
 	local values = Host.form_update()
 	if values == nil then
@@ -1641,10 +1618,7 @@ local function close_stray(banking: boolean)
 end
 
 function Loop.run()
-	if not Loop.choose_stall() then
-		Log.log(NAME, "No stall chosen, stopping the script")
-		return
-	end
+	Loop.apply_stall(Host.settings())
 	Log.log(NAME, `{NAME} started`)
 	Game.setup()
 	S.last_progress_at, S.failures_in_row = time(), 0

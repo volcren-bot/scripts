@@ -1913,30 +1913,6 @@ Handler.states = {
 	end,
 }
 
-local GROUP_ONLY = { id = "mode", equals = "Group" }
-local SOLO_ONLY = { id = "mode", equals = "Solo" }
-
-local function integer_field(
-	id: string,
-	label: string,
-	default: number,
-	min: number,
-	max: number,
-	visible_when: any?
-): any
-	return {
-		id = id,
-		kind = "number",
-		label = label,
-		default = default,
-		min = min,
-		max = max,
-		integer = true,
-		box_first = true,
-		visible_when = visible_when,
-	}
-end
-
 function Game.apply_settings(values: { [string]: any })
 	CONFIG.mode = if values.mode == "Solo" then "solo" else "group"
 	CONFIG.solo_goal = if values.solo_goal == "Experience" then "xp" else "points"
@@ -1951,86 +1927,6 @@ function Game.apply_settings(values: { [string]: any })
 	CONFIG.max_kills = values.max_kills
 	CONFIG.max_minutes = values.max_minutes
 	CONFIG.max_firemaking = values.max_firemaking
-end
-
-function Game.ask(): boolean
-	local values = Host.form({
-		title = "Wintertodt",
-		submit = "Start",
-		fields = {
-			{ id = "mode", kind = "choice", label = "Mode", options = { "Group", "Solo" }, default = "Group" },
-			{
-				id = "side",
-				kind = "choice",
-				label = "Favorite side",
-				options = { "West", "East" },
-				default = "West",
-				visible_when = GROUP_ONLY,
-			},
-			{
-				id = "alternate",
-				kind = "check",
-				label = "Alternate sides as antiban",
-				default = CONFIG.alternate,
-				visible_when = GROUP_ONLY,
-			},
-			{
-				id = "prioritize_brazier",
-				kind = "check",
-				label = "Prioritize lighting and fixing the brazier",
-				default = CONFIG.prioritize_brazier,
-				visible_when = GROUP_ONLY,
-			},
-			{
-				id = "help_pyromancers",
-				kind = "check",
-				label = "Help pyromancers",
-				default = CONFIG.help_pyromancers,
-				visible_when = GROUP_ONLY,
-			},
-			{
-				id = "wintertodt_worlds",
-				kind = "check",
-				label = "Wintertodt worlds only",
-				default = CONFIG.wintertodt_worlds,
-				visible_when = GROUP_ONLY,
-			},
-			integer_field(
-				"stop_fletch_energy",
-				"Stop fletching at Wintertodt energy",
-				CONFIG.stop_fletch_energy,
-				0,
-				100,
-				GROUP_ONLY
-			),
-			{
-				id = "solo_goal",
-				kind = "choice",
-				label = "Goal",
-				options = { "Points", "Experience" },
-				default = "Points",
-				visible_when = SOLO_ONLY,
-			},
-			integer_field("solo_potions", "Rejuvenation potions to keep", CONFIG.solo_potions, 1, 20, SOLO_ONLY),
-			integer_field(
-				"solo_points",
-				"Points before ending a round",
-				CONFIG.solo_points,
-				CONST.SOLO.REWARD_POINTS,
-				100000,
-				{ SOLO_ONLY, { id = "solo_goal", equals = "Points" } }
-			),
-			{ kind = "label", text = "Stop conditions", heading = 2 },
-			integer_field("max_kills", "Maximum kills (0 for no limit)", CONFIG.max_kills, 0, 100000),
-			integer_field("max_minutes", "Maximum minutes (0 for no limit)", CONFIG.max_minutes, 0, 100000),
-			integer_field("max_firemaking", "Stop at Firemaking level (0 for never)", CONFIG.max_firemaking, 0, 99),
-		},
-	})
-	if values == nil then
-		return false
-	end
-	Game.apply_settings(values)
-	return true
 end
 
 function Game.poll_settings()
@@ -2081,10 +1977,7 @@ function Loop.play(get_state: () -> State)
 end
 
 function Loop.run()
-	if not Game.ask() then
-		Log.log(NAME, "Form closed, stopping the script")
-		return
-	end
+	Game.apply_settings(Host.settings())
 	Log.log(NAME, `{NAME} started`)
 	S.started_at = time()
 	Read.skip_old_chat()

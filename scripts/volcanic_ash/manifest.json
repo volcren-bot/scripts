@@ -1,0 +1,15 @@
+{
+	"settings": {
+		"fields": [
+			{
+				"id": "max_ashes",
+				"kind": "number",
+				"label": "Max ashes (0 is unlimited)",
+				"default": 0,
+				"min": 0,
+				"max": 1000000,
+				"integer": true
+			}
+		]
+	}
+}

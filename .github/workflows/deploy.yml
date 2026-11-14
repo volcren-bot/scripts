@@ -92,6 +92,7 @@ jobs:
             for file in "$folder"/*.luau; do
               [ -f "$file" ] && args+=(-F "files=@$file")
             done
+            [ -f "$folder/manifest.json" ] && args+=(-F "files=@$folder/manifest.json")
             if [ ${#args[@]} -eq 0 ]; then
               echo "::error::$folder has no .luau files"
               failed=1

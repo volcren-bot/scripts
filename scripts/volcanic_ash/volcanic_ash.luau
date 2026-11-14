@@ -728,29 +728,6 @@ Handler.states = {
 	end,
 }
 
-function Game.ask(): boolean
-	local values = Host.form({
-		title = NAME,
-		submit = "Start",
-		fields = {
-			{
-				id = "max_ashes",
-				kind = "number",
-				label = "Max ashes (0 is unlimited)",
-				default = CONFIG.max_ashes,
-				min = 0,
-				max = 1000000,
-				integer = true,
-			},
-		},
-	})
-	if values == nil then
-		return false
-	end
-	Game.apply_settings(values)
-	return true
-end
-
 function Game.apply_settings(values: { [string]: any })
 	CONFIG.max_ashes = values.max_ashes
 end
@@ -776,10 +753,7 @@ local function close_stray(banking: boolean)
 end
 
 function Loop.run()
-	if not Game.ask() then
-		Log.log(NAME, "Form closed, stopping the script")
-		return
-	end
+	Game.apply_settings(Host.settings())
 	Log.log(NAME, `{NAME} started`)
 	Game.setup()
 	if not S.finished then

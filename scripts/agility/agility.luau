@@ -79,7 +79,6 @@ local CONST = {
 	REACT_MS = { 200, 900 },
 	CLICK_TRIES = 3,
 	OVERLAY = { EVERY_MS = 100, FILL = { 255, 255, 0, 70 } },
-	NEAREST = "Nearest course",
 	COURSES = {
 		canifis = {
 			name = "Canifis",
@@ -2295,51 +2294,14 @@ function Overlay.clear()
 	end
 end
 
-function Game.ask(): boolean
-	local names, keys = { CONST.NEAREST }, {}
+function Game.apply_start_settings()
+	local keys = {}
 	for _, entry in ipairs(Read.courses_by_level()) do
-		local label = `{entry.course.name} (level {entry.course.level})`
-		table.insert(names, label)
-		keys[label] = entry.key
+		keys[`{entry.course.name} (level {entry.course.level})`] = entry.key
 	end
-	local default = CONST.NEAREST
-	for label, key in pairs(keys) do
-		if key == CONFIG.course then
-			default = label
-		end
-	end
-	local fields: { any } = {
-		{ id = "course", kind = "choice", label = "Course", options = names, default = default },
-		{
-			id = "progressive",
-			kind = "check",
-			label = "Progressive (walk to the next course when unlocked)",
-			default = CONFIG.progressive,
-		},
-		{ id = "highlight", kind = "check", label = "Highlight obstacles", default = CONFIG.highlight },
-	}
-	local rows = {}
-	for _, entry in ipairs(Read.courses_by_level()) do
-		table.insert(rows, {
-			id = entry.key,
-			label = `{entry.course.name} (level {entry.course.level})`,
-			default = not CONFIG.blacklist[entry.key],
-		})
-	end
-	table.insert(fields, {
-		id = "courses",
-		kind = "list",
-		label = "Courses to walk to, in order (untick to skip one)",
-		items = rows,
-		enabled_by = "progressive",
-	})
-	local values = Host.form({ title = NAME, submit = "Start", fields = fields })
-	if values == nil then
-		return false
-	end
+	local values = Host.settings()
 	CONFIG.course = keys[values.course] or "auto"
 	Game.apply_live(values)
-	return true
 end
 
 function Game.apply_live(values: { [string]: any })
@@ -2953,10 +2915,7 @@ local function close_stray()
 end
 
 function Loop.run()
-	if not Game.ask() then
-		Log.log(NAME, "Form closed, stopping the script")
-		return
-	end
+	Game.apply_start_settings()
 	Log.log(NAME, `{NAME} started`)
 	Game.setup()
 	S.last_progress_at, S.failures_in_row = time(), 0

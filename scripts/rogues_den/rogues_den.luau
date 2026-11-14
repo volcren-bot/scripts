@@ -1756,24 +1756,8 @@ local function close_stray()
 	Toplevel.escape_clear()
 end
 
-local FORM = {
-	title = NAME,
-	submit = "Start",
-	fields = {
-		{
-			id = "stamina",
-			kind = "check",
-			label = "Drink a stamina dose from the bank before a round",
-			default = false,
-		},
-	},
-}
-
 local function main()
-	local values = Host.form(FORM)
-	if values == nil then
-		return
-	end
+	local values = Host.settings()
 	CONFIG.stamina = values.stamina == true
 	Log.log(NAME, `{NAME} started`)
 	setup()
