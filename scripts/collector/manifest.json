@@ -1,0 +1,75 @@
+{
+	"settings": {
+		"fields": [
+			{
+				"id": "collect",
+				"kind": "choice",
+				"label": "Collect",
+				"options": [
+					"Lumbridge Logs",
+					"Barbarian outpost planks",
+					"Eclipse red",
+					"Observatory superantipoison",
+					"Snape grass",
+					"Red spider eggs"
+				],
+				"default": "Lumbridge Logs"
+			},
+			{
+				"id": "snape_route",
+				"kind": "choice",
+				"label": "Snape grass route",
+				"options": [
+					"The Dibber (Hosidius)",
+					"Waterbirth (Enchanted lyre)",
+					"Waterbirth (teleport)",
+					"Waterbirth (Peer the Seer)"
+				],
+				"default": "The Dibber (Hosidius)",
+				"visible_when": {
+					"id": "collect",
+					"equals": "Snape grass"
+				}
+			},
+			{
+				"id": "snape_todo",
+				"kind": "label",
+				"label": "TODO",
+				"visible_when": {
+					"id": "snape_route",
+					"equals": []
+				}
+			},
+			{
+				"id": "spider_note",
+				"kind": "label",
+				"label": "Only picks the eggs at the Pandemonium",
+				"visible_when": {
+					"id": "collect",
+					"equals": "Red spider eggs"
+				}
+			},
+			{
+				"id": "max_items",
+				"kind": "number",
+				"label": "Max items (0 is unlimited)",
+				"default": 0,
+				"min": 0,
+				"max": 1000000,
+				"integer": true
+			},
+			{
+				"id": "ring",
+				"kind": "check",
+				"label": "Ring of dueling",
+				"default": false,
+				"visible_when": {
+					"id": "collect",
+					"equals": [
+						"Observatory superantipoison"
+					]
+				}
+			}
+		]
+	}
+}

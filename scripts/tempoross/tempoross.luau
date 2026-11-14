@@ -2595,33 +2595,6 @@ Handler.states = {
 	end,
 }
 
-local function integer_field(id: string, label: string, default: number, min: number, max: number): any
-	return { id = id, kind = "number", label = label, default = default, min = min, max = max, integer = true }
-end
-
-function Game.ask(): boolean
-	local values = Host.form({
-		title = "Tempoross",
-		submit = "Start",
-		columns = true,
-		fields = {
-			integer_field("world", "World", CONFIG.world, 1, 1000),
-			{ id = "solo", kind = "check", label = "Solo (not implemented)", default = CONFIG.solo },
-			integer_field("min_players", "Minimum players", CONFIG.boarding.min_players, 1, 100),
-			integer_field("min_time", "Minimum time", CONFIG.boarding.min_time, 0, 120),
-			{ id = "barehand", kind = "check", label = "Bare-handed", default = CONFIG.barehand },
-			integer_field("buckets", "Buckets", CONFIG.buckets, 0, 10),
-			{ id = "cook", kind = "check", label = "Cook", default = CONFIG.cook.enabled },
-			integer_field("max_games", "Maximum games", CONFIG.max_games, 0, 100000),
-		},
-	})
-	if values == nil then
-		return false
-	end
-	Game.apply_settings(values)
-	return true
-end
-
 function Game.apply_settings(values: { [string]: any })
 	CONFIG.world = values.world
 	CONFIG.solo = values.solo == true
@@ -2654,10 +2627,7 @@ local function close_stray()
 end
 
 function Loop.run()
-	if not Game.ask() then
-		Log.log("Tempoross", "Form closed, stopping the script")
-		return
-	end
+	Game.apply_settings(Host.settings())
 	Chat.skip_old_messages()
 	Log.log("Tempoross", "Tempoross started")
 	Game.setup()

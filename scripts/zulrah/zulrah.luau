@@ -86,7 +86,6 @@ local CONST = {
 	BOARD_WAIT_MS = 10000,
 	ANSWER_TAKES_MS = 2000,
 	ANSWER_REACTION_MS = { 350, 900 },
-	RESTORE_METHODS = { "House", "Ferox Enclave" },
 	MELEE_MAX_RANGE = 2,
 	HOUSE_TABLET = "Teleport to house",
 	HOUSE_TABLET_OPTION = "Inside",
@@ -312,11 +311,9 @@ local CONST = {
 			},
 		},
 	} :: { Rotation },
-	OVERHEADS = { "protect_from_melee", "protect_from_missiles", "protect_from_magic" },
 	TRANSFORMATIONS = {
 		{
 			key = "serpentine",
-			name = "Serpentine",
 			label = "Serpentine (green)",
 			id = 2042,
 			protection = "protect_from_missiles" :: string?,
@@ -326,7 +323,6 @@ local CONST = {
 		},
 		{
 			key = "magma",
-			name = "Magma",
 			label = "Magma (red)",
 			id = 2043,
 			protection = nil :: string?,
@@ -336,7 +332,6 @@ local CONST = {
 		},
 		{
 			key = "tanzanite",
-			name = "Tanzanite",
 			label = "Tanzanite (blue)",
 			id = 2044,
 			protection = "protect_from_magic" :: string?,
@@ -2666,130 +2661,6 @@ function Game.setup_antiban()
 	Log.log(NAME, "Antiban set up")
 end
 
-function Game.ask(): boolean
-	local fields: { Host.FormField } = {
-		{ id = "inventory", kind = "inventory", label = "Inventory", row = "inventory" },
-		{
-			id = "restore",
-			kind = "choice",
-			label = "Restore method:",
-			options = CONST.RESTORE_METHODS,
-			default = CONFIG.restore,
-			row = "inventory",
-		},
-		{ id = "melee", kind = "check", label = "Melee", default = CONFIG.melee },
-		{ kind = "label", text = "Melee is not supported yet!", visible_when = { id = "melee", equals = true } },
-		{ kind = "label", text = "" },
-		{
-			id = "min_food",
-			kind = "number",
-			label = "Min food",
-			box_first = true,
-			default = CONFIG.min_food,
-			min = 0,
-			max = 28,
-			integer = true,
-		},
-		{
-			id = "min_prayer_doses",
-			kind = "number",
-			label = "Min prayer doses",
-			box_first = true,
-			default = CONFIG.min_prayer_doses,
-			min = 0,
-			max = 112,
-			integer = true,
-		},
-		{
-			id = "min_cure_doses",
-			kind = "number",
-			label = "Min cure doses",
-			box_first = true,
-			default = CONFIG.min_cure_doses,
-			min = 0,
-			max = 112,
-			integer = true,
-		},
-		{
-			id = "eat_min",
-			kind = "number",
-			label = "Eat from HP",
-			box_first = true,
-			default = CONFIG.eat_min,
-			min = 1,
-			max = 99,
-			integer = true,
-		},
-		{
-			id = "eat_max",
-			kind = "number",
-			label = "Eat up to HP",
-			box_first = true,
-			default = CONFIG.eat_max,
-			min = 1,
-			max = 99,
-			integer = true,
-		},
-		{
-			id = "stay_below",
-			kind = "number",
-			label = "Never escape under Zulrah HP",
-			box_first = true,
-			default = CONFIG.stay_below,
-			min = 0,
-			max = 500,
-			integer = true,
-		},
-		{ kind = "label", text = "" },
-	}
-	fields[#fields + 1] = { kind = "label", text = "Forms", heading = 1 }
-	for _, transformation in CONST.TRANSFORMATIONS do
-		fields[#fields + 1] = { kind = "label", text = transformation.name, heading = 2 }
-		fields[#fields + 1] = {
-			id = `{transformation.key}_equipment`,
-			kind = "equipment",
-			label = "Equipment",
-			row = transformation.key,
-		}
-		fields[#fields + 1] = {
-			id = `{transformation.key}_prayers`,
-			kind = "prayer",
-			label = "Prayers",
-			locked = CONST.OVERHEADS,
-			row = transformation.key,
-		}
-	end
-	fields[#fields + 1] = { kind = "label", text = "" }
-	fields[#fields + 1] = { kind = "label", text = "Special attacks", heading = 1 }
-	fields[#fields + 1] = { id = "special_equipment", kind = "equipment", label = "Equipment", row = "special" }
-	fields[#fields + 1] = {
-		id = "special_prayers",
-		kind = "prayer",
-		label = "Prayers",
-		locked = CONST.OVERHEADS,
-		row = "special",
-	}
-	for _, transformation in CONST.TRANSFORMATIONS do
-		fields[#fields + 1] = {
-			id = `{transformation.key}_special`,
-			kind = "check",
-			label = `Use on {transformation.label}`,
-			default = CONFIG.special.on[transformation.key],
-		}
-	end
-	for _, field in fields do
-		if field.kind ~= "label" and field.id ~= "melee" then
-			field.disabled_by = "melee"
-		end
-	end
-	local values = Host.form({ title = NAME, submit = "Start", fields = fields })
-	if values == nil then
-		return false
-	end
-	Game.apply_settings(values)
-	return true
-end
-
 function Game.apply_settings(values: { [string]: any })
 	CONFIG.inventory = values.inventory or SAVED_LAYOUTS.inventory
 	CONFIG.restore = values.restore or CONFIG.restore
@@ -3664,10 +3535,7 @@ local function close_stray(state: State)
 end
 
 function Loop.run()
-	if not Game.ask() then
-		Log.log(NAME, "Form closed, stopping the script")
-		return
-	end
+	Game.apply_settings(Host.settings())
 	Log.log(NAME, `{NAME} started`)
 	Game.setup()
 	S.last_progress_at, S.failures_in_row = time(), 0

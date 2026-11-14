@@ -1,0 +1,12 @@
+{
+	"settings": {
+		"fields": [
+			{
+				"id": "stamina",
+				"kind": "check",
+				"label": "Drink a stamina dose from the bank before a round",
+				"default": false
+			}
+		]
+	}
+}

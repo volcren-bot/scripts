@@ -1,0 +1,239 @@
+{
+	"settings": {
+		"fields": [
+			{
+				"id": "inventory",
+				"kind": "inventory",
+				"label": "Inventory",
+				"row": "inventory",
+				"disabled_by": "melee"
+			},
+			{
+				"id": "restore",
+				"kind": "choice",
+				"label": "Restore method:",
+				"options": [
+					"House",
+					"Ferox Enclave"
+				],
+				"default": "House",
+				"row": "inventory",
+				"disabled_by": "melee"
+			},
+			{
+				"id": "melee",
+				"kind": "check",
+				"label": "Melee",
+				"default": false
+			},
+			{
+				"kind": "label",
+				"text": "Melee is not supported yet!",
+				"visible_when": {
+					"id": "melee",
+					"equals": true
+				}
+			},
+			{
+				"kind": "label",
+				"text": ""
+			},
+			{
+				"id": "min_food",
+				"kind": "number",
+				"label": "Min food",
+				"box_first": true,
+				"default": 3,
+				"min": 0,
+				"max": 28,
+				"integer": true,
+				"disabled_by": "melee"
+			},
+			{
+				"id": "min_prayer_doses",
+				"kind": "number",
+				"label": "Min prayer doses",
+				"box_first": true,
+				"default": 2,
+				"min": 0,
+				"max": 112,
+				"integer": true,
+				"disabled_by": "melee"
+			},
+			{
+				"id": "min_cure_doses",
+				"kind": "number",
+				"label": "Min cure doses",
+				"box_first": true,
+				"default": 2,
+				"min": 0,
+				"max": 112,
+				"integer": true,
+				"disabled_by": "melee"
+			},
+			{
+				"id": "eat_min",
+				"kind": "number",
+				"label": "Eat from HP",
+				"box_first": true,
+				"default": 50,
+				"min": 1,
+				"max": 99,
+				"integer": true,
+				"disabled_by": "melee"
+			},
+			{
+				"id": "eat_max",
+				"kind": "number",
+				"label": "Eat up to HP",
+				"box_first": true,
+				"default": 75,
+				"min": 1,
+				"max": 99,
+				"integer": true,
+				"disabled_by": "melee"
+			},
+			{
+				"id": "stay_below",
+				"kind": "number",
+				"label": "Never escape under Zulrah HP",
+				"box_first": true,
+				"default": 50,
+				"min": 0,
+				"max": 500,
+				"integer": true,
+				"disabled_by": "melee"
+			},
+			{
+				"kind": "label",
+				"text": ""
+			},
+			{
+				"kind": "label",
+				"text": "Forms",
+				"heading": 1
+			},
+			{
+				"kind": "label",
+				"text": "Serpentine",
+				"heading": 2
+			},
+			{
+				"id": "serpentine_equipment",
+				"kind": "equipment",
+				"label": "Equipment",
+				"row": "serpentine",
+				"disabled_by": "melee"
+			},
+			{
+				"id": "serpentine_prayers",
+				"kind": "prayer",
+				"label": "Prayers",
+				"locked": [
+					"protect_from_melee",
+					"protect_from_missiles",
+					"protect_from_magic"
+				],
+				"row": "serpentine",
+				"disabled_by": "melee"
+			},
+			{
+				"kind": "label",
+				"text": "Magma",
+				"heading": 2
+			},
+			{
+				"id": "magma_equipment",
+				"kind": "equipment",
+				"label": "Equipment",
+				"row": "magma",
+				"disabled_by": "melee"
+			},
+			{
+				"id": "magma_prayers",
+				"kind": "prayer",
+				"label": "Prayers",
+				"locked": [
+					"protect_from_melee",
+					"protect_from_missiles",
+					"protect_from_magic"
+				],
+				"row": "magma",
+				"disabled_by": "melee"
+			},
+			{
+				"kind": "label",
+				"text": "Tanzanite",
+				"heading": 2
+			},
+			{
+				"id": "tanzanite_equipment",
+				"kind": "equipment",
+				"label": "Equipment",
+				"row": "tanzanite",
+				"disabled_by": "melee"
+			},
+			{
+				"id": "tanzanite_prayers",
+				"kind": "prayer",
+				"label": "Prayers",
+				"locked": [
+					"protect_from_melee",
+					"protect_from_missiles",
+					"protect_from_magic"
+				],
+				"row": "tanzanite",
+				"disabled_by": "melee"
+			},
+			{
+				"kind": "label",
+				"text": ""
+			},
+			{
+				"kind": "label",
+				"text": "Special attacks",
+				"heading": 1
+			},
+			{
+				"id": "special_equipment",
+				"kind": "equipment",
+				"label": "Equipment",
+				"row": "special",
+				"disabled_by": "melee"
+			},
+			{
+				"id": "special_prayers",
+				"kind": "prayer",
+				"label": "Prayers",
+				"locked": [
+					"protect_from_melee",
+					"protect_from_missiles",
+					"protect_from_magic"
+				],
+				"row": "special",
+				"disabled_by": "melee"
+			},
+			{
+				"id": "serpentine_special",
+				"kind": "check",
+				"label": "Use on Serpentine (green)",
+				"default": false,
+				"disabled_by": "melee"
+			},
+			{
+				"id": "magma_special",
+				"kind": "check",
+				"label": "Use on Magma (red)",
+				"default": false,
+				"disabled_by": "melee"
+			},
+			{
+				"id": "tanzanite_special",
+				"kind": "check",
+				"label": "Use on Tanzanite (blue)",
+				"default": false,
+				"disabled_by": "melee"
+			}
+		]
+	}
+}

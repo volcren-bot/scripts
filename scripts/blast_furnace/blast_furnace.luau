@@ -1711,73 +1711,6 @@ Handler.states = {
 	WAIT_BARS = Handler.wait_bars,
 }
 
-function Game.ask(): boolean
-	local names, coal_bars = {}, {}
-	for _, bar in ipairs(BARS) do
-		table.insert(names, bar.name)
-		if bar.secondary == "Coal" then
-			table.insert(coal_bars, bar.name)
-		end
-	end
-	local uses_coal = { id = "bar", equals = coal_bars }
-	local values = Host.form({
-		title = NAME,
-		submit = "Start",
-		fields = {
-			{ id = "bar", kind = "choice", label = "Bar", options = names, default = CONFIG.bar },
-			{
-				id = "coal_bag",
-				kind = "check",
-				label = "Use a coal bag",
-				default = CONFIG.coal_bag,
-				visible_when = uses_coal,
-			},
-			{
-				id = "cape",
-				kind = "check",
-				label = "Wear a smithing or max cape from the bank (the coal bag holds 36)",
-				default = CONFIG.cape,
-				enabled_by = "coal_bag",
-				visible_when = uses_coal,
-			},
-			{ id = "stamina", kind = "check", label = "Drink stamina potions from the bank", default = CONFIG.stamina },
-			{
-				id = "stamina_below",
-				kind = "number",
-				label = "Drink below run energy",
-				default = CONFIG.stamina_below,
-				min = 1,
-				max = 100,
-				integer = true,
-				enabled_by = "stamina",
-			},
-			{
-				id = "coffer_deposit",
-				kind = "number",
-				label = "Coins to put in the coffer each time (72,000 lasts an hour)",
-				default = CONFIG.coffer_deposit,
-				min = 1000,
-				max = 10000000,
-				integer = true,
-			},
-			{
-				id = "max_bars",
-				kind = "number",
-				label = "Max bars (0 is unlimited)",
-				default = CONFIG.max_bars,
-				min = 0,
-				max = 1000000,
-				integer = true,
-			},
-		},
-	})
-	if values == nil then
-		return false
-	end
-	Game.apply_settings(values)
-	return true
-end
-
 function Game.apply_settings(values: { [string]: any })
 	CONFIG.bar = values.bar
 	CONFIG.coal_bag = values.coal_bag
@@ -1806,10 +1739,7 @@ function Game.poll_settings()
 end
 
 function Loop.run()
-	if not Game.ask() then
-		Log.log(NAME, "Form closed, stopping the script")
-		return
-	end
+	Game.apply_settings(Host.settings())
 	Log.log(NAME, `{NAME} started: {S.bar.name}`)
 	Game.setup()
 	S.last_progress_at, S.failures_in_row = time(), 0

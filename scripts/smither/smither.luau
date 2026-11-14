@@ -1066,35 +1066,6 @@ function Game.apply_settings(values: { [string]: any })
 	S.last_bars = nil
 end
 
-function Game.ask(): boolean
-	local values = Host.form({
-		title = NAME,
-		submit = "Start",
-		fields = {
-			{
-				kind = "label",
-				text = "Start anywhere: it teleports to Prifddinas with an Eternal teleport crystal from the bank, or to Varrock with a Varrock teleport or its runes.",
-			},
-			{ id = "metal", kind = "choice", label = "Bar", options = METALS, default = CONFIG.metal },
-			{ id = "item_type", kind = "choice", label = "Item", options = ITEMS, default = CONFIG.item_type },
-			{
-				id = "max_items",
-				kind = "number",
-				label = "Max items (0 is unlimited)",
-				default = CONFIG.max_items,
-				min = 0,
-				max = 1000000,
-				integer = true,
-			},
-		},
-	})
-	if values == nil then
-		return false
-	end
-	Game.apply_settings(values)
-	return true
-end
-
 function Game.poll_settings()
 	local values = Host.form_update()
 	if values == nil then
@@ -1119,10 +1090,7 @@ local function close_stray()
 end
 
 function Loop.run()
-	if not Game.ask() then
-		Log.log(NAME, "Form closed, stopping the script")
-		return
-	end
+	Game.apply_settings(Host.settings())
 	Log.log(NAME, `{NAME} started: {S.item} from {S.bar}`)
 	Game.setup()
 	S.last_progress_at, S.failures_in_row = time(), 0

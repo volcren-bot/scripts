@@ -122,7 +122,6 @@ local SNAPE_ROUTES = {
 	"Waterbirth (Peer the Seer)",
 }
 local SNAPE_TODO: { string } = {}
-local FAR_BANK_NAMES = { "Observatory superantipoison" }
 local COLLECTABLES: { [string]: Collectable } = {
 	["Lumbridge Logs"] = {
 		item = "Logs",
@@ -2007,63 +2006,6 @@ Handler.states = {
 	WAIT = Handler.wait_for_spawn,
 }
 
-function Game.ask(): boolean
-	local values = Host.form({
-		title = NAME,
-		submit = "Start",
-		fields = {
-			{
-				id = "collect",
-				kind = "choice",
-				label = "Collect",
-				options = COLLECTABLE_NAMES,
-				default = CONFIG.collect,
-			},
-			{
-				id = "snape_route",
-				kind = "choice",
-				label = "Snape grass route",
-				options = SNAPE_ROUTES,
-				default = CONFIG.snape_route,
-				visible_when = { id = "collect", equals = "Snape grass" },
-			},
-			{
-				id = "snape_todo",
-				kind = "label",
-				label = "TODO",
-				visible_when = { id = "snape_route", equals = SNAPE_TODO },
-			},
-			{
-				id = "spider_note",
-				kind = "label",
-				label = "Only picks the eggs at the Pandemonium",
-				visible_when = { id = "collect", equals = "Red spider eggs" },
-			},
-			{
-				id = "max_items",
-				kind = "number",
-				label = "Max items (0 is unlimited)",
-				default = CONFIG.max_items,
-				min = 0,
-				max = 1000000,
-				integer = true,
-			},
-			{
-				id = "ring",
-				kind = "check",
-				label = "Ring of dueling",
-				default = CONFIG.ring,
-				visible_when = { id = "collect", equals = FAR_BANK_NAMES },
-			},
-		},
-	})
-	if values == nil then
-		return false
-	end
-	Game.apply_settings(values)
-	return true
-end
-
 function Game.apply_settings(values: { [string]: any })
 	if COLLECTABLES[values.collect] then
 		CONFIG.collect = values.collect
@@ -2102,10 +2044,7 @@ local function close_stray(banking: boolean)
 end
 
 function Loop.run()
-	if not Game.ask() then
-		Log.log(NAME, "Form closed, stopping the script")
-		return
-	end
+	Game.apply_settings(Host.settings())
 	if CONFIG.collect == "Snape grass" and CONFIG.snape_route == SNAPE_ROUTES[3] and not Game.check_spellbook() then
 		return
 	end
