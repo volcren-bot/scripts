@@ -9,6 +9,7 @@ type ClientState = Host.ClientState
 local Antiban = require("@lib/main/antiban/antiban")
 local AntibanTasks = require("@lib/main/antiban/antiban_tasks")
 local Bankmain = require("@lib/main/interfaces/mainscreen/bankmain")
+local BankpinKeypad = require("@lib/main/interfaces/mainscreen/bankpin_keypad")
 local Biometrics = require("@lib/main/antiban/biometrics")
 local Camera = require("@lib/main/camera")
 local Chat = require("@lib/main/interfaces/chatbox/chat")
@@ -188,6 +189,7 @@ local CONST = {
 		bag_empty = "^the coal bag is.-empty",
 		took_bars = "from the dispenser",
 		pot_full = "make sure all your ore smelts",
+		collect_first = "collect your bars before making any more",
 	},
 	BARS_DUE_MS = 9000,
 	BELT_MS = 3600,
@@ -250,6 +252,7 @@ type RunState = {
 	bag_coal: number?,
 	trip: Trip?,
 	pot_full: boolean,
+	collect_first: boolean,
 	gold_take: boolean,
 	deposited: { Unwanted },
 	paid_until: number,
@@ -276,6 +279,7 @@ local S: RunState = {
 	bag_coal = nil,
 	trip = nil,
 	pot_full = false,
+	collect_first = false,
 	gold_take = false,
 	deposited = {},
 	paid_until = 0,
@@ -434,6 +438,9 @@ function Read.read_messages()
 		elseif string.find(text, CONST.TEXT.pot_full, 1, true) then
 			S.pot_full = true
 			Log.log(NAME, "The pot is full of coal, banking the coal")
+		elseif string.find(text, CONST.TEXT.collect_first, 1, true) then
+			S.collect_first = true
+			Log.log(NAME, "The furnace wants its bars collected first, banking the ore")
 		elseif string.find(text, CONST.TEXT.paid, 1, true) then
 			S.paid_until = time() + CONST.FOREMAN.paid_ms
 			S.permission_needed = false
@@ -724,8 +731,13 @@ function Loop.get_state(): State
 	Loop.report_counters()
 
 	local f = snap.furnace
+	local pin_asked = BankpinKeypad.is_open()
 	if Bankmain.is_open() then
 		return "BANK"
+	end
+	if pin_asked and BankpinKeypad.is_open() then
+		Game.stop("The bank PIN wasn't entered")
+		return "LOADING"
 	end
 	if Make.is_open() then
 		return "TAKE"
@@ -749,7 +761,7 @@ function Loop.get_state(): State
 		return if not Read.gold_buffer() and f.dispensed > 0 and snap.free_slots > 0 then "COLLECT" else "BANK"
 	end
 	if snap.ore > 0 or snap.secondary > 0 then
-		return if S.pot_full and snap.ore == 0 then "BANK" else "LOAD"
+		return if S.collect_first or (S.pot_full and snap.ore == 0) then "BANK" else "LOAD"
 	end
 	if (S.bag_coal or 0) > 0 and snap.free_slots > 0 and Read.bag_needed() then
 		return "EMPTY_BAG"
@@ -1147,12 +1159,16 @@ function Handler.bank()
 		Game.fail("Couldn't drink a stamina potion")
 		return
 	end
+	local collect_first = S.collect_first
+	S.collect_first = false
 	if Read.dispensed() > 0 and not Read.gold_buffer() then
 		Bankmain.close()
 		return
 	end
-	if Read.gold_buffer() and Read.dispensed() > 0 and not Read.in_bank(S.bar.ore) then
-		Log.log(NAME, `Out of {S.bar.ore}, taking the last bars`)
+	if Read.gold_buffer() and Read.dispensed() > 0 and (collect_first or not Read.in_bank(S.bar.ore)) then
+		if not collect_first then
+			Log.log(NAME, `Out of {S.bar.ore}, taking the last bars`)
+		end
 		S.gold_take = true
 		Bankmain.close()
 		return
@@ -1163,23 +1179,11 @@ function Handler.bank()
 		end
 		return
 	end
-	if Read.gold_buffer() and not Handler.gold_gloves() then
-		Game.fail("Couldn't put on the ice gloves")
-		return
+	if Read.gold_buffer() then
+		S.gold_take = Read.dispensed() > 0
 	end
 	S.failures_in_row = 0
 	Handler.leave_bank()
-end
-
-function Handler.gold_gloves(): boolean
-	S.gold_take = Read.dispensed() > 0
-	if not S.gold_take or Read.wearing_ice() then
-		return true
-	end
-	if not Bankmain.inventory.interact(CONST.ICE_GLOVES, "Wear") then
-		return false
-	end
-	return Handler.wait(Read.wearing_ice, CONST.WEAR_MS)
 end
 
 function Read.in_view(loc: Host.Loc?): boolean
@@ -1256,7 +1260,7 @@ function Handler.take()
 	local taken = Handler.wait(function()
 		return (Inventory.count_ex(ALL_BARS) or 0) > before
 	end, CONST.TAKE_MS)
-	if gold then
+	if gold and taken then
 		S.gold_take = false
 		Handler.wear_gauntlets()
 		Handler.hover_bank(nil)
@@ -1409,7 +1413,7 @@ end
 
 function Handler.prehover_next(ore_loaded: boolean)
 	if (S.bag_coal or 0) > 0 and Read.bag_needed() then
-		Handler.hover_bag()
+		Handler.hover_item(CONST.COAL_BAG)
 		return
 	end
 	local at = CONST.BELT_TILE
@@ -1425,7 +1429,11 @@ function Handler.prehover_next(ore_loaded: boolean)
 		return
 	end
 	if Read.gold_buffer() then
-		Objects.hover_async(dispenser, at)
+		if Read.wearing_ice() then
+			Objects.hover_async(dispenser, at)
+		else
+			Handler.hover_item(CONST.ICE_GLOVES)
+		end
 		return
 	end
 	local tile = S.wait_tile or Read.wait_tile(dispenser)
@@ -1433,8 +1441,8 @@ function Handler.prehover_next(ore_loaded: boolean)
 	Walker.hover_tile_async(tile, at)
 end
 
-function Handler.hover_bag()
-	local slot = Inventory.index_of(CONST.COAL_BAG)
+function Handler.hover_item(item: Item.Item | { Item.Item })
+	local slot = Inventory.index_of(item)
 	local w = if slot then Inventory.box(slot) else nil
 	if w then
 		Mouse.move_async({ x1 = w.x, y1 = w.y, x2 = w.x + w.width - 1, y2 = w.y + w.height - 1 })
@@ -1471,7 +1479,7 @@ function Handler.empty_bag()
 	local first = true
 	while coal > 0 do
 		if not first then
-			Handler.hover_bag()
+			Handler.hover_item(CONST.COAL_BAG)
 			Handler.wait(function()
 				return (Inventory.count_ex("Coal") or 0) == 0
 			end, CONST.BAG_MS)
@@ -1514,27 +1522,6 @@ function Handler.swap_to_ice(): boolean
 	return Handler.wait(Read.wearing_ice, 2400)
 end
 
-function Handler.collect_gold()
-	local dispenser = Objects.nearest(CONST.DISPENSER, snap.me)
-	if dispenser == nil then
-		Game.fail("The bar dispenser isn't here")
-		return
-	end
-	if not Handler.swap_to_ice() then
-		Game.fail("Couldn't put on the ice gloves")
-		return
-	end
-	if not Objects.interact(dispenser, "Take", false) then
-		sleep(Random.int(300, 600))
-		return
-	end
-	if not Make.wait_open(CONST.TAKE_MS) then
-		Game.fail("The dispenser didn't offer the bars")
-		return
-	end
-	Handler.take()
-end
-
 function Handler.wear_gauntlets()
 	if Wornitems.contains(CONST.GAUNTLETS) then
 		return
@@ -1549,12 +1536,8 @@ function Handler.wear_gauntlets()
 end
 
 function Handler.collect()
-	if Read.gold_buffer() then
-		Handler.collect_gold()
-		return
-	end
 	local f = snap.furnace
-	if not f.ready or (S.gauntlets and f.ore > 0) then
+	if not Read.gold_buffer() and (not f.ready or (S.gauntlets and f.ore > 0)) then
 		Handler.wait_bars()
 		return
 	end
