@@ -8,6 +8,7 @@ local Antiban = require("@lib/main/antiban/antiban")
 local AntibanTasks = require("@lib/main/antiban/antiban_tasks")
 local Biometrics = require("@lib/main/antiban/biometrics")
 local GameState = require("@lib/main/game_state")
+local Handoff = require("@lib/main/handoff")
 local Log = require("@lib/utils/log")
 local Login = require("@lib/main/interfaces/login/login")
 local Random = require("@lib/utils/math/random")
@@ -33,6 +34,7 @@ local stats = { runs = 0, failures = 0 }
 
 type RunState = {
 	finished: boolean,
+	blocked: string?,
 	antiban_ready: boolean,
 	antiban_began_at: number,
 	last_progress_at: number,
@@ -41,8 +43,23 @@ type RunState = {
 	skip: { [string]: boolean },
 }
 
+function Game.apply_settings(values: { [string]: any })
+	CONFIG.max_runs = values.max_runs or CONFIG.max_runs
+	CONFIG.timeouts.idle_minutes = values.idle_minutes or CONFIG.timeouts.idle_minutes
+	CONFIG.antiban = values.antiban ~= false
+end
+
+function Game.poll_settings()
+	local values = Host.form_update()
+	if values then
+		Game.apply_settings(values)
+		Log.log(NAME, "Settings updated")
+	end
+end
+
 local S: RunState = {
 	finished = false,
+	blocked = nil,
 	antiban_ready = false,
 	antiban_began_at = 0,
 	last_progress_at = 0,
@@ -203,6 +220,7 @@ function Loop.check_timeouts()
 	end
 	if reason then
 		Log.log(NAME, `Stuck: {reason}, stopping the script`)
+		S.blocked = reason
 		S.finished = true
 	end
 end
@@ -269,13 +287,31 @@ local function close_stray()
 	Toplevel.escape_clear()
 end
 
+function Loop.wrap_up()
+	local settled, why = Handoff.settle()
+	if not settled then
+		error(`Couldn't leave the account settled: {why}`, 0)
+	end
+	if S.blocked then
+		Handoff.blocked(S.blocked)
+	else
+		Handoff.done()
+	end
+end
+
 function Loop.run()
+	Game.apply_settings(Host.settings())
 	Log.log(NAME, `{NAME} started`)
 	Game.setup()
 	S.last_progress_at, S.failures_in_row = time(), 0
 	Loop.hook_antiban_timeouts()
 
 	while not S.finished do
+		if Handoff.finishing() then
+			Log.log(NAME, "The queue asked to wrap up")
+			break
+		end
+		Game.poll_settings()
 		local state: State = Loop.get_state()
 		Loop.check_timeouts()
 		if S.finished then
@@ -289,6 +325,7 @@ function Loop.run()
 		end
 		sleep(Random.int(60, 140))
 	end
+	Loop.wrap_up()
 	Log.log(NAME, "Done")
 end
 
