@@ -319,6 +319,7 @@ local snap: Snapshot = nil :: any
 type State =
 	"LOADING"
 	| "LOGIN"
+	| "BANK_PIN"
 	| "BANK"
 	| "TAKE"
 	| "CHAT"
@@ -732,13 +733,11 @@ function Loop.get_state(): State
 	Loop.report_counters()
 
 	local f = snap.furnace
-	local pin_asked = BankpinKeypad.is_open()
+	if BankpinKeypad.is_open() then
+		return "BANK_PIN"
+	end
 	if Bankmain.is_open() then
 		return "BANK"
-	end
-	if pin_asked and BankpinKeypad.is_open() then
-		Game.stop("The bank PIN wasn't entered")
-		return "LOADING"
 	end
 	if Make.is_open() then
 		return "TAKE"
@@ -1117,6 +1116,13 @@ function Handler.arrive(done: () -> boolean, timeout_ms: number): boolean
 		return still_since ~= nil and time() - still_since >= CONST.ARRIVE_SETTLE_MS
 	end, timeout_ms)
 	return done()
+end
+
+function Handler.bank_pin()
+	local entered = BankpinKeypad.enter()
+	if entered ~= "entered" and entered ~= "closed" then
+		Game.fail(`The bank PIN wasn't entered: {entered}`)
+	end
 end
 
 function Handler.bank()
@@ -1629,6 +1635,7 @@ Handler.states = {
 	LOADING = function()
 		sleep(100)
 	end,
+	BANK_PIN = Handler.bank_pin,
 	LOGIN = function()
 		Game.sign_in()
 	end,
