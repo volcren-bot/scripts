@@ -281,13 +281,18 @@ function Read.find_site(center: Host.Tile, plane: number, reach: number): Site?
 	local banks =
 		Read.shown_locs(Read.area(center, reach + CONST.SITE.pair_tiles), plane, CONST.BANK_NAMES, CONST.BANK_ACTIONS)
 	local best: Site? = nil
-	local best_gap = math.huge
+	local best_trip, best_walk = math.huge, math.huge
 	for _, anvil in ipairs(anvils) do
 		local bank = Read.closest(banks, anvil)
-		local d = Read.gap(anvil, center)
-		if bank ~= nil and Read.gap(bank, anvil) <= CONST.SITE.pair_tiles and d < best_gap then
+		local trip = if bank then Read.gap(bank, anvil) else math.huge
+		local walk = Read.gap(anvil, center)
+		if
+			bank ~= nil
+			and trip <= CONST.SITE.pair_tiles
+			and (trip < best_trip or (trip == best_trip and walk < best_walk))
+		then
 			best = { anvil = { x = anvil.x, y = anvil.y }, bank = { x = bank.x, y = bank.y }, plane = plane }
-			best_gap = d
+			best_trip, best_walk = trip, walk
 		end
 	end
 	return best
