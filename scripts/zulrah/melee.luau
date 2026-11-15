@@ -99,7 +99,7 @@ local STRIPS: { [string]: { Tile } } = {
 }
 type Stop = { here: true } | { tile: string } | { strip: string }
 local ROUTES: { [string]: { Stop } } = {
-	["tanzanite middle between"] = { { here = true }, { tile = "east_pillar" }, { strip = "south_inner" } },
+	["tanzanite middle between"] = { { here = true } :: Stop, { tile = "east_pillar" }, { strip = "south_inner" } },
 }
 local FIRST_TILES: { Tile } = { { x = 56, y = 62 }, { x = 56, y = 61 } }
 
@@ -113,7 +113,8 @@ function Melee.new(ctx: Context): Fight
 	local magma_near: Near? = nil
 	local magma_tile: Tile? = nil
 	local walk_until = 0
-	local route: { near: Near, stops: { Stop }, index: number, tile: Tile, attacked: boolean }? = nil
+	type Route = { near: Near, stops: { Stop }, index: number, tile: Tile, attacked: boolean }
+	local route: Route? = nil
 
 	local function reach_tile(home: Tile, at: Tile, aims: Aims): Tile?
 		local range = CombatSafeSpot.weapon_range()
@@ -197,11 +198,14 @@ function Melee.new(ctx: Context): Fight
 		if stops == nil then
 			return nil
 		end
-		local r = route
-		if r == nil or r.near ~= near or r.stops ~= stops then
+		local current = route
+		local r: Route
+		if current == nil or current.near ~= near or current.stops ~= stops then
 			r = { near = near, stops = stops, index = 1, tile = stop_tile(stops[1]), attacked = false }
 			route = r
 			Log.log(ctx.name, `Phase {phase} route: holding {r.tile.x},{r.tile.y}`)
+		else
+			r = current
 		end
 		if r.attacked and r.index < #r.stops and Player.is_animating() then
 			r.index += 1

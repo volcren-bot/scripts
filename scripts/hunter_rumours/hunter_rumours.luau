@@ -11,6 +11,7 @@ local Biometrics = require("@lib/main/antiban/biometrics")
 local Chat = require("@lib/main/interfaces/chatbox/chat")
 local GameState = require("@lib/main/game_state")
 local Inventory = require("@lib/main/interfaces/gametabs/inventory")
+local Item = require("@lib/utils/item")
 local Log = require("@lib/utils/log")
 local Login = require("@lib/main/interfaces/login/login")
 local Npcs = require("@lib/main/entities/npcs")
@@ -513,7 +514,7 @@ function Read.needs_recharge(): boolean
 end
 
 function Read.has_recharge_items(): boolean
-	local ids: { number } = {}
+	local ids: { Item.Item } = {}
 	for _, item in ipairs(CONST.RECHARGE_ITEMS) do
 		table.insert(ids, item.id)
 	end

@@ -121,7 +121,7 @@ local CONST = {
 			["Fur stall"] = { x = 1869, y = 3292 },
 			["Silk stall"] = { x = 1869, y = 3295 },
 			["Veg stall"] = { x = 1865, y = 3295 },
-		},
+		} :: { [string]: { x: number, y: number } },
 		LOOP = { x1 = 1863, y1 = 3290, x2 = 1869, y2 = 3295, start = { x = 1867, y = 3295 } },
 		PLAZA = { x1 = 1858, y1 = 3284, x2 = 1874, y2 = 3299 },
 		AMULET = { name = "sailors' amulet", option = "Port Roberts", TELEPORT_MS = 8000 },
@@ -253,6 +253,7 @@ type Snapshot = {
 local snap: Snapshot = nil :: any
 
 type State = "LOADING" | "LOGIN" | "PORT" | "JAIL" | "STEAL" | "FILL" | "DROP" | "BANK" | "RETURN" | "LURE" | "EAT"
+type States = { [State]: () -> () }
 
 type Plan = { fill: { from: number, to: number, direct: boolean }? }
 
@@ -644,7 +645,7 @@ function Loop.report_counters()
 		return
 	end
 	CONST.REPORT.counters_key = key
-	local counters = {
+	local counters: { Host.Counter } = {
 		{ id = "steals", label = "Steals", value = stats.steals },
 		{ id = "trips", label = "Bank trips", value = stats.trips },
 		{ id = "failures", label = "Failures", value = stats.failures, percent_of = "steals" },
@@ -1494,7 +1495,7 @@ Handler.bakers_states = {
 	RETURN = Handler.return_to_safe,
 	LURE = Handler.lure,
 	EAT = Handler.eat,
-}
+} :: States
 
 Handler.tea_states = {
 	LOADING = loading,
@@ -1516,7 +1517,7 @@ Handler.tea_states = {
 		end
 	end,
 	DROP = drop,
-}
+} :: States
 
 Handler.port_roberts_states = {
 	LOADING = loading,
@@ -1525,7 +1526,7 @@ Handler.port_roberts_states = {
 	JAIL = Handler.jail,
 	BANK = Handler.port_bank,
 	RETURN = Handler.port_return,
-}
+} :: States
 
 Handler.fruit_states = {
 	LOADING = loading,
@@ -1555,7 +1556,7 @@ Handler.fruit_states = {
 	DROP = drop,
 	BANK = Handler.bank,
 	RETURN = Handler.return_to_house,
-}
+} :: States
 
 local STALLS = { "Fruit stalls", "Baker's stalls", "Tea stall", "Port Roberts" }
 

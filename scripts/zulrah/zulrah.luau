@@ -1019,7 +1019,8 @@ end
 
 function Read.jad_protection(): string?
 	for _, p in Read.incoming_attacks() do
-		if jad_last == nil or p.start_cycle > jad_last.cycle then
+		local last = jad_last
+		if last == nil or p.start_cycle > last.cycle then
 			jad_last = { cycle = p.start_cycle, ranged = p.id == CONST.RANGED_PROJECTILE, seen_at = time() }
 		end
 	end
@@ -1236,7 +1237,7 @@ local function has_immune_helm(layout: EquipmentLayout.Layout?): boolean
 		return false
 	end
 	for _, slot in ipairs(layout.slots) do
-		if slot.slot == 0 and slot.mode == "item" and CONST.VENOM_IMMUNE_HELMS[slot.id] then
+		if slot.slot == 0 and slot.mode == "item" and slot.id ~= nil and CONST.VENOM_IMMUNE_HELMS[slot.id] then
 			return true
 		end
 	end
@@ -1262,9 +1263,9 @@ end
 function Read.worn_and_carried(layout: InventoryLayout.Layout, gear: EquipmentLayout.Layout?): { string }
 	local worn: { [number]: boolean } = {}
 	for _, slot in ipairs(if gear then gear.slots else {}) do
-		if slot.mode == "item" then
+		if slot.mode == "item" and slot.id ~= nil then
 			worn[slot.id] = true
-			for _, id in ipairs(slot.ids) do
+			for _, id in ipairs(slot.ids or {}) do
 				worn[id] = true
 			end
 		end
@@ -2153,7 +2154,7 @@ function Read.can_hit_at(scene: Host.Tile, at: { x: number, y: number }): boolea
 		return false
 	end
 	local centre, half = Read.world_tile(at), CONST.ZULRAH_SIZE // 2
-	local chaser = { x = centre.x - half, y = centre.y - half, size = CONST.ZULRAH_SIZE }
+	local chaser: SafeSpot.Chaser = { x = centre.x - half, y = centre.y - half, size = CONST.ZULRAH_SIZE }
 	return CombatSafeSpot.can_attack(grid, Read.world_tile(scene), chaser, range)
 end
 
@@ -3315,7 +3316,7 @@ Handler.states = {
 			Handler.go_to_bank("HOUSE")
 			return
 		end
-		if not table.find(House.offers(CONST.FEROX), "box") then
+		if not table.find(House.offers(CONST.FEROX), "box" :: House.Furniture) then
 			local message =
 				`No {CONST.ORNATE_POOL} or jewellery box in this house: use a ring of dueling to teleport to the {CONST.FEROX} instead`
 			Log.warn(NAME, message)
@@ -3395,7 +3396,9 @@ Handler.states = {
 	end,
 	TRAVEL_ZULANDRA = function()
 		Log.log(NAME, "Travelling to Zul-Andra")
-		local ok, walked = pcall(Walker.walk, CONST.PRIESTESS_TILE)
+		local ok, walked = pcall(function(): boolean
+			return Walker.walk(CONST.PRIESTESS_TILE)
+		end)
 		if not ok then
 			local message = `Couldn't find a way to Zul-Andra: {walked}`
 			Log.warn(NAME, message)

@@ -18,6 +18,7 @@ local GameState = require("@lib/main/game_state")
 local GroundItems = require("@lib/main/entities/ground_items")
 local Inv = require("@lib/main/interfaces/inv")
 local Inventory = require("@lib/main/interfaces/gametabs/inventory")
+local Item = require("@lib/utils/item")
 local Journal = require("@lib/main/interfaces/gametabs/journal")
 local Log = require("@lib/utils/log")
 local Login = require("@lib/main/interfaces/login/login")
@@ -599,13 +600,15 @@ function Read.path_cost(from: Host.Tile, item: Host.GroundItem): number
 	return cost
 end
 
-function Read.ranked(items: { Host.GroundItem }, from: Host.Tile): { { item: Host.GroundItem, cost: number } }
-	local ranked = {}
+type Ranked = { item: Host.GroundItem, cost: number }
+
+function Read.ranked(items: { Host.GroundItem }, from: Host.Tile): { Ranked }
+	local ranked: { Ranked } = {}
 	for _, item in ipairs(items) do
 		local cost = if item.x == from.x and item.y == from.y then 0 else Read.path_cost(from, item)
 		table.insert(ranked, { item = item, cost = cost })
 	end
-	table.sort(ranked, function(a, b)
+	table.sort(ranked, function(a: Ranked, b: Ranked): boolean
 		return a.cost < b.cost
 	end)
 	return ranked
@@ -681,7 +684,7 @@ function Read.pick_from(items: { Host.GroundItem }, from: Host.Tile): Host.Groun
 	if closest == nil then
 		return nil
 	end
-	local others = {}
+	local others: { Host.GroundItem } = {}
 	for i = 2, #ranked do
 		if ranked[i].cost - closest.cost <= CONST.PICK.NEAR_TIE then
 			table.insert(others, ranked[i].item)
@@ -1614,7 +1617,7 @@ function Handler.wait_for_spawn()
 	antiban()
 end
 
-local LYRE_NAMES = {
+local LYRE_NAMES: { Item.Item } = {
 	"Enchanted lyre(i)",
 	"Enchanted lyre(5)",
 	"Enchanted lyre(4)",
@@ -1654,7 +1657,7 @@ function Game.check_lyre_diary(): boolean
 	return false
 end
 
-local SEAL_NAMES = { "Seal of passage" }
+local SEAL_NAMES: { Item.Item } = { "Seal of passage" }
 
 function Game.pick_booths(c: Collectable): { Booth }?
 	local booths = c.tele and c.tele.booths

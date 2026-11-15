@@ -20,10 +20,20 @@ jobs:
       failed: ${{ steps.lint.outputs.failed }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: scripts
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: volcren-bot/lib
+          path: lib
 
       - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac
+        with:
+          working_directory: scripts
 
       - id: lint
+        working-directory: scripts
         run: |
           failed=""
           for dir in $(jq -r 'keys[]' deploy.json); do

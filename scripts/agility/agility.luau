@@ -2341,8 +2341,9 @@ function Game.progress(): boolean
 	local first = course.steps[1]
 	Log.log(NAME, `Agility unlocks {course.name}, walking there`)
 	Overlay.clear()
-	local walked, arrived =
-		pcall(Walker.walk, first.start, { near = 2, plane = first.plane, accept = Read.walk_through })
+	local walked, arrived = pcall(function(): boolean
+		return Walker.walk(first.start, { near = 2, plane = first.plane, accept = Read.walk_through })
+	end)
 	if not walked then
 		Log.log(NAME, `No way to {course.name}: {arrived}`)
 	end
@@ -2357,7 +2358,9 @@ function Game.progress(): boolean
 	S.unreachable[key] = true
 	Log.log(NAME, `Couldn't get to {course.name}, staying on {previous.name}`)
 	local back = previous.steps[1]
-	local went_back, why = pcall(Walker.walk, back.start, { near = 2, plane = back.plane, accept = Read.walk_through })
+	local went_back, why = pcall(function(): boolean
+		return Walker.walk(back.start, { near = 2, plane = back.plane, accept = Read.walk_through })
+	end)
 	if not went_back then
 		Log.log(NAME, `No way back to {previous.name}: {why}`)
 	end

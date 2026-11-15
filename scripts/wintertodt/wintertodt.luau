@@ -175,7 +175,7 @@ local ITEMS = {
 	UNF = "Rejuvenation potion (unf)",
 	POTION = "Rejuvenation potion (1..4)",
 	POTION_1 = "Rejuvenation potion (1)",
-	KNIVES = { "Knife", "Fletching knife" },
+	KNIVES = { "Knife", "Fletching knife" } :: { Item.Item },
 }
 
 local TOOL_NAMES: { [Tool]: { [string]: boolean } } = {
@@ -1374,7 +1374,7 @@ end
 
 function Read.dangers(): { Danger }
 	local snow = CONST.SOLO.SNOW
-	local spots = SpotAnims.find({ snow.CENTRE, snow.CORNER }) or {}
+	local spots: { Host.SpotAnim } = SpotAnims.find({ snow.CENTRE, snow.CORNER }) or {}
 	local dangers: { Danger } = {}
 	for _, c in ipairs(spots) do
 		if c.id == snow.CENTRE and c.cycle < c.start_cycle + snow.LANDED_CYCLES then

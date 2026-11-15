@@ -69,7 +69,7 @@ local ITEMS = {
 
 local CONST = {
 	REPORT = { counters_key = "" },
-	HAMMERS = { "Hammer", "Imcando hammer", "Imcando hammer (off-hand)" },
+	HAMMERS = { "Hammer", "Imcando hammer", "Imcando hammer (off-hand)" } :: { Item.Item },
 	BANK_NAMES = { "Bank booth", "Bank chest" },
 	BANK_ACTIONS = { "Bank", "Use" },
 	SITE = { start_tiles = 25, landing_tiles = 45, pair_tiles = 20, near_tiles = 25 },

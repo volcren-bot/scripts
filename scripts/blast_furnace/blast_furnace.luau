@@ -185,10 +185,10 @@ local CONST = {
 	DISPENSER_READY = 2,
 	WAIT_EAST = 0.9,
 	DISPENSER_REACH = 3,
-	ICE_GLOVES = { "Ice gloves", "Smiths gloves (i)" },
+	ICE_GLOVES = { "Ice gloves", "Smiths gloves (i)" } :: { Item.Item },
 	GAUNTLETS = "Goldsmith gauntlets",
-	COAL_BAG = { "Coal bag", "Open coal bag" },
-	BIG_BAG_CAPES = { "Smithing cape", "Smithing cape(t)", "Max cape" },
+	COAL_BAG = { "Coal bag", "Open coal bag" } :: { Item.Item },
+	BIG_BAG_CAPES = { "Smithing cape", "Smithing cape(t)", "Max cape" } :: { Item.Item },
 	BAG_SIZE = 27,
 	ORE_PER_TRIP = 27,
 	BIG_BAG_SIZE = 36,
@@ -401,8 +401,8 @@ function Read.smithing(s: ClientState): number
 	return 0
 end
 
-function Read.bar_names(): { string }
-	local names = {}
+function Read.bar_names(): { Item.Item }
+	local names: { Item.Item } = {}
 	for _, d in ipairs(CONST.DISPENSED) do
 		table.insert(names, d.name)
 	end
@@ -1116,7 +1116,7 @@ end
 function Handler.confirm_bank(items: { string }): boolean
 	local function deposited(): boolean
 		for _, u in ipairs(S.deposited) do
-			if not table.find(items, u.name) and Inventory.contains(u.id) then
+			if (u.name == nil or not table.find(items, u.name)) and Inventory.contains(u.id) then
 				return false
 			end
 		end

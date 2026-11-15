@@ -144,9 +144,12 @@ end
 local function walk_any(choices: { Tile }): Stage
 	local x1, y1, x2, y2 = math.huge, math.huge, -math.huge, -math.huge
 	for _, tile in ipairs(choices) do
-		x1, y1, x2, y2 = math.min(x1, tile.x), math.min(y1, tile.y), math.max(x2, tile.x), math.max(y2, tile.y)
+		x1 = math.min(x1, tile.x)
+		y1 = math.min(y1, tile.y)
+		x2 = math.max(x2, tile.x)
+		y2 = math.max(y2, tile.y)
 	end
-	return { kind = "walk", to = choices[#choices], choices = choices, land = rect(x1, y1, x2, y2) }
+	return { kind = "walk", to = choices[#choices] :: Tile, choices = choices, land = rect(x1, y1, x2, y2) }
 end
 
 local LANDINGS: { [string]: Tile } = {
@@ -333,7 +336,7 @@ local function take_shortcut()
 	if not from or not to then
 		error("the course has no shortcut fork", 0)
 	end
-	for _ = from + 1, to - 1 do
+	for _ = from + 1, (to :: number) - 1 do
 		table.remove(STAGES, from + 1)
 	end
 	for offset, step in ipairs(SHORTCUT) do
@@ -341,7 +344,7 @@ local function take_shortcut()
 	end
 end
 
-local function find_listed(stage: Stage)
+local function find_listed(stage: Stage): Host.Loc?
 	local at = stage.to
 	for _, loc in ipairs(Objects.find(stage.id) or {}) do
 		local covers = at.x >= loc.x and at.x < loc.x + loc.size_x and at.y >= loc.y and at.y < loc.y + loc.size_y
@@ -854,7 +857,7 @@ local function play_out(stage: Stage, i: number, mark: number): (string, string?
 		track_animation(`{stage.to.x},{stage.to.y}`, animation)
 		seen = seen or animation == stage.animation
 		if seen and inside(pos(), stage.land) then
-			return "done"
+			return "done", nil
 		end
 		local refusal = refused_since(mark)
 		if refusal then
@@ -864,9 +867,9 @@ local function play_out(stage: Stage, i: number, mark: number): (string, string?
 		if Player.in_transit() or Player.is_moving() or (animation ~= nil and animation ~= -1) then
 			idle_since = Host.time()
 		elseif knocked and stage.retry then
-			return "knocked"
+			return "knocked", nil
 		elseif Host.time() - idle_since > IDLE_GIVE_UP_MS then
-			return "idle"
+			return "idle", nil
 		end
 		if stage.hold and nxt and not held and Host.time() - last_try > 700 then
 			if not late or pos().x >= stage.hold.late_x then
@@ -1468,8 +1471,9 @@ local function drink_stamina(): boolean
 end
 
 local function bank_rewards()
-	S.round_energy = S.round_energy or round_target()
-	wait_energy(S.round_energy)
+	local energy = S.round_energy or round_target()
+	S.round_energy = energy
+	wait_energy(energy)
 	local banker = Npcs.nearest(CONFIG.banker, pos())
 	local waited = Host.time()
 	while not banker and Host.time() - waited < 5000 do
