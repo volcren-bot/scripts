@@ -77,6 +77,7 @@ local CONST = {
 	CAST_READY_MS = 1200,
 	BANK_CONFIRM_MS = 2400,
 	WALK_IN_MS = 9000,
+	INVENTORY_REOPEN_MS = { 800, 4000 },
 	VIEW = { check_ms = 1500, spread_degrees = 8, zoom_step = 40 },
 	CRYSTAL = { item = 23946, row = "Eternal teleport crystal: Prifddinas" },
 	TABLET = { item = 8007, row = "Varrock tablet" },
@@ -129,6 +130,7 @@ type RunState = {
 	view_checked_at: number,
 	view: View?,
 	no_view: boolean,
+	inventory_due_at: number?,
 }
 
 local S: RunState = {
@@ -154,6 +156,7 @@ local S: RunState = {
 	view_checked_at = 0,
 	view = nil,
 	no_view = false,
+	inventory_due_at = nil,
 }
 
 type Snapshot = {
@@ -1094,6 +1097,27 @@ local function close_stray()
 	Toplevel.escape_clear()
 end
 
+local KEEPS_INVENTORY: { [State]: boolean } = { WALK = true, BANK = true, ANVIL = true, WAIT = true }
+
+function Loop.keep_inventory(state: State)
+	if not KEEPS_INVENTORY[state] or Inventory.is_open() or Bankmain.is_open() or Anvil.is_open() then
+		S.inventory_due_at = nil
+		return
+	end
+	local due = S.inventory_due_at
+	if due == nil then
+		S.inventory_due_at = time() + Random.int(CONST.INVENTORY_REOPEN_MS[1], CONST.INVENTORY_REOPEN_MS[2])
+		return
+	end
+	if time() < due or Mouse.busy() then
+		return
+	end
+	S.inventory_due_at = nil
+	if not Inventory.open() then
+		Log.log(NAME, "Couldn't open the inventory")
+	end
+end
+
 function Loop.run()
 	Game.apply_settings(Host.settings())
 	Log.log(NAME, `{NAME} started: {S.item} from {S.bar}`)
@@ -1109,6 +1133,7 @@ function Loop.run()
 		end
 		Game.poll_settings()
 		close_stray()
+		Loop.keep_inventory(state)
 		Handler.states[state]()
 		sleep(Random.int(60, 140))
 	end
