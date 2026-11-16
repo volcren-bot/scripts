@@ -3,19 +3,27 @@
 		"columns": true,
 		"fields": [
 			{
+				"id": "mode",
+				"kind": "choice",
+				"label": "Mode",
+				"options": [
+					"Group",
+					"Solo"
+				],
+				"default": "Group"
+			},
+			{
 				"id": "world",
 				"kind": "number",
 				"label": "World",
 				"default": 422,
 				"min": 1,
 				"max": 1000,
-				"integer": true
-			},
-			{
-				"id": "solo",
-				"kind": "check",
-				"label": "Solo (not implemented)",
-				"default": false
+				"integer": true,
+				"visible_when": {
+					"id": "mode",
+					"equals": "Group"
+				}
 			},
 			{
 				"id": "min_players",
@@ -24,7 +32,11 @@
 				"default": 14,
 				"min": 1,
 				"max": 100,
-				"integer": true
+				"integer": true,
+				"visible_when": {
+					"id": "mode",
+					"equals": "Group"
+				}
 			},
 			{
 				"id": "min_time",
@@ -33,7 +45,11 @@
 				"default": 10,
 				"min": 0,
 				"max": 120,
-				"integer": true
+				"integer": true,
+				"visible_when": {
+					"id": "mode",
+					"equals": "Group"
+				}
 			},
 			{
 				"id": "barehand",
@@ -48,13 +64,21 @@
 				"default": 3,
 				"min": 0,
 				"max": 10,
-				"integer": true
+				"integer": true,
+				"visible_when": {
+					"id": "mode",
+					"equals": "Group"
+				}
 			},
 			{
 				"id": "cook",
 				"kind": "check",
 				"label": "Cook",
-				"default": true
+				"default": true,
+				"visible_when": {
+					"id": "mode",
+					"equals": "Group"
+				}
 			},
 			{
 				"id": "max_games",
