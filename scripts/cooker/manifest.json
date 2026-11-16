@@ -1,0 +1,201 @@
+{
+	"settings": {
+		"fields": [
+			{
+				"kind": "label",
+				"text": "Start anywhere: it cooks at a permanent fire or range next to a bank, or teleports to Rogues' Den with a games necklace, or to Hosidius kitchen with Kourend Castle Teleport and the Kourend & Kebos easy diary."
+			},
+			{
+				"id": "foods",
+				"kind": "list",
+				"label": "Foods to cook, in order (untick to skip one)",
+				"items": [
+					{
+						"id": "beef",
+						"label": "Cooked meat (level 1)",
+						"default": true
+					},
+					{
+						"id": "shrimps",
+						"label": "Shrimps (level 1)",
+						"default": true
+					},
+					{
+						"id": "chicken",
+						"label": "Cooked chicken (level 1)",
+						"default": true
+					},
+					{
+						"id": "rabbit",
+						"label": "Cooked rabbit (level 1)",
+						"default": true
+					},
+					{
+						"id": "anchovies",
+						"label": "Anchovies (level 1)",
+						"default": true
+					},
+					{
+						"id": "sardine",
+						"label": "Sardine (level 1)",
+						"default": true
+					},
+					{
+						"id": "herring",
+						"label": "Herring (level 5)",
+						"default": true
+					},
+					{
+						"id": "mackerel",
+						"label": "Mackerel (level 10)",
+						"default": true
+					},
+					{
+						"id": "thin_snail",
+						"label": "Thin snail meat (level 12)",
+						"default": true
+					},
+					{
+						"id": "trout",
+						"label": "Trout (level 15)",
+						"default": true
+					},
+					{
+						"id": "lean_snail",
+						"label": "Lean snail meat (level 17)",
+						"default": true
+					},
+					{
+						"id": "cod",
+						"label": "Cod (level 18)",
+						"default": true
+					},
+					{
+						"id": "pike",
+						"label": "Pike (level 20)",
+						"default": true
+					},
+					{
+						"id": "fat_snail",
+						"label": "Fat snail meat (level 22)",
+						"default": true
+					},
+					{
+						"id": "salmon",
+						"label": "Salmon (level 25)",
+						"default": true
+					},
+					{
+						"id": "tuna",
+						"label": "Tuna (level 30)",
+						"default": true
+					},
+					{
+						"id": "karambwan",
+						"label": "Cooked karambwan (level 30)",
+						"default": true
+					},
+					{
+						"id": "larupia",
+						"label": "Cooked larupia (level 31)",
+						"default": true
+					},
+					{
+						"id": "rainbow_fish",
+						"label": "Rainbow fish (level 35)",
+						"default": true
+					},
+					{
+						"id": "cave_eel",
+						"label": "Cave eel (level 38)",
+						"default": true
+					},
+					{
+						"id": "lobster",
+						"label": "Lobster (level 40)",
+						"default": true
+					},
+					{
+						"id": "graahk",
+						"label": "Cooked graahk (level 41)",
+						"default": true
+					},
+					{
+						"id": "bass",
+						"label": "Bass (level 43)",
+						"default": true
+					},
+					{
+						"id": "swordfish",
+						"label": "Swordfish (level 45)",
+						"default": true
+					},
+					{
+						"id": "kyatt",
+						"label": "Cooked kyatt (level 51)",
+						"default": true
+					},
+					{
+						"id": "pyre_fox",
+						"label": "Cooked pyre fox (level 59)",
+						"default": true
+					},
+					{
+						"id": "monkfish",
+						"label": "Monkfish (level 62)",
+						"default": true
+					},
+					{
+						"id": "sunlight_antelope",
+						"label": "Cooked sunlight antelope (level 68)",
+						"default": true
+					},
+					{
+						"id": "shark",
+						"label": "Shark (level 80)",
+						"default": true
+					},
+					{
+						"id": "sea_turtle",
+						"label": "Sea turtle (level 82)",
+						"default": true
+					},
+					{
+						"id": "dashing_kebbit",
+						"label": "Cooked dashing kebbit (level 82)",
+						"default": true
+					},
+					{
+						"id": "anglerfish",
+						"label": "Anglerfish (level 84)",
+						"default": true
+					},
+					{
+						"id": "dark_crab",
+						"label": "Dark crab (level 90)",
+						"default": true
+					},
+					{
+						"id": "manta_ray",
+						"label": "Manta ray (level 91)",
+						"default": true
+					},
+					{
+						"id": "moonlight_antelope",
+						"label": "Cooked moonlight antelope (level 92)",
+						"default": true
+					}
+				]
+			},
+			{
+				"id": "max_cooked",
+				"kind": "number",
+				"label": "Max cooked (0 is unlimited)",
+				"default": 0,
+				"min": 0,
+				"max": 1000000,
+				"integer": true
+			}
+		]
+	}
+}

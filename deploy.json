@@ -11,6 +11,10 @@
     "id": "4837b3fd-7bd5-483b-8004-e006ac975394",
     "entry": "collector.luau"
   },
+  "cooker": {
+    "id": "024793df-9dc9-4652-8a4d-d0060c2403ed",
+    "entry": "cooker.luau"
+  },
   "rogues_den": {
     "id": "ce62930b-c260-4a87-be2d-1fff71467b84",
     "entry": "rogues_den.luau"
