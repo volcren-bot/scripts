@@ -488,6 +488,14 @@ local function arrival(stage: Stage): Tile
 	return { x = (l.x1 + l.x2) // 2, y = (l.y1 + l.y2) // 2 }
 end
 
+local function fidget()
+	if CONFIG.antiban then
+		Antiban.do_async_tasks("game")
+		Antiban.do_walking_antiban()
+		Mouse.wait()
+	end
+end
+
 local function prehover(j: number, at: Tile)
 	local nxt = STAGES[j]
 	if not nxt then
@@ -732,6 +740,7 @@ local function walk_to(stage: Stage, i: number)
 		if not clicked then
 			error(`step {i}: {goal.x},{goal.y} could not be clicked from {here()}`, 0)
 		end
+		fidget()
 		prehover(i + 1, arrival(stage))
 		if wait_arrival(stage, i) or stage.once then
 			return
@@ -980,6 +989,7 @@ local function use_object(stage: Stage, i: number)
 		end
 		clicks += 1
 		if not stage.hold then
+			fidget()
 			prehover(i + 1, arrival(stage))
 		end
 		local outcome, refusal = play_out(stage, i, mark)
@@ -1547,6 +1557,23 @@ local function setup_antiban()
 	Antiban.add_task(AntibanTasks.lose_focus, 10 * MINUTE, 0.33)
 	Antiban.add_task(AntibanTasks.random_game_tab_task, 12 * MINUTE, 0.33)
 	Antiban.add_task(AntibanTasks.hover_skills, 18 * MINUTE, 0.33)
+	local pitch_span, zoom_span = Camera.PITCH_MAX - Camera.PITCH_MIN, Camera.ZOOM_MAX - Camera.ZOOM_MIN
+	Antiban.set_pitch_range(100 * (1 - MAZE_PITCH_SLACK / pitch_span), 100)
+	Antiban.set_zoom_range(0, 100 * (MAZE_ZOOM_MAX - Camera.ZOOM_MIN) / zoom_span)
+	Antiban.add_walk_task(AntibanTasks.adjust_camera, 2 * MINUTE, 0.33)
+	Antiban.add_walk_task(AntibanTasks.random_camera_task, 7 * MINUTE, 0.33)
+	Antiban.add_walk_task(AntibanTasks.random_chat_tab, 3 * MINUTE, 0.33)
+	Antiban.add_walk_task(AntibanTasks.small_camera_rotation, 4 * MINUTE, 0.33)
+	Antiban.add_walk_task(AntibanTasks.random_right_click, 5 * MINUTE, 0.33)
+	Antiban.add_walk_task(AntibanTasks.random_tab, 6 * MINUTE, 0.33)
+	Antiban.add_async_task(AntibanTasks.tiny_camera_rotation, 25 * SECOND, 0.4, "game")
+	Antiban.add_async_task(AntibanTasks.tiny_pitch_change, 45 * SECOND, 0.4, "game")
+	Antiban.add_async_task(AntibanTasks.tiny_zoom_change, 60 * SECOND, 0.4, "game")
+	Antiban.add_async_task(AntibanTasks.small_camera_rotation, 70 * SECOND, 0.4, "game")
+	Antiban.add_async_task(AntibanTasks.small_random_mouse, 40 * SECOND, 0.4, "game")
+	Antiban.add_async_task(AntibanTasks.hover_random_npc, 90 * SECOND, 0.4, "game")
+	Antiban.add_async_task(AntibanTasks.hover_random_player, 120 * SECOND, 0.4, "game")
+	Antiban.add_async_task(AntibanTasks.random_tab, 90 * SECOND, 0.4, "game")
 	Antiban.add_async_task(AntibanTasks.random_tab, 40 * SECOND, 0.4, "outside")
 	Antiban.add_async_task(AntibanTasks.toggle_tab, 70 * SECOND, 0.4, "outside")
 	Antiban.add_async_task(AntibanTasks.hover_skills, 100 * SECOND, 0.4, "outside")
