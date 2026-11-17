@@ -156,6 +156,8 @@ local CONST = {
 		STEP_OFF_COUNT_MS = 2500,
 		TAKE_BUCKETS_WAIT_MS = 2400,
 		DROP_MIN_TILES = 5,
+		P4_LOAD_INTENSITY = 95,
+		P4_STOP_ESSENCE = 20,
 		DROP_PER_STEP = 2,
 		BEACH_BOX = { west = -1, east = 15, south = -4, north = 15 },
 		NORTH_BOX = { west = -6, east = 15, south = -5, north = 29 },
@@ -285,6 +287,7 @@ type SoloRound = {
 	humidify_at: number,
 	left_crate_at: number,
 	p3_stage: string?,
+	p4_stage: string?,
 	p3_humidify: boolean,
 	p2_clear: string?,
 	p2_skip: { [string]: boolean },
@@ -735,7 +738,14 @@ function Chat.read_chat()
 					snap.npcs = Read.read_npcs() or snap.npcs
 					Log.log("Tempoross", `Lost items {math.floor(m.age)} ms ago: {text}`)
 					Hazard.log_burn(st.destination)
-					events.burned = events.burned or Chat.contains(text, "to the fire")
+					if Chat.contains(text, "to the fire") then
+						local spares_fish = CONFIG.solo and S.solo.p3_stage ~= nil and not Chat.contains(text, "fish")
+						if spares_fish then
+							Log.log("Tempoross", "   Burned in part 3 without losing fish, carrying on")
+						else
+							events.burned = true
+						end
+					end
 				end
 			end
 		end
@@ -1947,7 +1957,7 @@ function Task.tether()
 	if not Route.walk_near(target, 12, true) then
 		return
 	end
-	Route.sleep_watching(Random.int(3 * Ticks.MS, 5 * Ticks.MS))
+	Route.sleep_watching(Random.int(4 * Ticks.MS, 6 * Ticks.MS))
 	if events.wave_warning_at == nil or events.tethered or snap.tethered then
 		return
 	end
@@ -3070,7 +3080,11 @@ function Loop.common_game_state(): State?
 		return "WAIT_SURGE"
 	end
 
-	if Hazard.tempoross_vulnerable() and not (CONFIG.solo and S.solo.p2_loading and Read.fish_count() > 0) then
+	if
+		Hazard.tempoross_vulnerable()
+		and not (CONFIG.solo and S.solo.p2_loading and Read.fish_count() > 0)
+		and not (CONFIG.solo and Solo.ship_fires_left())
+	then
 		return "ATTACK"
 	end
 	if Doing.is_doing("attack") then
@@ -3801,6 +3815,9 @@ function Solo.wants_humidify(): boolean
 	if time() < r.humidify_at or Doing.is_doing("load") or snap.tethered then
 		return false
 	end
+	if r.p2_clear ~= nil and r.p3_stage == nil and #Solo.area_fires(Solo.our_side_fire) == 0 then
+		return false
+	end
 	snap.inv, snap.free = Read.read_inventory()
 	return Read.item_count(Items.WATER) <= CONST.SOLO.HUMIDIFY_AT_WATER and Read.item_count(Items.BUCKET) > 0
 end
@@ -4037,20 +4054,57 @@ function Solo.part_three(): State
 		if Solo.beach_target() ~= nil and Read.item_count(Items.WATER) > 0 then
 			return "P3_CLEAR"
 		end
-		r.p3_stage = "fish"
-		Log.log("Tempoross", `   Beach clear, fishing {CONST.SOLO.THIRD_BATCH} fish`)
+		r.p3_stage = "done"
+		r.p4_stage = "fish"
+		Log.log("Tempoross", `Part 4: beach clear, fishing {CONST.SOLO.THIRD_BATCH} fish`)
 	end
-	snap.inv, snap.free = Read.read_inventory()
-	local needed = CONST.SOLO.THIRD_BATCH - Read.fish_count()
-	if needed > snap.free then
-		plan.drop = needed - snap.free
-		return "P3_DROP"
+	return Solo.part_four()
+end
+
+function Solo.ship_fires_left(): boolean
+	local r = S.solo
+	return r.p4_stage ~= nil
+		and r.p4_stage ~= "fish"
+		and Read.item_count(Items.WATER) > 0
+		and #Solo.area_fires(Solo.our_side_fire) > 0
+end
+
+function Solo.part_four(): State
+	local r = S.solo
+	if r.p4_stage == "fish" then
+		snap.inv, snap.free = Read.read_inventory()
+		local needed = CONST.SOLO.THIRD_BATCH - Read.fish_count()
+		if needed > snap.free then
+			plan.drop = needed - snap.free
+			return "P3_DROP"
+		end
+		local fishing = Solo.fish_and_cook(CONST.SOLO.THIRD_BATCH, "COOKING_TO_LOAD")
+		if fishing then
+			return fishing
+		end
+		r.p4_stage = "ship"
+		r.p2_box = Solo.home_box()
+		r.p2_skip = {}
+		Log.log("Tempoross", `   {Read.fish_count()} cooked fish, clearing the ship and loading them`)
 	end
-	local fishing = Solo.fish_and_cook(CONST.SOLO.THIRD_BATCH, "CONTINUE")
-	if fishing then
-		return fishing
+	local essence = Read.hud_percent(HUD.ESSENCE)
+	if r.pools >= 2 or (essence ~= nil and essence <= CONST.SOLO.P4_STOP_ESSENCE) then
+		return "SOLO_STOP"
 	end
-	return "SOLO_STOP"
+	local count = Read.fish_count()
+	local fires = Solo.ship_fires_left()
+	local storm = (Read.hud_percent(HUD.INTENSITY) or 0) >= CONST.SOLO.P4_LOAD_INTENSITY
+	if count > 0 and (storm or not fires or Doing.is_doing("load")) then
+		if storm and r.p4_stage ~= "rush" then
+			r.p4_stage = "rush"
+			Log.log("Tempoross", "   Storm at 95%, loading every fish before the fires")
+		end
+		return "LOAD_ALL"
+	end
+	if fires then
+		return "P2_CLEAR"
+	end
+	return "GO_TO_PIER_SOLO"
 end
 
 function Solo.take_buckets()
@@ -4369,7 +4423,7 @@ function Solo.clear_fires(fires: { Npc }, why: string)
 		end
 	end
 	local spot, beside = Hazard.douse_spot(near, fires)
-	if spot == nil or #beside == 0 then
+	if spot == nil or #beside <= 1 then
 		Log.log("Tempoross", `   Clearing the fire at {fire.x},{fire.y} ({why})`)
 		Hazard.douse(fire, if after then Geo.to_tile(after :: Npc) else nil)
 		return
@@ -4378,7 +4432,9 @@ function Solo.clear_fires(fires: { Npc }, why: string)
 end
 
 function Solo.stop_here()
-	Log.log("Tempoross", `End of part {if S.solo.p3_stage then 3 else 2}, stopping here and forfeiting`)
+	local r = S.solo
+	local part = if r.p4_stage then 4 elseif r.p3_stage then 3 else 2
+	Log.log("Tempoross", `End of part {part}, stopping here and forfeiting`)
 	S.leave_by_crew = true
 	Game.leave()
 	S.finished = true
