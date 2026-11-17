@@ -17,6 +17,7 @@ type ClientState = Host.ClientState
 local Antiban = require("@lib/main/antiban/antiban")
 local AntibanTasks = require("@lib/main/antiban/antiban_tasks")
 local Biometrics = require("@lib/main/antiban/biometrics")
+local Camera = require("@lib/main/camera")
 local ChatOptions = require("@lib/main/interfaces/chatbox/chat_options")
 local Clickbox = require("@lib/main/clickbox")
 local DebugDraw = require("@lib/main/debug_draw")
@@ -298,6 +299,7 @@ type SoloRound = {
 	ship_hover: Tile?,
 	ship_hover_waypoint: boolean,
 	hover_tried: boolean,
+	faced: string?,
 	fire_hover: Npc?,
 }
 
@@ -1733,6 +1735,15 @@ function Hazard.prehover_after_douse(fire: Npc, toward: Tile)
 	end
 end
 
+function Hazard.burning_at(fire: Npc): boolean
+	for _, n in ipairs(snap.npcs) do
+		if n.id == CONST.FIRE and n.x == fire.x and n.y == fire.y then
+			return true
+		end
+	end
+	return false
+end
+
 function Hazard.douse(fire: Npc, toward: Tile?): boolean
 	local before = Read.item_count(Items.WATER)
 	if before == 0 then
@@ -1754,15 +1765,9 @@ function Hazard.douse(fire: Npc, toward: Tile?): boolean
 	local deadline = time() + 6000
 	local animation_ended = false
 	while time() < deadline do
-		local inv = Read.read_inventory()
 		local dousing = Read.my_animation() == CONST.DOUSE_ANIMATION
 		animation_ended = animation_ended or not dousing
-		if (inv[Items.WATER] or 0) < before or (dousing and animation_ended) then
-			S.doused[`{fire.x},{fire.y}`] = time()
-			return true
-		end
-		local now = Npcs.refresh(fire)
-		if now == nil or now.id ~= CONST.FIRE then
+		if dousing and animation_ended then
 			S.doused[`{fire.x},{fire.y}`] = time()
 			return true
 		end
@@ -1770,6 +1775,10 @@ function Hazard.douse(fire: Npc, toward: Tile?): boolean
 		snap.tick = Read.current_tick(st)
 		Read.set_me(st.position)
 		snap.npcs = Read.read_npcs() or snap.npcs
+		if not Hazard.burning_at(fire) then
+			S.doused[`{fire.x},{fire.y}`] = time()
+			return true
+		end
 		Hazard.watch_projectiles()
 		local dest = st.destination
 		local ahead = dest and Route.route_to(dest :: Tile)
@@ -2650,6 +2659,9 @@ function Game.tiny_antiban(boat: boolean?)
 	end
 	local a = S.activity
 	local kind = if boat then "boat" elseif a then (a :: Activity).kind else "idle"
+	if CONFIG.solo and Solo.holding_camera(kind) then
+		return
+	end
 	if not boat then
 		local tethered = events.tethered or snap.tethered
 		if events.wave_warning_at ~= nil and not tethered then
@@ -3325,6 +3337,7 @@ function Solo.load_exact(target: number)
 			return
 		end
 	end
+	Solo.face_ahead("totem", Geo.to_tile((S.side :: Side).totem))
 	local hovered = false
 	local function stop(): boolean
 		Solo.track_loaded()
@@ -3429,7 +3442,29 @@ function Solo.spam_off_totem()
 	Doing.begin_activity("cook", nil, shrine)
 end
 
+function Solo.face_ahead(key: string, tile: Tile)
+	local r = S.solo
+	if r.faced == key or Mouse.busy() then
+		return
+	end
+	r.faced = key
+	local me = snap.me
+	if tile.x == me.x and tile.y == me.y then
+		return
+	end
+	local bearing = math.deg(math.atan2(tile.x - me.x, tile.y - me.y))
+	local spread = Camera.LOOK_SPREAD
+	Camera.set_yaw_async(Camera.degrees_to_yaw(bearing + Random.mean(-spread, spread)))
+	Log.log("Tempoross", `   Turning the camera toward the {key} at {tile.x},{tile.y}`)
+end
+
+function Solo.holding_camera(kind: string): boolean
+	local faced = S.solo.faced
+	return (kind == "cook" and faced == "crate") or (kind == "load" and faced == "totem")
+end
+
 function Solo.hover_ship_path()
+	Solo.face_ahead("crate", Solo.crate_target())
 	if Read.item_count(Items.RAW_FISH) > CONST.SOLO.HOVER_RAW then
 		Route.sleep_watching(150)
 		return
