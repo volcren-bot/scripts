@@ -21,6 +21,7 @@ local Camera = require("@lib/main/camera")
 local ChatOptions = require("@lib/main/interfaces/chatbox/chat_options")
 local Clickbox = require("@lib/main/clickbox")
 local DebugDraw = require("@lib/main/debug_draw")
+local DepositBox = require("@lib/main/interfaces/mainscreen/depositbox")
 local Draw = require("@lib/utils/draw")
 local GameState = require("@lib/main/game_state")
 local Inventory = require("@lib/main/interfaces/gametabs/inventory")
@@ -157,6 +158,16 @@ local CONST = {
 		TAKE_BUCKETS_WAIT_MS = 2400,
 		DROP_MIN_TILES = 5,
 		P4_LOAD_INTENSITY = 95,
+		P4_DOUBLE_FREE = 8,
+		P5_FISH = 2,
+		P5_FISH_BY_INTENSITY = 85,
+		P5_LOAD_BY_INTENSITY = 92,
+		P5_ALL_FIRES_BELOW = 70,
+		P5_INTENSITY_PER_S = 0.5,
+		P5_FISHING_MS = 6000,
+		P5_CORRIDOR = 4,
+		P5_NORTH_RANGE = 8,
+		P5_SHRINE_RANGE = 12,
 		P4_STOP_ESSENCE = 20,
 		DROP_PER_STEP = 2,
 		BEACH_BOX = { west = -1, east = 15, south = -4, north = 15 },
@@ -288,6 +299,10 @@ type SoloRound = {
 	left_crate_at: number,
 	p3_stage: string?,
 	p4_stage: string?,
+	p5_stage: string?,
+	p5_north: Side?,
+	p5_shrine: Tile?,
+	p5_box: Box?,
 	p3_humidify: boolean,
 	p2_clear: string?,
 	p2_skip: { [string]: boolean },
@@ -2892,6 +2907,7 @@ type State =
 	| "WAIT_SURGE"
 	| "WALK_PUMP"
 	| "DROP_BUCKET"
+	| "BANK_BUCKETS"
 	| "WALK_SHIP"
 	| "LEAVE_PREPARED"
 	| "FISH_TO_TARGET"
@@ -2913,6 +2929,10 @@ type State =
 	| "P3_CLEAR"
 	| "P2_CLEAR"
 	| "P3_DROP"
+	| "P4_COOK_DROP"
+	| "P5_CLEAR"
+	| "P5_HUMIDIFY_WALK"
+	| "P5_FISHING"
 
 type Plan = {
 	hazard: Npc?,
@@ -2920,6 +2940,7 @@ type Plan = {
 	fire: Npc?,
 	spot: Npc?,
 	ladder: Loc?,
+	box: Loc?,
 	pump: Loc?,
 	players: number?,
 	departure: number?,
@@ -3821,6 +3842,12 @@ function Solo.wants_humidify(): boolean
 	if r.p3_stage == "buckets" or r.p3_stage == "humidify" or (r.p3_stage == "cross" and r.p3_humidify) then
 		return false
 	end
+	if r.p5_stage == "buckets" or r.p5_stage == "humidify" or r.p5_stage == "fish" or r.p5_stage == "load" then
+		return false
+	end
+	if r.p4_stage ~= nil and r.p5_stage == nil and r.pools >= 2 then
+		return false
+	end
 	snap.inv, snap.free = Read.read_inventory()
 	return Read.item_count(Items.WATER) <= CONST.SOLO.HUMIDIFY_AT_WATER and Read.item_count(Items.BUCKET) > 0
 end
@@ -4068,18 +4095,57 @@ function Solo.ship_fires_left(): boolean
 	local r = S.solo
 	return r.p4_stage ~= nil
 		and r.p4_stage ~= "fish"
+		and r.p5_stage == nil
 		and Read.item_count(Items.WATER) > 0
 		and #Solo.area_fires(Solo.our_side_fire) > 0
 end
 
+function Solo.p4_room(): State?
+	snap.inv, snap.free = Read.read_inventory()
+	local count = Read.fish_count()
+	local short = CONST.SOLO.THIRD_BATCH - count - snap.free
+	if count >= CONST.SOLO.THIRD_BATCH or short <= 0 then
+		return nil
+	end
+	local on_double = Doing.is_doing("fish") and (S.activity :: Activity).double
+	local double = Solo.nearest_double()
+	if on_double or (double ~= nil and Task.double_worth(double :: Npc)) then
+		local wanted = CONST.SOLO.P4_DOUBLE_FREE
+		if snap.free == 0 or (not on_double and snap.free < wanted) then
+			plan.drop = math.min(wanted - snap.free, short)
+			return "P3_DROP"
+		end
+		return nil
+	end
+	if Read.item_count(Items.RAW_FISH) > 0 then
+		return "P4_COOK_DROP"
+	end
+	plan.drop = short
+	return "P3_DROP"
+end
+
+function Solo.cook_dropping()
+	if not Doing.is_doing("cook") then
+		Solo.move_safely(Route.loc_stand((S.side :: Side).shrine), Task.cook)
+		return
+	end
+	snap.inv, snap.free = Read.read_inventory()
+	local short = CONST.SOLO.THIRD_BATCH - Read.fish_count() - snap.free
+	if short > 0 then
+		Solo.drop_buckets(short, true)
+		Doing.clear_activity()
+	end
+end
+
 function Solo.part_four(): State
 	local r = S.solo
+	if r.p5_stage ~= nil then
+		return Solo.part_five()
+	end
 	if r.p4_stage == "fish" then
-		snap.inv, snap.free = Read.read_inventory()
-		local needed = CONST.SOLO.THIRD_BATCH - Read.fish_count()
-		if needed > snap.free then
-			plan.drop = needed - snap.free
-			return "P3_DROP"
+		local room = Solo.p4_room()
+		if room then
+			return room
 		end
 		local fishing = Solo.fish_and_cook(CONST.SOLO.THIRD_BATCH, "COOKING_TO_LOAD")
 		if fishing then
@@ -4092,7 +4158,7 @@ function Solo.part_four(): State
 	end
 	local essence = Read.hud_percent(HUD.ESSENCE)
 	if r.pools >= 2 or (essence ~= nil and essence <= CONST.SOLO.P4_STOP_ESSENCE) then
-		return "SOLO_STOP"
+		return Solo.start_part_five()
 	end
 	local count = Read.fish_count()
 	local fires = Solo.ship_fires_left()
@@ -4108,6 +4174,194 @@ function Solo.part_four(): State
 		return "P2_CLEAR"
 	end
 	return "GO_TO_PIER_SOLO"
+end
+
+function Solo.start_part_five(): State
+	local r = S.solo
+	local north = Ship.other_side()
+	if north == nil then
+		Log.log("Tempoross", "   Couldn't find the north side of the island")
+		return "SOLO_STOP"
+	end
+	r.p5_north = north
+	r.p5_shrine = Geo.to_tile((S.side :: Side).shrine)
+	r.p5_stage = "buckets"
+	r.p3_buckets = Geo.nearest_loc(Read.locs_named({ "Buckets" }), snap.me)
+	local here = S.side :: Side
+	S.side = north
+	r.p5_box = Solo.home_box()
+	S.side = here
+	Doing.clear_activity()
+	Log.log("Tempoross", "Part 5: filling the inventory with buckets")
+	return Solo.part_five()
+end
+
+function Solo.part_five(): State
+	local r = S.solo
+	if r.p5_stage == "buckets" then
+		snap.inv, snap.free = Read.read_inventory()
+		if snap.free > 0 and r.p3_buckets ~= nil then
+			return "P3_BUCKETS"
+		end
+		r.p3_humidify = Read.item_count(Items.BUCKET) > 0
+		r.p5_stage = "humidify"
+	end
+	if r.p5_stage == "humidify" then
+		if r.p3_humidify and Read.item_count(Items.BUCKET) > 0 then
+			return "P5_HUMIDIFY_WALK"
+		end
+		r.p5_stage = "north"
+		Log.log("Tempoross", "   Putting out fires on the way north")
+	end
+	if r.p5_stage == "north" then
+		if not Solo.p5_north_reached() then
+			return "P5_CLEAR"
+		end
+		r.p5_stage = "fish"
+		S.side = r.p5_north
+		Doing.clear_activity()
+		Log.log(
+			"Tempoross",
+			`   North at {Read.hud_percent(HUD.INTENSITY) or "?"}% storm, getting {CONST.SOLO.P5_FISH} fish`
+		)
+	end
+	if r.p5_stage == "fish" then
+		snap.inv, snap.free = Read.read_inventory()
+		local count = Read.fish_count()
+		if count < CONST.SOLO.P5_FISH then
+			local short = CONST.SOLO.P5_FISH - count - snap.free
+			if short > 0 then
+				plan.drop = short
+				return "P3_DROP"
+			end
+			if Doing.is_doing("fish") then
+				return "P5_FISHING"
+			end
+			local spot = Solo.nearest_double() or Task.best_spot(false, nil, true) or Solo.nearest_spot_through_fires()
+			if spot then
+				plan.spot = spot
+				return "FISH_SAFELY"
+			end
+			return "WAIT_SPOT"
+		end
+		Doing.clear_activity()
+		r.p5_stage = "sweep"
+		Log.log("Tempoross", `   {count} fish, putting out fires until the storm reaches 92%`)
+	end
+	if r.p5_stage == "sweep" then
+		local why = if Solo.p5_time_to_load()
+			then "the storm is close to 92%"
+			elseif not Solo.has_water() then "no water left"
+			elseif #Solo.p5_fires() == 0 then "no fires left"
+			else nil
+		if why == nil then
+			return "P5_CLEAR"
+		end
+		r.p5_stage = "load"
+		Log.log("Tempoross", `   Loading the fish at {Read.hud_percent(HUD.INTENSITY) or "?"}% storm: {why}`)
+	end
+	if r.p5_stage == "load" then
+		if Read.fish_count() > 0 then
+			return "LOAD_ALL"
+		end
+		r.p5_stage = "pool"
+		Log.log("Tempoross", "   Fish loaded, off to the north spirit pool")
+	end
+	return "GO_TO_PIER_SOLO"
+end
+
+function Solo.has_water(): boolean
+	return Read.item_count(Items.WATER) > 0 or Read.item_count(Items.BUCKET) > 0
+end
+
+function Solo.p5_north_target(): Tile
+	return Route.route_end(Geo.to_tile((S.solo.p5_north :: Side).totem))
+end
+
+function Solo.p5_north_reached(): boolean
+	return Geo.distance(snap.me, Solo.p5_north_target()) <= CONST.SOLO.P5_NORTH_RANGE
+end
+
+function Solo.p5_storm_after(target: Tile, extra_ms: number): number
+	local intensity = Read.hud_percent(HUD.INTENSITY) or 0
+	local seconds = (Route.walk_steps(target) * CONST.SPOT_COST.tile_ms + extra_ms) / 1000
+	return intensity + seconds * CONST.SOLO.P5_INTENSITY_PER_S
+end
+
+function Solo.p5_rush_north(): boolean
+	return not Solo.has_water()
+		or Solo.p5_storm_after(Solo.p5_north_target(), CONST.SOLO.P5_FISHING_MS) >= CONST.SOLO.P5_FISH_BY_INTENSITY
+end
+
+function Solo.p5_time_to_load(): boolean
+	return Solo.p5_storm_after(Solo.crate_target(), 0) >= CONST.SOLO.P5_LOAD_BY_INTENSITY
+end
+
+function Solo.p5_fires(): { Npc }
+	local r = S.solo
+	if r.p5_stage == "sweep" or (Read.hud_percent(HUD.INTENSITY) or 0) < CONST.SOLO.P5_ALL_FIRES_BELOW then
+		return Hazard.fire_npcs()
+	end
+	local route = Route.route_to(Solo.p5_north_target()) or {}
+	return Solo.area_fires(function(fire: Npc): boolean
+		if Solo.fire_in(r.p3_box, fire) or Solo.fire_in(r.p5_box, fire) then
+			return true
+		end
+		local shrine = r.p5_shrine
+		if shrine and Hazard.fire_distance(fire, shrine :: Tile) <= CONST.SOLO.P5_SHRINE_RANGE then
+			return true
+		end
+		for _, t in ipairs(route) do
+			if Hazard.fire_distance(fire, t) <= CONST.SOLO.P5_CORRIDOR then
+				return true
+			end
+		end
+		return false
+	end)
+end
+
+function Solo.humidify_walk()
+	local fires = Solo.p5_fires()
+	local first = if #fires > 0 then Solo.cluster_target(fires) else nil
+	local target = if first then Route.npc_stand(first :: Npc) else Solo.p5_north_target()
+	Log.log("Tempoross", `   Walking to {target.x},{target.y} and casting Humidify on the way`)
+	Solo.walk_with_buckets(target, 1, function(): boolean
+		return not S.solo.p3_humidify
+	end)
+	S.solo.p3_humidify = false
+end
+
+function Solo.clear_way_north()
+	local r = S.solo
+	local heading = r.p5_stage == "north"
+	local fires = if heading and Solo.p5_rush_north() then {} else Solo.p5_fires()
+	if #fires > 0 and Solo.has_water() then
+		Solo.clear_fires(fires, if heading then "way north" else "north")
+		return
+	end
+	if not heading then
+		Route.sleep_watching(Random.int(200, 400))
+		return
+	end
+	local target = Solo.p5_north_target()
+	local tiles = Route.route_to(target)
+	if tiles and not Route.fire_free(tiles :: { Tile }) and Solo.get_past_fires(target, tiles :: { Tile }) then
+		return
+	end
+	local rushing = #fires == 0 and Solo.p5_rush_north()
+	Solo.walk_with_buckets(target, CONST.SOLO.P5_NORTH_RANGE - 1, function(): boolean
+		return not rushing and #Solo.p5_fires() > 0
+	end)
+end
+
+function Solo.fish_for_p5()
+	Route.sleep_watching(Random.int(300, 600), nil, function(): boolean
+		snap.inv, snap.free = Read.read_inventory()
+		Chat.read_chat()
+		return Read.fish_count() >= CONST.SOLO.P5_FISH
+			or (events.wave_warning_at ~= nil and not events.tethered)
+			or Hazard.hazard_at(snap.me) ~= nil
+	end)
 end
 
 function Solo.take_buckets()
@@ -4169,6 +4423,10 @@ function Solo.cross()
 	if tiles and not Route.fire_free(tiles :: { Tile }) and Solo.get_past_fires(target, tiles :: { Tile }) then
 		return
 	end
+	Solo.walk_with_buckets(target, 1)
+end
+
+function Solo.walk_with_buckets(target: Tile, near: number, stop: (() -> boolean)?)
 	local o = Route.walk_checks(false)
 	local checks = o.on_step
 	o.on_step = function(tile: Tile): boolean?
@@ -4177,12 +4435,15 @@ function Solo.cross()
 		end
 		if S.solo.p3_humidify then
 			Solo.humidify_midwalk()
-		else
+		elseif S.solo.p5_stage == nil then
 			Solo.drop_midwalk()
+		end
+		if stop and stop() then
+			return false
 		end
 		return true
 	end
-	o.near = 1
+	o.near = near
 	o.timeout_ms = 30000
 	Walker.walk(target, o)
 end
@@ -4621,6 +4882,34 @@ function Game.bucket_gap(): number
 	return CONFIG.buckets - Read.buckets()
 end
 
+function Game.bank_buckets()
+	snap.inv, snap.free = Read.read_inventory()
+	local excess = -Game.bucket_gap()
+	if excess <= 0 then
+		return
+	end
+	local before = snap.free
+	if not DepositBox.open(plan.box :: Loc) then
+		Log.log("Tempoross", "   Couldn't open the deposit box")
+		return
+	end
+	local empty = math.min(excess, Read.item_count(Items.BUCKET))
+	local water = math.min(excess - empty, Read.item_count(Items.WATER))
+	Log.log("Tempoross", `Banking {excess} extra buckets ({empty} empty, {water} of water)`)
+	if empty > 0 then
+		DepositBox.deposit(Items.BUCKET, empty)
+	end
+	if water > 0 then
+		DepositBox.deposit(Items.WATER, water)
+	end
+	Route.sleep_watching(3000, nil, function(): boolean
+		snap.inv, snap.free = Read.read_inventory()
+		return snap.free > before
+	end)
+	DepositBox.close()
+	snap.inv, snap.free = Read.read_inventory()
+end
+
 function Game.ready(): boolean
 	local gap = Game.bucket_gap()
 	return Read.has_hammer() and Read.has_rope() and Read.has_harpoon() and (gap == 0 or (gap > 0 and snap.free == 0))
@@ -4671,6 +4960,13 @@ function Loop.get_lobby_state(skipped: { [State]: boolean }): State
 		return if Read.on_boat() then "IDLE" else "WALK_DOCK"
 	end
 	plan.ladder = ladder
+	if not Read.on_boat() and Game.bucket_gap() < 0 and not skipped["BANK_BUCKETS"] then
+		local box = Geo.nearest_walk(Read.locs_named({ "Bank Deposit Box" }), snap.me, Geo.to_tile)
+		if box then
+			plan.box = box
+			return "BANK_BUCKETS"
+		end
+	end
 	if CONFIG.solo or (not Read.on_boat() and not Game.ready()) then
 		return if Geo.distance(snap.me, ladder) > 8 then "WALK_LADDER" else "SOLO_START"
 	end
@@ -5147,6 +5443,7 @@ Handler.states = {
 	WALK_SHIP = function()
 		Route.walk_near((S.side :: Side).mast, 4)
 	end,
+	BANK_BUCKETS = Game.bank_buckets,
 	DROP_BUCKET = function()
 		local wanted = if Read.item_count(Items.BUCKET) > 0 then Items.BUCKET else Items.WATER
 		for _, slot in ipairs(item_container(Inventory.CONTAINER) or {}) do
@@ -5192,6 +5489,10 @@ Handler.states = {
 	P3_DROP = function()
 		Solo.drop_buckets(plan.drop or 0, true)
 	end,
+	P4_COOK_DROP = Solo.cook_dropping,
+	P5_CLEAR = Solo.clear_way_north,
+	P5_HUMIDIFY_WALK = Solo.humidify_walk,
+	P5_FISHING = Solo.fish_for_p5,
 	LEAVE_PREPARED = function()
 		Log.log("Tempoross", "Tools and buckets ready, leaving")
 		S.leave_by_crew = true
