@@ -3818,6 +3818,9 @@ function Solo.wants_humidify(): boolean
 	if r.p2_clear ~= nil and r.p3_stage == nil and #Solo.area_fires(Solo.our_side_fire) == 0 then
 		return false
 	end
+	if r.p3_stage == "buckets" or r.p3_stage == "humidify" or (r.p3_stage == "cross" and r.p3_humidify) then
+		return false
+	end
 	snap.inv, snap.free = Read.read_inventory()
 	return Read.item_count(Items.WATER) <= CONST.SOLO.HUMIDIFY_AT_WATER and Read.item_count(Items.BUCKET) > 0
 end
@@ -4373,19 +4376,49 @@ function Hazard.douse_spot(near: { Npc }, countable: { Npc }, max_steps: number?
 	return best, best_fires
 end
 
-function Hazard.douse_from(stand: Tile, fires: { Npc }, why: string): boolean
+function Hazard.lands_on(fire: Npc, stand: Tile): boolean
+	local route = Hazard.douse_route(fire)
+	local last = route and route[#route]
+	return last ~= nil and last.x == stand.x and last.y == stand.y and Route.fire_free(route :: { Tile })
+end
+
+function Hazard.douse_from(stand: Tile, fires: { Npc }, why: string, rest: { Npc }?): boolean
 	if snap.me.x ~= stand.x or snap.me.y ~= stand.y then
-		Log.log("Tempoross", `   Standing at {stand.x},{stand.y} to put out {#fires} fires from one tile ({why})`)
-		local o = Route.walk_checks(false)
-		o.near = 0
-		o.timeout_ms = 15000
-		Walker.walk(stand, o)
-		return true
+		local first: number? = nil
+		for i, fire in ipairs(fires) do
+			if Hazard.lands_on(fire, stand) then
+				first = i
+				break
+			end
+		end
+		if first then
+			local fire = table.remove(fires, first :: number) :: Npc
+			table.insert(fires, 1, fire)
+			Log.log(
+				"Tempoross",
+				`   Clicking the fire at {fire.x},{fire.y} walks to {stand.x},{stand.y}, putting out {#fires} fires from there ({why})`
+			)
+		else
+			Log.log("Tempoross", `   Standing at {stand.x},{stand.y} to put out {#fires} fires from one tile ({why})`)
+			local o = Route.walk_checks(false)
+			o.near = 0
+			o.timeout_ms = 15000
+			Walker.walk(stand, o)
+			Read.set_me(game_state().position)
+			if snap.me.x ~= stand.x or snap.me.y ~= stand.y then
+				return true
+			end
+		end
 	end
 	local doused = false
 	for i, fire in ipairs(fires) do
 		local following = fires[i + 1]
-		doused = Hazard.douse(fire, if following then Geo.to_tile(following) else nil) or doused
+		local toward = if following then Geo.to_tile(following) else nil
+		if toward == nil and rest and #(rest :: { Npc }) > 0 then
+			local next_fire = Solo.cluster_target(rest :: { Npc })
+			toward = if next_fire then Geo.to_tile(next_fire :: Npc) else nil
+		end
+		doused = Hazard.douse(fire, toward) or doused
 	end
 	return doused
 end
@@ -4428,12 +4461,27 @@ function Solo.clear_fires(fires: { Npc }, why: string)
 		Hazard.douse(fire, if after then Geo.to_tile(after :: Npc) else nil)
 		return
 	end
-	Hazard.douse_from(spot :: Tile, beside, why)
+	local batch: { [number]: boolean } = {}
+	for _, f in ipairs(beside) do
+		batch[f.index] = true
+	end
+	local rest: { Npc } = {}
+	for _, f in ipairs(fires) do
+		if not batch[f.index] then
+			table.insert(rest, f)
+		end
+	end
+	Hazard.douse_from(spot :: Tile, beside, why, rest)
 end
 
 function Solo.stop_here()
 	local r = S.solo
-	local part = if r.p4_stage then 4 elseif r.p3_stage then 3 else 2
+	if r.p4_stage then
+		Log.log("Tempoross", "End of part 4, stopping here on the island")
+		S.finished = true
+		return
+	end
+	local part = if r.p3_stage then 3 else 2
 	Log.log("Tempoross", `End of part {part}, stopping here and forfeiting`)
 	S.leave_by_crew = true
 	Game.leave()
