@@ -56,7 +56,7 @@ function Group.get_game_state(skipped: { [State]: boolean }): State
 		and Read.has_harpoon()
 	then
 		local double = Task.best_spot(true)
-		if double and Geo.distance(double :: Npc, snap.me) <= 16 and Task.double_worth(double :: Npc) then
+		if double and Geo.distance(double, snap.me) <= 16 and Task.double_worth(double) then
 			plan.spot = double
 			return "FISH_DOUBLE"
 		end
@@ -107,19 +107,16 @@ function Group.get_game_state(skipped: { [State]: boolean }): State
 		end
 		local need_water = Read.item_count(Items.WATER) == 0 and #Hazard.fire_npcs() > 0
 		if
-			Read.item_count(Items.BUCKET, Items.WATER) < CONFIG.buckets
+			Read.buckets() < CONFIG.buckets
 			and (Read.fish_count() == 0 or (need_water and Read.item_count(Items.BUCKET) == 0))
 			and not skipped["TAKE_BUCKETS"]
 		then
 			return "TAKE_BUCKETS"
 		end
 	end
-	if Read.item_count(Items.BUCKET) > 0 and not skipped["FILL_BUCKETS"] then
-		local pump = Task.pump_in_reach()
-		if pump then
-			plan.pump = pump
-			return "FILL_BUCKETS"
-		end
+	local fill = Task.fill_state(skipped)
+	if fill then
+		return fill
 	end
 
 	local raw = Read.item_count(Items.RAW_FISH)

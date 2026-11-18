@@ -76,6 +76,18 @@ local Handler = Core.Handler
 require("./solo")
 require("./group")
 
+local MASTS = { "Mast", "Damaged mast" }
+local TOTEMS = { "Totem pole", "Damaged totem pole" }
+local POLES = { "Mast", "Damaged mast", "Totem pole", "Damaged totem pole" }
+
+local function keep_only<K, V>(t: { [K]: V }, keys: { [K]: boolean })
+	for key in pairs(t) do
+		if not keys[key] then
+			t[key] = nil
+		end
+	end
+end
+
 function Read.widget_text(group: number, child: number): string?
 	local w = widget(group, child)
 	if w == nil or w.hidden then
@@ -96,10 +108,7 @@ function Read.hud_percent(child: number): number?
 		v = Read.parse_hud_percent(child) or false
 		S.hud_cache[child] = v
 	end
-	if v then
-		return v :: number
-	end
-	return nil
+	return v or nil
 end
 
 function Read.current_tick(state: ClientState): number
@@ -116,6 +125,10 @@ function Read.read_inventory(): ({ [number]: number }, number)
 		end
 	end
 	return counts, Inventory.SIZE - used
+end
+
+function Read.sync_inventory()
+	snap.inv, snap.free = Read.read_inventory()
 end
 
 function Read.read_npcs(): { Npc }?
@@ -195,11 +208,11 @@ end
 
 function Read.note_trail()
 	local last = S.trail_last
-	if last and last.x == snap.me.x and last.y == snap.me.y then
+	if last and Geo.same(last, snap.me) then
 		return
 	end
 	if last and Geo.distance(last :: Tile, snap.me) > 1 then
-		local passed = Route.route_to(snap.me, last :: Tile)
+		local passed = Route.route_to(snap.me, last)
 		if passed then
 			for i = 2, #passed - 1 do
 				Read.push_trail(`~{passed[i].x},{passed[i].y}`)
@@ -215,6 +228,14 @@ function Read.set_me(position: { x: number, y: number }?)
 		snap.me = { x = position.x, y = position.y }
 		Read.note_trail()
 	end
+end
+
+function Read.refresh_moving(): ClientState
+	local st = game_state()
+	snap.tick = Read.current_tick(st)
+	Read.set_me(st.position)
+	snap.npcs = Read.read_npcs() or snap.npcs
+	return st
 end
 
 function Read.refresh_snapshot(state: ClientState): boolean
@@ -268,8 +289,8 @@ function Geo.distance(a: Tile, b: Tile): number
 	return math.max(math.abs(a.x - b.x), math.abs(a.y - b.y))
 end
 
-function Geo.loc_distance(loc: Loc, from: Tile): number
-	return Objects.distance(loc, from)
+function Geo.same(a: Tile, b: Tile): boolean
+	return a.x == b.x and a.y == b.y
 end
 
 function Read.npcs_with(id: number): { Npc }
@@ -282,15 +303,19 @@ function Read.npcs_with(id: number): { Npc }
 	return found
 end
 
-function Geo.nearest_npc(list: { Npc }, from: Tile, accept: ((Npc) -> boolean)?): Npc?
+local function nearest<T>(list: { T }, from: Tile, distance: (T, Tile) -> number, accept: ((T) -> boolean)?): T?
 	local best, best_d = nil, math.huge
-	for _, n in ipairs(list) do
-		local d = Geo.distance(n, from)
-		if d < best_d and (accept == nil or accept(n)) then
-			best, best_d = n, d
+	for _, item in ipairs(list) do
+		local d = distance(item, from)
+		if d < best_d and (accept == nil or accept(item)) then
+			best, best_d = item, d
 		end
 	end
 	return best
+end
+
+function Geo.nearest_npc(list: { Npc }, from: Tile, accept: ((Npc) -> boolean)?): Npc?
+	return nearest(list, from, Geo.distance, accept)
 end
 
 function Read.locs_named(names: { string }): { Loc }
@@ -304,14 +329,7 @@ function Read.locs_named(names: { string }): { Loc }
 end
 
 function Geo.nearest_loc(list: { Loc }, from: Tile, accept: ((Loc) -> boolean)?): Loc?
-	local best, best_d = nil, math.huge
-	for _, l in ipairs(list) do
-		local d = Geo.loc_distance(l, from)
-		if d < best_d and (accept == nil or accept(l)) then
-			best, best_d = l, d
-		end
-	end
-	return best
+	return nearest(list, from, Objects.distance, accept)
 end
 
 function Chat.skip_old_messages()
@@ -324,91 +342,96 @@ function Chat.contains(text: string, part: string): boolean
 	return string.find(text, part, 1, true) ~= nil
 end
 
+function Chat.wave_coming(): boolean
+	return events.wave_warning_at ~= nil and not events.tethered
+end
+
 function Chat.read_chat()
 	for _, m in ipairs(chat_messages() or {}) do
-		if m.uid > S.chat_uid then
-			S.chat_uid = m.uid
-			local text = string.gsub(string.gsub(m.text, "<[^>]*>", ""), "@[%w_]+@", "")
-			if m.kind == 0 or m.kind == 105 or m.kind == 115 then
-				if Chat.contains(text, "colossal wave closes in") then
-					events.wave_warning_at = time() - m.age
-					events.tethered = false
-					Log.log("Tempoross", "Wave incoming")
-				elseif Chat.contains(text, "securely tether yourself") then
-					events.tethered = true
-				elseif
-					Chat.contains(text, "washes over you")
-					or Chat.contains(text, "slams into you")
-					or Chat.contains(text, "to the waves")
-				then
-					if events.wave_warning_at then
-						Log.log(
-							"Tempoross",
-							if Chat.contains(text, "washes over") then "Wave passed, tethered" else "Wave hit us"
-						)
-					end
-					if S.activity and (S.activity :: Activity).kind == "tether" then
-						S.activity = nil
-					end
-					events.wave_warning_at = nil
-					events.tethered = false
-					events.wave_hit_at = time() - m.age
-					events.waves_passed += 1
-					events.wave_hit_us = events.wave_hit_us or not Chat.contains(text, "washes over")
-				elseif Chat.contains(text, "untether yourself from") then
-					events.tethered = false
-				elseif Chat.contains(text, "untether") then
-					Log.log("Tempoross", `   Chat: {text}`)
-					events.must_untether = true
-				elseif
-					Chat.contains(text, "surges towards a nearby cannon")
-					or Chat.contains(text, "arcs from the cannon into you")
-				then
-					if Chat.contains(text, "arcs from the cannon into you") then
-						events.stunned_until = time() - m.age + CONST.STUN_MS
-						Log.log("Tempoross", "Stunned by the cannon")
-					else
-						events.surge_until = time() - m.age + CONST.SURGE_WAIT_MS
-						S.surge_logged = false
-						Log.log("Tempoross", "A cannon is about to be electrified")
-					end
-				elseif Chat.contains(text, "clouds roll in") then
-					Log.log("Tempoross", "Storm brewing")
-				elseif Chat.contains(text, "skies clear as Tempoross retreats") then
-					events.game_result = "won"
-				elseif Chat.contains(text, "Points:") and Chat.contains(text, "Personal best") then
-					local n = string.match((string.gsub(text, ",", "")), "Points: (%d+)")
-					if n then
-						stats.points += tonumber(n) :: number
-					end
-				elseif Chat.contains(text, "Reward permits:") then
-					local n = string.match(text, "Reward permits: (%d+)")
-					if n then
-						stats.permits += tonumber(n) :: number
-					end
-				elseif Chat.contains(text, "You lose") then
-					local st = Host.game_state()
-					snap.tick = Read.current_tick(st)
-					Read.set_me(st.position)
-					snap.npcs = Read.read_npcs() or snap.npcs
-					Log.log("Tempoross", `Lost items {math.floor(m.age)} ms ago: {text}`)
-					Hazard.log_burn(st.destination)
-					if Chat.contains(text, "to the fire") then
-						local spares_fish = CONFIG.solo and S.solo.p3_stage ~= nil and not Chat.contains(text, "fish")
-						if spares_fish then
-							Log.log("Tempoross", "   Burned in part 3 without losing fish, carrying on")
-						else
-							events.burned = true
-						end
-					end
+		if m.uid <= S.chat_uid then
+			continue
+		end
+		S.chat_uid = m.uid
+		if m.kind ~= 0 and m.kind ~= 105 and m.kind ~= 115 then
+			continue
+		end
+		local text = string.gsub(string.gsub(m.text, "<[^>]*>", ""), "@[%w_]+@", "")
+		local at = time() - m.age
+		local washed = Chat.contains(text, "washes over")
+		if Chat.contains(text, "colossal wave closes in") then
+			events.wave_warning_at = at
+			events.tethered = false
+			Log.log("Tempoross", "Wave incoming")
+		elseif Chat.contains(text, "securely tether yourself") then
+			events.tethered = true
+		elseif
+			Chat.contains(text, "washes over you")
+			or Chat.contains(text, "slams into you")
+			or Chat.contains(text, "to the waves")
+		then
+			if events.wave_warning_at then
+				Log.log("Tempoross", if washed then "Wave passed, tethered" else "Wave hit us")
+			end
+			if Doing.is_doing("tether") then
+				S.activity = nil
+			end
+			events.wave_warning_at = nil
+			events.tethered = false
+			events.wave_hit_at = at
+			events.waves_passed += 1
+			events.wave_hit_us = events.wave_hit_us or not washed
+		elseif Chat.contains(text, "untether yourself from") then
+			events.tethered = false
+		elseif Chat.contains(text, "untether") then
+			Log.log("Tempoross", `   Chat: {text}`)
+			events.must_untether = true
+		elseif Chat.contains(text, "arcs from the cannon into you") then
+			events.stunned_until = at + CONST.STUN_MS
+			Log.log("Tempoross", "Stunned by the cannon")
+		elseif Chat.contains(text, "surges towards a nearby cannon") then
+			events.surge_until = at + CONST.SURGE_WAIT_MS
+			S.surge_logged = false
+			Log.log("Tempoross", "A cannon is about to be electrified")
+		elseif Chat.contains(text, "clouds roll in") then
+			Log.log("Tempoross", "Storm brewing")
+		elseif Chat.contains(text, "skies clear as Tempoross retreats") then
+			events.game_result = "won"
+		elseif Chat.contains(text, "Points:") and Chat.contains(text, "Personal best") then
+			local n = string.match((string.gsub(text, ",", "")), "Points: (%d+)")
+			if n then
+				stats.points += tonumber(n) :: number
+			end
+		elseif Chat.contains(text, "Reward permits:") then
+			local n = string.match(text, "Reward permits: (%d+)")
+			if n then
+				stats.permits += tonumber(n) :: number
+			end
+		elseif Chat.contains(text, "You lose") then
+			local st = Read.refresh_moving()
+			Log.log("Tempoross", `Lost items {math.floor(m.age)} ms ago: {text}`)
+			Hazard.log_burn(st.destination)
+			if Chat.contains(text, "to the fire") then
+				if CONFIG.solo and S.solo.p3_stage ~= nil and not Chat.contains(text, "fish") then
+					local part = if S.solo.p5_stage then 5 elseif S.solo.p4_stage then 4 else 3
+					Log.log("Tempoross", `   Burned in part {part} without losing fish, carrying on`)
+				else
+					events.burned = true
 				end
 			end
 		end
 	end
 end
 
+function Ship.side_of(name: string, mast: Loc, totem: Loc): Side?
+	local shrine = Geo.nearest_loc(Read.locs_named({ "Shrine" }), totem)
+	if shrine == nil then
+		return nil
+	end
+	return { name = name, mast = mast, totem = totem, shrine = shrine }
+end
+
 function Ship.find_side(): Side?
-	local masts = Read.locs_named({ "Mast", "Damaged mast" })
+	local masts = Read.locs_named(MASTS)
 	local mast = Geo.nearest_loc(masts, snap.me)
 	if mast == nil then
 		return nil
@@ -422,9 +445,8 @@ function Ship.find_side(): Side?
 			end
 		end
 	end
-	local totems = Read.locs_named({ "Totem pole", "Damaged totem pole" })
 	local totem: Loc? = nil
-	for _, t in ipairs(totems) do
+	for _, t in ipairs(Read.locs_named(TOTEMS)) do
 		if (west and t.y > mast.y) or (not west and t.y < mast.y) then
 			totem = t
 		end
@@ -432,24 +454,24 @@ function Ship.find_side(): Side?
 	if totem == nil then
 		return nil
 	end
-	local shrine = Geo.nearest_loc(Read.locs_named({ "Shrine" }), totem :: Loc)
-	if shrine == nil then
-		return nil
-	end
-	return { name = if west then "west" else "east", mast = mast, totem = totem :: Loc, shrine = shrine :: Loc }
+	return Ship.side_of(if west then "west" else "east", mast, totem)
 end
 
 function Read.loc_at(tile: Tile, names: { string }): Loc?
 	for _, l in ipairs(Read.locs_named(names)) do
-		if l.x == tile.x and l.y == tile.y then
+		if Geo.same(l, tile) then
 			return l
 		end
 	end
 	return nil
 end
 
+function Read.is_damaged(loc: Loc): boolean
+	return Chat.contains(loc.name or "", "Damaged")
+end
+
 function Ship.our_mast(): Loc?
-	return S.side and Read.loc_at((S.side :: Side).mast, { "Mast", "Damaged mast" })
+	return S.side and Read.loc_at((S.side :: Side).mast, MASTS)
 end
 
 function Ship.at_home(tile: Tile): boolean
@@ -457,7 +479,7 @@ function Ship.at_home(tile: Tile): boolean
 end
 
 function Ship.our_totem(): Loc?
-	return S.side and Read.loc_at((S.side :: Side).totem, { "Totem pole", "Damaged totem pole" })
+	return S.side and Read.loc_at((S.side :: Side).totem, TOTEMS)
 end
 
 function Hazard.fire_npcs(): { Npc }
@@ -483,12 +505,17 @@ function Hazard.fire_size(fire: Npc): number
 	return S.fire_size or 1
 end
 
-function Hazard.fire_tiles(fire: Npc): { Tile }
+function Hazard.fire_box(fire: Npc): (number, number, number, number)
 	local size = Hazard.fire_size(fire)
 	local x0, y0 = fire.x - size // 2, fire.y - size // 2
+	return x0, y0, x0 + size - 1, y0 + size - 1
+end
+
+function Hazard.fire_tiles(fire: Npc): { Tile }
+	local x0, y0, x1, y1 = Hazard.fire_box(fire)
 	local tiles = {}
-	for x = x0, x0 + size - 1 do
-		for y = y0, y0 + size - 1 do
+	for x = x0, x1 do
+		for y = y0, y1 do
 			table.insert(tiles, { x = x, y = y })
 		end
 	end
@@ -496,11 +523,12 @@ function Hazard.fire_tiles(fire: Npc): { Tile }
 end
 
 function Hazard.fire_distance(fire: Npc, tile: Tile): number
-	local size = Hazard.fire_size(fire)
-	local x0, y0 = fire.x - size // 2, fire.y - size // 2
-	local dx = math.max(x0 - tile.x, tile.x - (x0 + size - 1), 0)
-	local dy = math.max(y0 - tile.y, tile.y - (y0 + size - 1), 0)
-	return math.max(dx, dy)
+	local x0, y0, x1, y1 = Hazard.fire_box(fire)
+	return math.max(x0 - tile.x, tile.x - x1, y0 - tile.y, tile.y - y1, 0)
+end
+
+function Hazard.fire_at(tile: Tile): Npc
+	return { id = CONST.FIRE, x = tile.x, y = tile.y, index = -1 } :: any
 end
 
 function Hazard.fire_clusters(fires: { Npc }): { { Npc } }
@@ -576,39 +604,28 @@ function Hazard.show_fires(force: boolean?)
 end
 
 function Hazard.watch_clouds()
-	local now = snap.tick
-	local seen: { [number]: boolean } = {}
-	for _, n in ipairs(snap.npcs) do
-		if n.id == CONST.STORM_CLOUD and n.animation == CONST.CLOUD_GROWING then
-			seen[n.index] = true
-			if S.growing_due[n.index] == nil then
-				local delay = Random.range(CONST.GROWING_TICKS_MIN, CONST.GROWING_TICKS_MAX + 1)
-				S.growing_due[n.index] = now + delay
-				Log.log("Tempoross", `Storm cloud at {n.x},{n.y} growing, charging in {delay} ticks`)
-			end
-		end
-	end
-	for index in pairs(S.growing_due) do
-		if not seen[index] then
-			S.growing_due[index] = nil
-		end
-	end
+	local growing: { [number]: boolean } = {}
 	local active: { [number]: boolean } = {}
 	for _, n in ipairs(snap.npcs) do
 		local a = n.animation
-		if
-			n.id == CONST.STORM_CLOUD
-			and (a == CONST.CLOUD_GROWING or a == CONST.CLOUD_CHARGING or a == CONST.CLOUD_ATTACK)
-		then
+		if n.id ~= CONST.STORM_CLOUD then
+			continue
+		end
+		if a == CONST.CLOUD_GROWING then
+			growing[n.index] = true
+			if S.growing_due[n.index] == nil then
+				local delay = Random.range(CONST.GROWING_TICKS_MIN, CONST.GROWING_TICKS_MAX + 1)
+				S.growing_due[n.index] = snap.tick + delay
+				Log.log("Tempoross", `Storm cloud at {n.x},{n.y} growing, charging in {delay} ticks`)
+			end
+		end
+		if a == CONST.CLOUD_GROWING or a == CONST.CLOUD_CHARGING or a == CONST.CLOUD_ATTACK then
 			active[n.index] = true
 			S.cloud_started[n.index] = S.cloud_started[n.index] or time()
 		end
 	end
-	for index in pairs(S.cloud_started) do
-		if not active[index] then
-			S.cloud_started[index] = nil
-		end
-	end
+	keep_only(S.growing_due, growing)
+	keep_only(S.cloud_started, active)
 end
 
 function Hazard.is_striking(n: Npc): boolean
@@ -732,8 +749,7 @@ end
 function Hazard.incoming_at(tile: Tile, more: number): Npc?
 	for _, landing in pairs(S.incoming) do
 		local spot = landing.tile
-		local probe = { id = CONST.FIRE, x = spot.x, y = spot.y, index = -1 } :: any
-		if Hazard.fire_distance(probe, tile) <= CONST.FIRE_REACH + more then
+		if Hazard.fire_distance(Hazard.fire_at(spot), tile) <= CONST.FIRE_REACH + more then
 			return { id = CONST.INCOMING_FIRE, x = spot.x, y = spot.y, index = -1, name = "Incoming fire" } :: any
 		end
 	end
@@ -752,14 +768,7 @@ function Route.sleep_watching(ms: number, at: Tile?, should_stop: (() -> boolean
 	local deadline = time() + ms
 	repeat
 		sleep(math.floor(math.max(1, math.min(CONST.POLL_MS, deadline - time()))))
-		local s = game_state()
-		if s.position then
-			snap.me = { x = s.position.x, y = s.position.y }
-		end
-		snap.walking = s.destination ~= nil
-		snap.tick = Read.current_tick(s)
-		Read.note_trail()
-		snap.npcs = Read.read_npcs() or snap.npcs
+		snap.walking = Read.refresh_moving().destination ~= nil
 		Hazard.watch_clouds()
 		Hazard.watch_projectiles()
 		Hazard.show_fires()
@@ -824,8 +833,7 @@ function Route.first_fire(tiles: { Tile }, ignore: Npc?): Npc?
 	for i = 2, #tiles do
 		local t = tiles[i]
 		local fire = Geo.nearest_npc(all, t, function(n)
-			return Hazard.fire_distance(n, t) <= CONST.FIRE_REACH
-				and (ignore == nil or n.index ~= (ignore :: Npc).index)
+			return Hazard.fire_distance(n, t) <= CONST.FIRE_REACH and (ignore == nil or n.index ~= ignore.index)
 		end)
 		if fire then
 			return fire
@@ -846,17 +854,10 @@ function Route.landing_ahead(tiles: { Tile }): (Tile?, number)
 			table.insert(landings, { tile = { x = n.x, y = n.y }, lands = started + CONST.CLOUD_STRIKE_MS })
 		end
 	end
-	local burning: { [string]: boolean } = {}
-	for _, n in ipairs(snap.npcs) do
-		if n.id == CONST.FIRE then
-			burning[`{n.x},{n.y}`] = true
-		end
-	end
 	for _, landing in ipairs(landings) do
-		local probe = { id = CONST.FIRE, x = landing.tile.x, y = landing.tile.y, index = -1 } :: any
+		local probe = Hazard.fire_at(landing.tile)
 		local until_landing = landing.lands - now
-		local landed = until_landing <= 0 and burning[`{landing.tile.x},{landing.tile.y}`] == true
-		if not landed then
+		if until_landing > 0 or not Hazard.burning_at(probe) then
 			for i = 2, #tiles do
 				local arrival = (i - 1) * CONST.SPOT_COST.tile_ms
 				if
@@ -910,14 +911,16 @@ function Geo.to_tile(t: { x: number, y: number }): Tile
 	return { x = t.x, y = t.y }
 end
 
-function Geo.nearest_walk<T>(list: { T }, from: Tile, to: (T) -> Tile, accept: ((T) -> boolean)?): T?
-	local candidates: { { item: T, straight: number } } = {}
+function Geo.nearest_walk<T>(list: { T }, accept: ((T) -> boolean)?): T?
+	type Candidate = { item: T, tile: Tile, straight: number }
+	local candidates: { Candidate } = {}
 	for _, item in ipairs(list) do
 		if accept == nil or accept(item) then
-			table.insert(candidates, { item = item, straight = Geo.distance(to(item), from) })
+			local tile = Geo.to_tile(item :: any)
+			table.insert(candidates, { item = item, tile = tile, straight = Geo.distance(tile, snap.me) })
 		end
 	end
-	table.sort(candidates, function(a: { item: T, straight: number }, b: { item: T, straight: number }): boolean
+	table.sort(candidates, function(a: Candidate, b: Candidate): boolean
 		return a.straight < b.straight
 	end)
 	local best: T? = nil
@@ -926,7 +929,7 @@ function Geo.nearest_walk<T>(list: { T }, from: Tile, to: (T) -> Tile, accept: (
 		if c.straight >= best_steps then
 			break
 		end
-		local steps = Route.walk_steps(to(c.item), from)
+		local steps = Route.walk_steps(c.tile)
 		if steps < best_steps then
 			best, best_steps = c.item, steps
 		end
@@ -1008,13 +1011,13 @@ function Read.progress_signature(): string
 	)}/{Read.item_count(Items.BUCKET)}/{Read.hud_percent(HUD.ESSENCE) or -1}`
 end
 
-function Doing.begin_activity(kind: string, npc: Npc?, loc: Loc?, double: boolean?)
+function Doing.begin_activity(kind: string, npc: Npc?, loc: Loc?)
 	S.activity = {
 		kind = kind,
 		npc = npc,
 		loc = loc,
 		last_progress_ms = time() + (if kind == "tether" then 0 else CONST.START_GRACE_MS),
-		double = double == true,
+		double = npc ~= nil and npc.id == CONST.DOUBLE_SPOT,
 		last_signature = Read.progress_signature(),
 		last_tile = `{snap.me.x},{snap.me.y}`,
 	}
@@ -1030,19 +1033,26 @@ function Doing.clear_activity()
 	S.activity = nil
 end
 
-function Doing.player_is_working(kind: string): boolean?
-	local me = Host.game_state().player_name
-	local mine: Host.PlayerInfo? = nil
+function Read.my_player(): Host.PlayerInfo?
+	local me = game_state().player_name
 	for _, p in ipairs(Host.players() or {}) do
 		if p.name == me then
-			mine = p
-			break
+			return p
 		end
 	end
-	if mine == nil then
+	return nil
+end
+
+function Read.my_animation(): number
+	local p = Read.my_player()
+	return if p then p.animation else -1
+end
+
+function Doing.player_is_working(kind: string): boolean?
+	local p = Read.my_player()
+	if p == nil then
 		return nil
 	end
-	local p = mine :: Host.PlayerInfo
 	if p.animation == -1 then
 		return false
 	end
@@ -1076,8 +1086,8 @@ function Doing.check_activity()
 		return
 	end
 	if a.kind == "repair" and a.loc then
-		local now = Read.loc_at(a.loc :: Loc, { "Mast", "Damaged mast", "Totem pole", "Damaged totem pole" })
-		if now == nil or not Chat.contains(now.name or "", "Damaged") then
+		local now = Read.loc_at(a.loc :: Loc, POLES)
+		if now == nil or not Read.is_damaged(now) then
 			S.activity = nil
 			return
 		end
@@ -1107,16 +1117,9 @@ function Doing.check_activity()
 end
 
 function Doing.log_stall(a: Activity)
-	local s = Host.game_state()
-	local dest = s.destination
-	local me = s.player_name
-	local animation, target = -1, -1
-	for _, p in ipairs(Host.players() or {}) do
-		if p.name == me then
-			animation, target = p.animation, p.target_state
-			break
-		end
-	end
+	local dest = game_state().destination
+	local p = Read.my_player()
+	local animation, target = if p then p.animation else -1, if p then p.target_state else -1
 	Log.log(
 		"Tempoross",
 		`   {a.kind} stalled at {snap.me.x},{snap.me.y}: destination {if dest then `{dest.x},{dest.y}` else "none"}, animation {animation}, target {target}, menu [{Read.menu_text()}], walked {table.concat(
@@ -1144,20 +1147,19 @@ function Route.clear_route(target: Tile, what: string, opts: WayOptions?): boole
 	Hazard.watch_projectiles()
 	local landing, wait_ms = Route.landing_ahead(tiles)
 	if landing and not o.urgent then
-		local l = landing :: Tile
 		Log.log(
 			"Tempoross",
-			`   Fire landing at {l.x},{l.y} on the way to {what} in {math.floor(wait_ms)} ms, waiting for it`
+			`   Fire landing at {landing.x},{landing.y} on the way to {what} in {math.floor(wait_ms)} ms, waiting for it`
 		)
 		Route.sleep_watching(wait_ms + CONST.LANDING_MARGIN_MS)
 		return false
 	end
-	local fire = if o.ignore then nil else Route.first_fire(tiles, o.ignore)
+	local fire = if o.ignore then nil else Route.first_fire(tiles)
 	if fire and CONFIG.solo and Solo.keeping_fires() and not o.urgent then
 		if Solo.get_past_fires(target, tiles) then
 			return false
 		end
-		Log.log("Tempoross", `   No water left, walking past the fire at {(fire :: Npc).x},{(fire :: Npc).y}`)
+		Log.log("Tempoross", `   No water left, walking past the fire at {fire.x},{fire.y}`)
 		fire = nil
 	end
 	if fire then
@@ -1184,7 +1186,7 @@ function Route.clear_route(target: Tile, what: string, opts: WayOptions?): boole
 	if o.ignore == nil and not o.urgent then
 		local hazard = Hazard.hazard_at(tiles[#tiles])
 		if hazard then
-			Log.log("Tempoross", `   {Hazard.describe_hazard(hazard :: Npc)} where we'd stand for {what}`)
+			Log.log("Tempoross", `   {Hazard.describe_hazard(hazard)} where we'd stand for {what}`)
 			return false
 		end
 	end
@@ -1196,24 +1198,38 @@ function Task.use_npc(npc: Npc, options: { string }, way: WayOptions?): boolean
 	if not Route.clear_route(stand, npc.name, way) then
 		return false
 	end
-	local ok = Npcs.approach(npc, options, Route.approach_opts(way))
-	if not ok then
-		Log.log("Tempoross", "   Can't", table.concat(options, "/"), "on", npc.name)
-		return false
+	if Npcs.approach(npc, options, Route.approach_opts(way)) then
+		return true
 	end
-	return true
+	Log.log("Tempoross", "   Can't", table.concat(options, "/"), "on", npc.name)
+	return false
 end
 
 function Task.use_loc(loc: Loc, options: { string }, way: WayOptions?): boolean
 	if not Route.clear_route(Route.loc_stand(loc), loc.name or "?", way) then
 		return false
 	end
-	local ok = Objects.approach(loc, options, Route.approach_opts(way))
-	if not ok then
-		Log.log("Tempoross", "   Can't", table.concat(options, "/"), "on", loc.name or "?")
-		return false
+	if Objects.approach(loc, options, Route.approach_opts(way)) then
+		return true
 	end
-	return true
+	Log.log("Tempoross", "   Can't", table.concat(options, "/"), "on", loc.name or "?")
+	return false
+end
+
+function Task.start_npc(kind: string, npc: Npc, options: { string }, way: WayOptions?): boolean
+	if Task.use_npc(npc, options, way) then
+		Doing.begin_activity(kind, npc)
+		return true
+	end
+	return false
+end
+
+function Task.start_loc(kind: string, loc: Loc, options: { string }): boolean
+	if Task.use_loc(loc, options) then
+		Doing.begin_activity(kind, nil, loc)
+		return true
+	end
+	return false
 end
 
 function Route.walking_out_of(hazard: Npc): boolean
@@ -1221,7 +1237,7 @@ function Route.walking_out_of(hazard: Npc): boolean
 		return false
 	end
 	local dest = Player.destination()
-	local tiles = dest and Route.route_to(dest :: Tile)
+	local tiles = dest and Route.route_to(dest)
 	if tiles == nil or #tiles < 2 then
 		return false
 	end
@@ -1232,23 +1248,20 @@ function Route.fire_ahead(dest: Tile?, ignore: Npc?): Npc?
 	if dest == nil then
 		return nil
 	end
-	local tiles = Route.route_to(dest :: Tile)
+	local tiles = Route.route_to(dest)
 	return tiles and Route.first_fire(tiles :: { Tile }, ignore)
 end
 
 function Route.should_interrupt_walk(for_wave: boolean, known: { [number]: boolean }, ignore: Npc?): boolean
 	Chat.read_chat()
-	if not for_wave and events.wave_warning_at ~= nil and not events.tethered and Read.has_rope() then
+	if not for_wave and Chat.wave_coming() and Read.has_rope() then
 		return true
 	end
 	if events.game_result and S.in_game then
 		return true
 	end
-	local s = game_state()
+	local s = Read.refresh_moving()
 	if s.position then
-		snap.tick = Read.current_tick(s)
-		Read.set_me(s.position)
-		snap.npcs = Read.read_npcs() or snap.npcs
 		Hazard.watch_projectiles()
 		if not for_wave and Read.item_count(Items.WATER) > 0 and Hazard.fire_near(snap.me, CONST.FIRE_REACH) then
 			return true
@@ -1267,7 +1280,7 @@ function Route.should_interrupt_walk(for_wave: boolean, known: { [number]: boole
 	return false
 end
 
-function Route.walk_checks(for_wave: boolean, ignore: Npc?): Walker.WalkOptions
+function Route.walk_checks(for_wave: boolean, ignore: Npc?, step: (() -> boolean)?): Walker.WalkOptions
 	snap.npcs = Read.read_npcs() or snap.npcs
 	local known: { [number]: boolean } = {}
 	for _, fire in ipairs(Hazard.fire_npcs()) do
@@ -1278,7 +1291,10 @@ function Route.walk_checks(for_wave: boolean, ignore: Npc?): Walker.WalkOptions
 			if CONFIG.antiban and not S.in_game then
 				Antiban.do_walking_antiban()
 			end
-			return not Route.should_interrupt_walk(for_wave, known, ignore)
+			if Route.should_interrupt_walk(for_wave, known, ignore) then
+				return false
+			end
+			return step == nil or step()
 		end,
 		before_click = function(target: Tile, here: Tile): boolean?
 			if for_wave or Read.item_count(Items.WATER) == 0 then
@@ -1304,15 +1320,33 @@ function Route.walk_checks(for_wave: boolean, ignore: Npc?): Walker.WalkOptions
 	}
 end
 
+function Route.reaching(to: Tile, from: Tile?): { Tile }?
+	local tiles = Route.route_to(to, from)
+	local last = tiles and tiles[#tiles]
+	return if last and Geo.same(last, to) then tiles else nil
+end
+
 function Route.jitter_tile(tile: Tile): Tile
 	for _ = 1, 10 do
 		local t = { x = tile.x + Random.int(-4, 4), y = tile.y + Random.int(-4, 4) }
-		local tiles = Route.route_to(t)
-		if tiles ~= nil and #tiles > 0 and tiles[#tiles].x == t.x and tiles[#tiles].y == t.y then
+		if Route.reaching(t) then
 			return t
 		end
 	end
 	return tile
+end
+
+function Route.walk(target: Tile, near: number, timeout_ms: number, step: (() -> boolean)?, for_wave: boolean?): boolean
+	local o = Route.walk_checks(for_wave == true, nil, step)
+	o.near = near
+	o.timeout_ms = timeout_ms
+	return Walker.walk(target, o)
+end
+
+function Route.click(tile: Tile)
+	if not Walker.click_tile(tile) then
+		Walker.click_minimap(tile)
+	end
 end
 
 function Route.walk_near(tile: Tile, near: number, for_wave: boolean?): boolean
@@ -1327,14 +1361,11 @@ function Route.walk_near(tile: Tile, near: number, for_wave: boolean?): boolean
 		`   Walking to {tile.x},{tile.y} (asked {goal.x},{goal.y}, near {near}) from {snap.me.x},{snap.me.y}`
 	)
 	Route.log_detour("walk_near", snap.me, tile, Route.route_to(tile))
-	local o = Route.walk_checks(for_wave == true)
-	o.near = near
-	o.timeout_ms = 30000
-	local ok = Walker.walk(tile, o)
+	local ok = Route.walk(tile, near, 30000, nil, for_wave)
 	if not ok then
 		Log.log("Tempoross", "   Walk stopped")
 	end
-	return ok == true
+	return ok
 end
 
 function Route.approach_opts(way: WayOptions?): Clickbox.Approach
@@ -1366,12 +1397,9 @@ end
 function Route.nearest_of(candidates: { Tile }): { Tile }?
 	local best: { Tile }? = nil
 	for _, c in ipairs(candidates) do
-		local route = Route.route_to(c)
-		if route and #route > 0 then
-			local last = route[#route]
-			if last.x == c.x and last.y == c.y and (best == nil or #route < #(best :: { Tile })) then
-				best = route
-			end
+		local route = Route.reaching(c)
+		if route and (best == nil or #route < #best) then
+			best = route
 		end
 	end
 	return best
@@ -1428,7 +1456,7 @@ end
 
 function Hazard.burning_at(fire: Npc): boolean
 	for _, n in ipairs(snap.npcs) do
-		if n.id == CONST.FIRE and n.x == fire.x and n.y == fire.y then
+		if n.id == CONST.FIRE and Geo.same(n, fire) then
 			return true
 		end
 	end
@@ -1444,36 +1472,27 @@ function Hazard.douse(fire: Npc, toward: Tile?): boolean
 	if current == nil or current.id ~= CONST.FIRE then
 		return false
 	end
-	fire = Hazard.douse_target(current :: Npc)
+	fire = Hazard.douse_target(current)
 	S.solo.fire_hover = nil
 	if not Task.use_npc(fire, { "Douse" }, { ignore = fire }) then
 		return false
 	end
 	Log.log("Tempoross", "   Dousing fire at", fire.x, fire.y)
 	if toward then
-		Hazard.prehover_after_douse(fire, toward :: Tile)
+		Hazard.prehover_after_douse(fire, toward)
 	end
 	local deadline = time() + 6000
 	local animation_ended = false
 	while time() < deadline do
 		local dousing = Read.my_animation() == CONST.DOUSE_ANIMATION
 		animation_ended = animation_ended or not dousing
-		if dousing and animation_ended then
-			S.doused[`{fire.x},{fire.y}`] = time()
-			return true
-		end
-		local st = game_state()
-		snap.tick = Read.current_tick(st)
-		Read.set_me(st.position)
-		snap.npcs = Read.read_npcs() or snap.npcs
-		if not Hazard.burning_at(fire) then
+		local st = if dousing and animation_ended then nil else Read.refresh_moving()
+		if st == nil or not Hazard.burning_at(fire) then
 			S.doused[`{fire.x},{fire.y}`] = time()
 			return true
 		end
 		Hazard.watch_projectiles()
-		local dest = st.destination
-		local ahead = dest and Route.route_to(dest :: Tile)
-		local other = ahead and Route.first_fire(ahead :: { Tile }, fire)
+		local other = Route.fire_ahead(st.destination, fire)
 		if other then
 			Log.log("Tempoross", `   Fire at {other.x},{other.y} on the way to the fire at {fire.x},{fire.y}`)
 			events.fire_in_way = other
@@ -1485,14 +1504,14 @@ function Hazard.douse(fire: Npc, toward: Tile?): boolean
 end
 
 function Route.safe_tile(towards: Tile?, margin: number?): Tile?
-	local clearance = if margin == nil then 1 else margin :: number
+	local clearance = margin or 1
 	local candidates: { { tile: Tile, score: number } } = {}
 	for dx = -7, 7 do
 		for dy = -7, 7 do
 			local t = { x = snap.me.x + dx, y = snap.me.y + dy }
 			local d = Geo.distance(t, snap.me)
 			if d >= 1 and Hazard.hazard_at(t, clearance) == nil then
-				local score = d + (if towards then Geo.distance(t, towards :: Tile) * 0.5 else 0) + math.random()
+				local score = d + (if towards then Geo.distance(t, towards) * 0.5 else 0) + math.random()
 				table.insert(candidates, { tile = t, score = score })
 			end
 		end
@@ -1503,10 +1522,9 @@ function Route.safe_tile(towards: Tile?, margin: number?): Tile?
 	local reachable: Tile? = nil
 	for i = 1, math.min(#candidates, 12) do
 		local t = candidates[i].tile
-		local tiles = Route.route_to(t)
-		local last = tiles and tiles[#tiles]
-		if last and last.x == t.x and last.y == t.y then
-			if Route.safe_route(tiles :: { Tile }) then
+		local tiles = Route.reaching(t)
+		if tiles then
+			if Route.safe_route(tiles) then
 				return t
 			end
 			reachable = reachable or t
@@ -1530,11 +1548,9 @@ function Route.step_away(towards: Tile?): boolean
 	Log.log("Tempoross", "   Stepping away to", t.x, t.y)
 	Doing.clear_activity()
 	S.dodging_to = t
-	if not Walker.click_tile(t :: Tile) then
-		Walker.click_minimap(t :: Tile)
-	end
+	Route.click(t)
 	local landed = Route.sleep_watching(Random.int(600, 900), nil, function(): boolean
-		return Hazard.hazard_at(t) ~= nil or (snap.me.x == t.x and snap.me.y == t.y)
+		return Hazard.hazard_at(t) ~= nil or Geo.same(snap.me, t)
 	end)
 	if landed and Hazard.hazard_at(t) ~= nil then
 		return Route.step_away(towards)
@@ -1543,16 +1559,11 @@ function Route.step_away(towards: Tile?): boolean
 end
 
 function Task.untether_nearby(): boolean
-	local t = Geo.nearest_walk(
-		Read.locs_named({ "Mast", "Totem pole", "Damaged mast", "Damaged totem pole" }),
-		snap.me,
-		Geo.to_tile
-	)
-	if t == nil then
+	local target = Geo.nearest_walk(Read.locs_named(POLES))
+	if target == nil then
 		return false
 	end
-	local target = t :: Loc
-	if Geo.loc_distance(target, snap.me) > 2 and not Route.walk_near(Geo.to_tile(target), 1) then
+	if Objects.distance(target, snap.me) > 2 and not Route.walk_near(Geo.to_tile(target), 1) then
 		return false
 	end
 	if not Task.use_loc(target, { "Untether" }) then
@@ -1591,8 +1602,8 @@ function Task.tether()
 	local hammer = Read.has_hammer()
 	local options: { Loc } = {}
 	for _, l in ipairs({ Ship.our_mast(), Ship.our_totem() } :: { Loc? }) do
-		if l and (hammer or not Chat.contains((l :: Loc).name or "", "Damaged")) then
-			table.insert(options, l :: Loc)
+		if l and (hammer or not Read.is_damaged(l)) then
+			table.insert(options, l)
 		end
 	end
 	if #options == 0 then
@@ -1601,15 +1612,16 @@ function Task.tether()
 	local ranked: { { loc: Loc, steps: number } } = {}
 	local seen = {}
 	for _, l in ipairs(options) do
-		local d = Route.walk_steps(Geo.to_tile(l), snap.me)
-		local damaged = Chat.contains(l.name or "", "Damaged")
+		local d = Route.walk_steps(Geo.to_tile(l))
 		table.insert(seen, `{l.name} {d} steps`)
-		if damaged then
+		if Read.is_damaged(l) then
 			d += CONST.REPAIR_STEPS
 		end
-		if Doing.is_doing("fish") and Chat.contains(l.name or "", "Totem") then
-			d -= 8
-		elseif Doing.is_doing("load") and Chat.contains(l.name or "", "Mast") then
+		local name = l.name or ""
+		if
+			(Doing.is_doing("fish") and Chat.contains(name, "Totem"))
+			or (Doing.is_doing("load") and Chat.contains(name, "Mast"))
+		then
 			d -= 8
 		end
 		table.insert(ranked, { loc = l, steps = d })
@@ -1623,12 +1635,12 @@ function Task.tether()
 		return
 	end
 	Log.log("Tempoross", `   Tether options: {table.concat(seen, ", ")}; picked the {target.name}`)
-	if Chat.contains(target.name or "", "Damaged") then
+	if Read.is_damaged(target) then
 		local fixed = Task.repair_for_wave(target)
 		if fixed == nil then
 			return
 		end
-		target = fixed :: Loc
+		target = fixed
 	end
 	local fire = Hazard.fire_near(target, 1)
 	if fire and Read.item_count(Items.WATER) > 0 then
@@ -1682,31 +1694,18 @@ function Task.repair_target(range: number): Loc?
 	end
 	local damaged: { Loc } = {}
 	for _, l in ipairs({ Ship.our_mast(), Ship.our_totem() } :: { Loc? }) do
-		if l and Chat.contains((l :: Loc).name or "", "Damaged") and Geo.loc_distance(l :: Loc, snap.me) <= range then
-			table.insert(damaged, l :: Loc)
+		if l and Read.is_damaged(l) and Objects.distance(l, snap.me) <= range then
+			table.insert(damaged, l)
 		end
 	end
-	return Geo.nearest_walk(damaged, snap.me, Geo.to_tile)
-end
-
-function Task.repair(target: Loc)
-	if Task.use_loc(target, { "Repair" }) then
-		Doing.begin_activity("repair", nil, target)
-	end
+	return Geo.nearest_walk(damaged)
 end
 
 function Task.harpoon_pool(): boolean
-	local pool = Geo.nearest_walk(snap.npcs, snap.me, Geo.to_tile, function(n)
+	local pool = Geo.nearest_walk(snap.npcs, function(n)
 		return n.name == "Spirit pool"
 	end)
-	if pool == nil then
-		return false
-	end
-	if Task.use_npc(pool :: Npc, { "Harpoon" }) then
-		Doing.begin_activity("attack", pool)
-		return true
-	end
-	return false
+	return pool ~= nil and Task.start_npc("attack", pool, { "Harpoon" })
 end
 
 function Hazard.track_energy()
@@ -1728,16 +1727,14 @@ function Hazard.track_energy()
 end
 
 function Hazard.tempoross_vulnerable(): boolean
-	for _, n in ipairs(snap.npcs) do
-		if n.id == CONST.SPIRIT_POOL then
-			return true
-		end
+	if #Read.npcs_with(CONST.SPIRIT_POOL) > 0 then
+		return true
 	end
 	local energy = Read.hud_percent(HUD.ENERGY)
 	return energy ~= nil and energy <= 0 and S.energy_dir == "down"
 end
 
-function Task.usable_crates(quiet: boolean?): { Npc }
+function Task.crates(): { Npc }
 	local mast = (S.side :: Side).mast
 	local crates: { Npc } = {}
 	for _, n in ipairs(snap.npcs) do
@@ -1745,11 +1742,19 @@ function Task.usable_crates(quiet: boolean?): { Npc }
 			table.insert(crates, n)
 		end
 	end
+	return crates
+end
+
+function Task.fill_crate(crate: Npc): boolean
+	return Task.start_npc("load", crate, { "Fill" })
+end
+
+function Task.usable_crates(quiet: boolean?): { Npc }
 	local usable: { Npc } = {}
 	local cannons = Read.locs_named({ "Harpoonfish cannon", "Electrified harpoonfish cannon" })
-	for _, crate in ipairs(crates) do
+	for _, crate in ipairs(Task.crates()) do
 		local cannon = Geo.nearest_loc(cannons, crate)
-		if cannon and (cannon :: Loc).name == "Electrified harpoonfish cannon" then
+		if cannon and cannon.name == "Electrified harpoonfish cannon" then
 			if not quiet then
 				Log.log("Tempoross", "   The crate at", crate.x, crate.y, "has an electrified cannon")
 			end
@@ -1773,7 +1778,7 @@ function Task.surge_pending(): boolean
 	end
 	local mast = (S.side :: Side).mast
 	for _, cannon in ipairs(Read.locs_named({ "Electrified harpoonfish cannon" })) do
-		if Geo.loc_distance(cannon, mast) <= CONST.CANNON_RANGE then
+		if Objects.distance(cannon, mast) <= CONST.CANNON_RANGE then
 			events.surge_until = 0
 			return false
 		end
@@ -1794,13 +1799,7 @@ function Task.wait_out_surge()
 end
 
 function Task.clear_crates()
-	local mast = (S.side :: Side).mast
-	local crates: { Npc } = {}
-	for _, n in ipairs(snap.npcs) do
-		if n.name == "Ammunition crate" and Geo.distance(n, mast) <= 4 then
-			table.insert(crates, n)
-		end
-	end
+	local crates = Task.crates()
 	local best: Tile? = nil
 	local best_d = math.huge
 	for dx = -6, 6 do
@@ -1811,24 +1810,18 @@ function Task.clear_crates()
 				clear = clear and Geo.distance(crate, t) >= CONST.SURGE_CLEARANCE
 			end
 			local d = Geo.distance(t, snap.me)
-			if clear and d < best_d then
-				local tiles = Route.route_to(t)
-				local last = tiles and tiles[#tiles]
-				if last and last.x == t.x and last.y == t.y then
-					best, best_d = t, d
-				end
+			if clear and d < best_d and Route.reaching(t) then
+				best, best_d = t, d
 			end
 		end
 	end
 	Doing.clear_activity()
 	if best == nil then
-		Route.step_away(mast)
+		Route.step_away((S.side :: Side).mast)
 		return
 	end
-	Log.log("Tempoross", `   Stepping clear of the cannons to {(best :: Tile).x},{(best :: Tile).y}`)
-	if not Walker.click_tile(best :: Tile) then
-		Walker.click_minimap(best :: Tile)
-	end
+	Log.log("Tempoross", `   Stepping clear of the cannons to {best.x},{best.y}`)
+	Route.click(best)
 	Route.sleep_watching(Random.int(600, 900))
 end
 
@@ -1842,13 +1835,7 @@ function Task.clickable_crate(): Npc?
 end
 
 function Task.crate_safe_tile(): Tile?
-	local mast = (S.side :: Side).mast
-	local crates: { Npc } = {}
-	for _, n in ipairs(snap.npcs) do
-		if n.name == "Ammunition crate" and Geo.distance(n, mast) <= 4 then
-			table.insert(crates, n)
-		end
-	end
+	local crates = Task.crates()
 	for i = 1, #crates do
 		for j = i + 1, #crates do
 			local a, b = crates[i], crates[j]
@@ -1871,27 +1858,21 @@ function Task.crate_stand(): Tile?
 	if safe == nil then
 		return nil
 	end
-	for _, fire in ipairs(Hazard.fire_npcs()) do
-		if
-			Hazard.fire_distance(fire, snap.me) <= CONST.CRATE_FIRE_RANGE
-			or Hazard.fire_distance(fire, safe :: Tile) <= CONST.CRATE_FIRE_RANGE
-		then
-			return safe
-		end
+	local range = CONST.CRATE_FIRE_RANGE
+	if Hazard.fire_near(snap.me, range) or Hazard.fire_near(safe, range) then
+		return safe
 	end
 	return nil
 end
 
 function Task.off_crate_stand(): boolean
 	local stand = Task.crate_stand()
-	return stand ~= nil and (snap.me.x ~= (stand :: Tile).x or snap.me.y ~= (stand :: Tile).y)
+	return stand ~= nil and not Geo.same(snap.me, stand)
 end
 
 function Task.load_from_stand(stand: Tile): Npc?
-	if snap.me.x ~= stand.x or snap.me.y ~= stand.y then
-		local tiles = Route.route_to(stand)
-		local last = tiles and tiles[#tiles]
-		if last == nil or last.x ~= stand.x or last.y ~= stand.y then
+	if not Geo.same(snap.me, stand) then
+		if Route.reaching(stand) == nil then
 			Log.log("Tempoross", `   The tile between the crates at {stand.x},{stand.y} can't be reached`)
 			S.crate_stand_off_until = time() + CONST.CRATE_STAND_RETRY_MS
 			return nil
@@ -1902,65 +1883,48 @@ function Task.load_from_stand(stand: Tile): Npc?
 		Log.log("Tempoross", `   Fire near the crates, loading from between them at {stand.x},{stand.y}`)
 		local crate = Task.usable_crates(true)[1]
 		local hovered = false
-		local o = Route.walk_checks(false)
-		local checks: ((Tile) -> boolean?)? = o.on_step
-		o.on_step = function(tile: Tile): boolean?
-			if checks and checks(tile) == false then
-				return false
-			end
+		Route.walk(stand, 0, 20000, function(): boolean
 			local dest = Player.destination()
-			if crate and not hovered and dest and dest.x == stand.x and dest.y == stand.y then
-				hovered = Npcs.hover_async(crate :: Npc, stand)
+			if crate and not hovered and dest and Geo.same(dest, stand) then
+				hovered = Npcs.hover_async(crate, stand)
 			end
 			return true
-		end
-		o.near = 0
-		o.timeout_ms = 20000
-		Walker.walk(stand, o)
+		end)
 		Read.set_me(game_state().position)
-		if snap.me.x ~= stand.x or snap.me.y ~= stand.y then
+		if not Geo.same(snap.me, stand) then
 			return nil
 		end
 	end
 	local crate = Task.usable_crates(true)[1]
-	if crate and Task.use_npc(crate :: Npc, { "Fill" }) then
-		Doing.begin_activity("load", crate)
-		return crate
-	end
-	return nil
+	return if crate and Task.fill_crate(crate) then crate else nil
 end
 
 function Task.walk_to_crate(): Npc?
 	local stand = Task.crate_stand()
 	if stand then
-		return Task.load_from_stand(stand :: Tile)
+		return Task.load_from_stand(stand)
 	end
 	local crate = Task.clickable_crate()
 	if crate == nil then
-		local o = Route.walk_checks(false)
-		local checks: ((Tile) -> boolean?)? = o.on_step
-		o.on_step = function(tile: Tile): boolean?
-			if checks and checks(tile) == false then
-				return false
-			end
+		Route.walk(Route.route_end(Geo.to_tile((S.side :: Side).mast)), 1, 30000, function(): boolean
 			crate = Task.clickable_crate()
 			return crate == nil
-		end
-		o.near = 1
-		o.timeout_ms = 30000
-		Walker.walk(Route.route_end(Geo.to_tile((S.side :: Side).mast)), o)
+		end)
 	end
-	if crate and Task.use_npc(crate :: Npc, { "Fill" }) then
-		Doing.begin_activity("load", crate)
-		return crate
+	return if crate and Task.fill_crate(crate) then crate else nil
+end
+
+function Task.surge_waited(): boolean
+	if not Task.surge_pending() then
+		return false
 	end
-	return nil
+	Task.wait_out_surge()
+	return true
 end
 
 function Task.load_fish()
 	local s = S.side :: Side
-	if Task.surge_pending() then
-		Task.wait_out_surge()
+	if Task.surge_waited() then
 		return
 	end
 	if Geo.distance(snap.me, s.mast) > CONST.CANNON_RANGE then
@@ -1979,15 +1943,13 @@ function Task.load_fish()
 	end
 	local stand = Task.crate_stand()
 	if stand then
-		Task.load_from_stand(stand :: Tile)
+		Task.load_from_stand(stand)
 		return
 	end
 	if Hazard.hazard_at(Route.npc_stand(crate)) and crates[2] and crate ~= crates[2] then
 		crate = crates[2]
 	end
-	if Task.use_npc(crate, { "Fill" }) then
-		Doing.begin_activity("load", crate)
-	end
+	Task.fill_crate(crate)
 end
 
 function Task.take_tool(name: string, got: () -> boolean, home_only: boolean?): boolean
@@ -1996,13 +1958,11 @@ function Task.take_tool(name: string, got: () -> boolean, home_only: boolean?): 
 	local function accept(l: Loc): boolean
 		return not home_only or Ship.at_home(l)
 	end
-	local crate = if name == "Buckets"
-		then Geo.nearest_walk(crates, snap.me, Geo.to_tile, accept)
-		else Geo.nearest_loc(crates, from, accept)
+	local crate = if name == "Buckets" then Geo.nearest_walk(crates, accept) else Geo.nearest_loc(crates, from, accept)
 	if crate == nil then
 		return false
 	end
-	if not Task.use_loc(crate :: Loc, { "Take" }) then
+	if not Task.use_loc(crate, { "Take" }) then
 		return false
 	end
 	Log.log("Tempoross", "   Taking", name)
@@ -2011,7 +1971,7 @@ function Task.take_tool(name: string, got: () -> boolean, home_only: boolean?): 
 		if name == "Buckets" then
 			Inventory.open()
 		end
-		snap.inv, snap.free = Read.read_inventory()
+		Read.sync_inventory()
 		if got() then
 			return true
 		end
@@ -2023,17 +1983,13 @@ function Task.take_tool(name: string, got: () -> boolean, home_only: boolean?): 
 end
 
 function Task.pump_in_reach(): Loc?
-	return Geo.nearest_walk(Read.locs_named({ "Water pump" }), snap.me, Geo.to_tile, function(l: Loc): boolean
-		return Geo.loc_distance(l, snap.me) <= CONST.PUMP_RANGE
+	return Geo.nearest_walk(Read.locs_named({ "Water pump" }), function(l: Loc): boolean
+		return Objects.distance(l, snap.me) <= CONST.PUMP_RANGE
 	end)
 end
 
 function Task.start_pumping(pump: Loc): boolean
-	if Task.use_loc(pump, { "Use", "Fill-bucket" }) then
-		Doing.begin_activity("pump", nil, pump)
-		return true
-	end
-	return false
+	return Task.start_loc("pump", pump, { "Use", "Fill-bucket" })
 end
 
 function Task.prehover_shrine()
@@ -2043,19 +1999,34 @@ function Task.prehover_shrine()
 	end
 end
 
-function Task.cook()
-	local shrine = (S.side :: Side).shrine
-	if Task.use_loc(shrine, { "Cook-at" }) then
-		Doing.begin_activity("cook", nil, shrine)
-	end
+function Task.cook(): boolean
+	return Task.start_loc("cook", (S.side :: Side).shrine, { "Cook-at" })
 end
 
 function Task.fish_wanted(): number
-	snap.inv, snap.free = Read.read_inventory()
+	Read.sync_inventory()
 	if CONFIG.solo then
 		return math.max(0, math.min(snap.free, Solo.fish_target() - Read.fish_count()))
 	end
 	return snap.free
+end
+
+function Task.is_spot(n: Npc): boolean
+	return (CONST.SINGLE_SPOTS[n.id] or n.id == CONST.DOUBLE_SPOT) and Geo.distance(n, (S.side :: Side).totem) <= 14
+end
+
+function Task.closest_spot(accept: (Npc) -> boolean): (Npc?, number)
+	local totem = (S.side :: Side).totem
+	local best, best_steps = nil, math.huge
+	for _, n in ipairs(snap.npcs) do
+		if Geo.distance(n, totem) <= 14 and accept(n) then
+			local steps = Route.walk_steps(n)
+			if steps < best_steps then
+				best, best_steps = n, steps
+			end
+		end
+	end
+	return best, best_steps
 end
 
 function Task.spot_cost(spot: Npc, steps: number, wanted: number): number
@@ -2077,19 +2048,13 @@ function Task.double_worth(double: Npc): boolean
 		double_cost += c.switch_ms
 		alternative = wanted * c.single_fish_ms
 	else
-		local single, single_steps = nil, math.huge
-		for _, n in ipairs(snap.npcs) do
-			if CONST.SINGLE_SPOTS[n.id] and Geo.distance(n, (S.side :: Side).totem) <= 14 and Task.stand_safe(n) then
-				local steps = Route.walk_steps(n)
-				if steps < single_steps then
-					single, single_steps = n, steps
-				end
-			end
-		end
+		local single, single_steps = Task.closest_spot(function(n: Npc): boolean
+			return CONST.SINGLE_SPOTS[n.id] == true and Task.stand_safe(n)
+		end)
 		if single == nil then
 			return true
 		end
-		alternative = Task.spot_cost(single :: Npc, single_steps, wanted)
+		alternative = Task.spot_cost(single, single_steps, wanted)
 	end
 	if double_cost >= alternative then
 		Log.log(
@@ -2102,42 +2067,41 @@ function Task.double_worth(double: Npc): boolean
 end
 
 function Task.best_spot(double_only: boolean, except: Npc?, avoid_fires: boolean?): Npc?
-	local now = snap.tick
-	local totem = (S.side :: Side).totem
+	type Scored = { spot: Npc, score: number }
+	local function by_score(a: Scored, b: Scored): boolean
+		return a.score < b.score
+	end
 	local wanted = Task.fish_wanted()
-	local candidates: { { spot: Npc, score: number } } = {}
+	local candidates: { Scored } = {}
 	for _, n in ipairs(snap.npcs) do
-		local kind_ok = n.id == CONST.DOUBLE_SPOT or (CONST.SINGLE_SPOTS[n.id] == true and not double_only)
+		local double = n.id == CONST.DOUBLE_SPOT
 		if
-			kind_ok
-			and (n.id ~= CONST.DOUBLE_SPOT or Read.double_ticks_left(n, now) >= CONST.DOUBLE_MIN_TICKS_LEFT)
-			and Geo.distance(n, totem) <= 14
-			and (except == nil or n.index ~= (except :: Npc).index)
+			Task.is_spot(n)
+			and (double or not double_only)
+			and (not double or Read.double_ticks_left(n, snap.tick) >= CONST.DOUBLE_MIN_TICKS_LEFT)
+			and (except == nil or n.index ~= except.index)
 			and Task.stand_safe(n)
 		then
 			table.insert(candidates, { spot = n, score = Task.spot_cost(n, Geo.distance(n, snap.me), wanted) })
 		end
 	end
-	table.sort(candidates, function(a: { spot: Npc, score: number }, b: { spot: Npc, score: number }): boolean
-		return a.score < b.score
-	end)
-	local walked: { { spot: Npc, score: number } } = {}
+	table.sort(candidates, by_score)
+	local walked: { Scored } = {}
 	for i = 1, math.min(#candidates, 6) do
 		local spot = candidates[i].spot
 		table.insert(walked, { spot = spot, score = Task.spot_cost(spot, Route.walk_steps(spot), wanted) })
 	end
-	table.sort(walked, function(a: { spot: Npc, score: number }, b: { spot: Npc, score: number }): boolean
-		return a.score < b.score
-	end)
+	table.sort(walked, by_score)
 	for i = 1, math.min(#walked, 4) do
 		local spot = walked[i].spot
 		local tiles = Route.route_to(spot)
-		local ok = tiles == nil
+		if
+			tiles == nil
 			or (
 				Hazard.hazard_at(tiles[#tiles]) == nil
-				and Route.safe_route(tiles :: { Tile }, avoid_fires == true or Read.item_count(Items.WATER) == 0)
+				and Route.safe_route(tiles, avoid_fires == true or Read.item_count(Items.WATER) == 0)
 			)
-		if ok then
+		then
 			return spot
 		end
 	end
@@ -2148,11 +2112,7 @@ function Task.fish_at(spot: Npc): boolean
 	if spot.id == CONST.DOUBLE_SPOT and not CONFIG.solo then
 		Route.sleep_watching(Random.int(0, 4 * Ticks.MS))
 	end
-	if Task.use_npc(spot, { "Harpoon" }, { avoid = true }) then
-		Doing.begin_activity("fish", spot, nil, spot.id == CONST.DOUBLE_SPOT)
-		return true
-	end
-	return false
+	return Task.start_npc("fish", spot, { "Harpoon" }, { avoid = true })
 end
 
 function Hazard.dodge(hazard: Npc)
@@ -2173,17 +2133,14 @@ function Hazard.dodge(hazard: Npc)
 		if CONFIG.cook.enabled and Read.item_count(Items.RAW_FISH) >= CONFIG.cook.min_storm then
 			local shrine = (S.side :: Side).shrine
 			local tiles = Route.route_to(shrine)
-			local clear = tiles ~= nil
-				and Hazard.hazard_at(tiles[#tiles], 1) == nil
-				and Route.safe_route(tiles :: { Tile })
-			if clear and Task.use_loc(shrine, { "Cook-at" }) then
-				Doing.begin_activity("cook", nil, shrine)
+			local clear = tiles ~= nil and Hazard.hazard_at(tiles[#tiles], 1) == nil and Route.safe_route(tiles)
+			if clear and Task.cook() then
 				return
 			end
 		end
 		local spot = Task.best_spot(false, a.npc)
 		if spot then
-			Task.fish_at(spot :: Npc)
+			Task.fish_at(spot)
 			if S.activity then
 				return
 			end
@@ -2193,11 +2150,9 @@ function Hazard.dodge(hazard: Npc)
 			if
 				(a.npc == nil or crate.index ~= (a.npc :: Npc).index)
 				and Hazard.hazard_at(Route.npc_stand(crate)) == nil
+				and Task.fill_crate(crate)
 			then
-				if Task.use_npc(crate, { "Fill" }) then
-					Doing.begin_activity("load", crate)
-					return
-				end
+				return
 			end
 		end
 	end
@@ -2246,8 +2201,8 @@ function Game.new_game()
 	end
 	local start = S.start_hover
 	S.start_hover = nil
-	if start and Walker.click_tile(start :: Tile) then
-		Log.log("Tempoross", `   Off to the totem through {(start :: Tile).x},{(start :: Tile).y}`)
+	if start and Walker.click_tile(start) then
+		Log.log("Tempoross", `   Off to the totem through {start.x},{start.y}`)
 	end
 end
 
@@ -2349,18 +2304,15 @@ function Game.tiny_antiban(boat: boolean?)
 		return
 	end
 	local a = S.activity
-	local kind = if boat then "boat" elseif a then (a :: Activity).kind else "idle"
+	local kind = if boat then "boat" elseif a then a.kind else "idle"
 	if CONFIG.solo and Solo.holding_camera(kind) then
 		return
 	end
 	if not boat then
-		local tethered = events.tethered or snap.tethered
-		if events.wave_warning_at ~= nil and not tethered then
+		if events.wave_warning_at ~= nil and not (events.tethered or snap.tethered) then
 			return
 		end
-		local waiting = time() < events.stunned_until
-			or events.game_result ~= nil
-			or (events.wave_warning_at ~= nil and tethered)
+		local waiting = time() < events.stunned_until or events.game_result ~= nil or events.wave_warning_at ~= nil
 		if not waiting and not CONST.TINY_ACTIVITIES[kind] then
 			return
 		end
@@ -2511,7 +2463,7 @@ function Game.leave()
 		sleep(Random.int(500, 900))
 		return
 	end
-	local crew = Geo.nearest_walk(snap.npcs, snap.me, Geo.to_tile, function(n: Npc): boolean
+	local crew = Geo.nearest_walk(snap.npcs, function(n: Npc): boolean
 		return n.name ~= nil and Game.is_crew(n.name)
 	end)
 	if crew == nil then
@@ -2519,7 +2471,7 @@ function Game.leave()
 		return
 	end
 	Log.log("Tempoross", "Leaving with", crew.name)
-	if Npcs.approach(crew :: Npc, { "Leave", "Forfeit" }, Route.approach_opts({ urgent = true })) then
+	if Npcs.approach(crew, { "Leave", "Forfeit" }, Route.approach_opts({ urgent = true })) then
 		local deadline = time() + 2400
 		while not GameState.fading() and time() < deadline do
 			sleep(100)
@@ -2578,8 +2530,7 @@ function Loop.antiban_began()
 end
 
 function Loop.antiban_ended()
-	local spent = time() - S.antiban_began_at
-	S.last_progress_at += spent
+	S.last_progress_at += time() - S.antiban_began_at
 end
 
 function Loop.hook_antiban_timeouts()
@@ -2616,7 +2567,7 @@ function Loop.common_game_state(): State?
 		return "STUNNED"
 	end
 
-	if events.wave_warning_at ~= nil and not events.tethered and not snap.tethered and Read.has_rope() then
+	if Chat.wave_coming() and not snap.tethered and Read.has_rope() then
 		if time() - (events.wave_warning_at :: number) < 9000 then
 			return "TETHER"
 		end
@@ -2657,13 +2608,13 @@ function Loop.common_game_state(): State?
 	end
 
 	local hazard = Hazard.hazard_at(snap.me)
-	if hazard and not Route.walking_out_of(hazard :: Npc) then
+	if hazard and not Route.walking_out_of(hazard) then
 		plan.hazard = hazard
 		return "DODGE"
 	end
 	if snap.walking and Read.item_count(Items.WATER) > 0 then
 		local ahead = Route.fire_ahead(Player.destination())
-		local live = ahead and Npcs.refresh(ahead :: Npc)
+		local live = ahead and Npcs.refresh(ahead)
 		if live and live.id == CONST.FIRE then
 			Log.log("Tempoross", `   Fire at {live.x},{live.y} on the way, putting it out`)
 			plan.fire = live
@@ -2708,26 +2659,8 @@ function Task.fill_state(skipped: { [State]: boolean }): State?
 	return nil
 end
 
-function Read.my_animation(): number
-	local me = Host.game_state().player_name
-	for _, p in ipairs(Host.players() or {}) do
-		if p.name == me then
-			return p.animation
-		end
-	end
-	return -1
-end
-
 function Route.fire_free(tiles: { Tile }): boolean
-	local fires = Hazard.fire_npcs()
-	for i = 2, #tiles do
-		for _, fire in ipairs(fires) do
-			if Hazard.fire_distance(fire, tiles[i]) == 0 then
-				return false
-			end
-		end
-	end
-	return true
+	return Route.first_fire(tiles) == nil
 end
 
 function Route.waypoint_around_fires(target: Tile): Tile?
@@ -2748,9 +2681,8 @@ function Route.waypoint_around_fires(target: Tile): Tile?
 	end)
 	for i = 1, math.min(#candidates, CONST.SOLO.WAYPOINT_TRIES) do
 		local t = candidates[i].tile
-		local first = Route.route_to(t)
-		local last = first and first[#first]
-		if last and last.x == t.x and last.y == t.y and Route.fire_free(first :: { Tile }) then
+		local first = Route.reaching(t)
+		if first and Route.fire_free(first) then
 			local second = Route.route_to(target, t)
 			if second and Route.fire_free(second) then
 				return t
@@ -2762,43 +2694,30 @@ end
 
 function Ship.other_side(): Side?
 	local here = S.side :: Side
-	local totem: Loc? = nil
-	for _, t in ipairs(Read.locs_named({ "Totem pole", "Damaged totem pole" })) do
-		if t.x ~= here.totem.x or t.y ~= here.totem.y then
-			totem = t
+	local function other(names: { string }, ours: Loc): Loc?
+		local found: Loc? = nil
+		for _, l in ipairs(Read.locs_named(names)) do
+			if not Geo.same(l, ours) then
+				found = l
+			end
 		end
+		return found
 	end
-	local mast: Loc? = nil
-	for _, m in ipairs(Read.locs_named({ "Mast", "Damaged mast" })) do
-		if m.x ~= here.mast.x or m.y ~= here.mast.y then
-			mast = m
-		end
-	end
+	local totem = other(TOTEMS, here.totem)
+	local mast = other(MASTS, here.mast)
 	if totem == nil or mast == nil then
 		return nil
 	end
-	local shrine = Geo.nearest_loc(Read.locs_named({ "Shrine" }), totem :: Loc)
-	if shrine == nil then
-		return nil
-	end
-	return {
-		name = if here.name == "west" then "east" else "west",
-		mast = mast :: Loc,
-		totem = totem :: Loc,
-		shrine = shrine :: Loc,
-	}
+	return Ship.side_of(if here.name == "west" then "east" else "west", mast, totem)
 end
 
 function Hazard.beside_fire(fire: Npc, t: Tile): boolean
-	local size = Hazard.fire_size(fire)
-	local x0, y0 = fire.x - size // 2, fire.y - size // 2
-	local x1, y1 = x0 + size - 1, y0 + size - 1
+	local x0, y0, x1, y1 = Hazard.fire_box(fire)
 	return (t.x >= x0 and t.x <= x1 and (t.y == y0 - 1 or t.y == y1 + 1))
 		or (t.y >= y0 and t.y <= y1 and (t.x == x0 - 1 or t.x == x1 + 1))
 end
 
 function Hazard.douse_spot(near: { Npc }, countable: { Npc }, max_steps: number?): (Tile?, { Npc })
-	local all = Hazard.fire_npcs()
 	local seen: { [string]: boolean } = {}
 	local best: Tile? = nil
 	local best_fires: { Npc } = {}
@@ -2810,29 +2729,21 @@ function Hazard.douse_spot(near: { Npc }, countable: { Npc }, max_steps: number?
 				local key = `{t.x},{t.y}`
 				if not seen[key] and Hazard.beside_fire(around, t) then
 					seen[key] = true
-					local inside = false
-					for _, fire in ipairs(all) do
-						inside = inside or Hazard.fire_distance(fire, t) == 0
-					end
 					local beside: { Npc } = {}
 					for _, fire in ipairs(countable) do
 						if Hazard.beside_fire(fire, t) then
 							table.insert(beside, fire)
 						end
 					end
-					if not inside and #beside >= #best_fires and Hazard.hazard_at(t) == nil then
-						local tiles = Route.route_to(t)
-						local last = tiles and tiles[#tiles]
-						local steps = if tiles then #(tiles :: { Tile }) else math.huge
+					if not Hazard.fire_near(t, 0) and #beside >= #best_fires and Hazard.hazard_at(t) == nil then
+						local tiles = Route.reaching(t)
 						if
-							last
-							and last.x == t.x
-							and last.y == t.y
-							and steps <= (max_steps or math.huge)
-							and Route.fire_free(tiles :: { Tile })
-							and (#beside > #best_fires or steps < best_steps)
+							tiles
+							and #tiles <= (max_steps or math.huge)
+							and Route.fire_free(tiles)
+							and (#beside > #best_fires or #tiles < best_steps)
 						then
-							best, best_fires, best_steps = t, beside, steps
+							best, best_fires, best_steps = t, beside, #tiles
 						end
 					end
 				end
@@ -2845,11 +2756,11 @@ end
 function Hazard.lands_on(fire: Npc, stand: Tile): boolean
 	local route = Hazard.douse_route(fire)
 	local last = route and route[#route]
-	return last ~= nil and last.x == stand.x and last.y == stand.y and Route.fire_free(route :: { Tile })
+	return last ~= nil and Geo.same(last, stand) and Route.fire_free(route :: { Tile })
 end
 
 function Hazard.douse_from(stand: Tile, fires: { Npc }, why: string, rest: { Npc }?): boolean
-	if snap.me.x ~= stand.x or snap.me.y ~= stand.y then
+	if not Geo.same(snap.me, stand) then
 		local first: number? = nil
 		for i, fire in ipairs(fires) do
 			if Hazard.lands_on(fire, stand) then
@@ -2858,7 +2769,7 @@ function Hazard.douse_from(stand: Tile, fires: { Npc }, why: string, rest: { Npc
 			end
 		end
 		if first then
-			local fire = table.remove(fires, first :: number) :: Npc
+			local fire = table.remove(fires, first) :: Npc
 			table.insert(fires, 1, fire)
 			Log.log(
 				"Tempoross",
@@ -2866,12 +2777,9 @@ function Hazard.douse_from(stand: Tile, fires: { Npc }, why: string, rest: { Npc
 			)
 		else
 			Log.log("Tempoross", `   Standing at {stand.x},{stand.y} to put out {#fires} fires from one tile ({why})`)
-			local o = Route.walk_checks(false)
-			o.near = 0
-			o.timeout_ms = 15000
-			Walker.walk(stand, o)
+			Route.walk(stand, 0, 15000)
 			Read.set_me(game_state().position)
-			if snap.me.x ~= stand.x or snap.me.y ~= stand.y then
+			if not Geo.same(snap.me, stand) then
 				return true
 			end
 		end
@@ -2880,9 +2788,9 @@ function Hazard.douse_from(stand: Tile, fires: { Npc }, why: string, rest: { Npc
 	for i, fire in ipairs(fires) do
 		local following = fires[i + 1]
 		local toward = if following then Geo.to_tile(following) else nil
-		if toward == nil and rest and #(rest :: { Npc }) > 0 then
-			local next_fire = Solo.cluster_target(rest :: { Npc })
-			toward = if next_fire then Geo.to_tile(next_fire :: Npc) else nil
+		if toward == nil and rest and #rest > 0 then
+			local next_fire = Solo.cluster_target(rest)
+			toward = if next_fire then Geo.to_tile(next_fire) else nil
 		end
 		doused = Hazard.douse(fire, toward) or doused
 	end
@@ -2922,7 +2830,7 @@ function Game.bucket_gap(): number
 end
 
 function Game.bank_buckets()
-	snap.inv, snap.free = Read.read_inventory()
+	Read.sync_inventory()
 	local excess = -Game.bucket_gap()
 	if excess <= 0 then
 		return
@@ -2942,11 +2850,11 @@ function Game.bank_buckets()
 		DepositBox.deposit(Items.WATER, water)
 	end
 	Route.sleep_watching(3000, nil, function(): boolean
-		snap.inv, snap.free = Read.read_inventory()
+		Read.sync_inventory()
 		return snap.free > before
 	end)
 	DepositBox.close()
-	snap.inv, snap.free = Read.read_inventory()
+	Read.sync_inventory()
 end
 
 function Game.ready(): boolean
@@ -2994,13 +2902,13 @@ function Loop.get_lobby_state(skipped: { [State]: boolean }): State
 	then
 		return "RANDOM_EVENT"
 	end
-	local ladder = Geo.nearest_walk(Read.locs_named({ "Rope ladder" }), snap.me, Geo.to_tile)
+	local ladder = Geo.nearest_walk(Read.locs_named({ "Rope ladder" }))
 	if ladder == nil then
 		return if Read.on_boat() then "IDLE" else "WALK_DOCK"
 	end
 	plan.ladder = ladder
 	if not Read.on_boat() and Game.bucket_gap() < 0 and not skipped["BANK_BUCKETS"] then
-		local box = Geo.nearest_walk(Read.locs_named({ "Bank Deposit Box" }), snap.me, Geo.to_tile)
+		local box = Geo.nearest_walk(Read.locs_named({ "Bank Deposit Box" }))
 		if box then
 			plan.box = box
 			return "BANK_BUCKETS"
@@ -3032,8 +2940,8 @@ function Loop.get_lobby_state(skipped: { [State]: boolean }): State
 			return "LEAVE_BOAT"
 		end
 		if Read.item_count(Items.BUCKET) > 0 and (departure == nil or departure > 5) and not Doing.is_doing("pump") then
-			local pump = Geo.nearest_walk(Read.locs_named({ "Water pump" }), snap.me, Geo.to_tile)
-			if pump and Geo.loc_distance(pump :: Loc, snap.me) <= 6 then
+			local pump = Geo.nearest_walk(Read.locs_named({ "Water pump" }))
+			if pump and Objects.distance(pump, snap.me) <= 6 then
 				plan.pump = pump
 				return "BOAT_PUMP"
 			end
@@ -3194,28 +3102,22 @@ function Handler.game_over()
 end
 
 function Handler.attack()
-	local active = if CONFIG.solo then Geo.nearest_npc(Read.npcs_with(CONST.SPIRIT_POOL), snap.me) else nil
-	if active and not Doing.is_doing("attack") then
-		Solo.move_safely(Route.npc_stand(active :: Npc), function()
-			Task.harpoon_pool()
-		end)
-		Route.sleep_watching(150)
-		return
-	end
 	if not Doing.is_doing("attack") then
-		if not Task.harpoon_pool() then
-			local pool = Geo.nearest_walk(Read.npcs_with(CONST.INACTIVE_POOL), snap.me, Geo.to_tile)
-			if pool == nil then
-				Route.walk_near((S.side :: Side).mast, 6)
-			end
+		local active = if CONFIG.solo then Geo.nearest_npc(Read.npcs_with(CONST.SPIRIT_POOL), snap.me) else nil
+		if active then
+			Solo.move_safely(Route.npc_stand(active), function()
+				Task.harpoon_pool()
+			end)
+		elseif not Task.harpoon_pool() and Geo.nearest_walk(Read.npcs_with(CONST.INACTIVE_POOL)) == nil then
+			Route.walk_near((S.side :: Side).mast, 6)
 		end
 	end
 	Route.sleep_watching(150)
 end
 
 function Handler.go_to_pier()
-	local pool = Geo.nearest_walk(Read.npcs_with(CONST.INACTIVE_POOL), snap.me, Geo.to_tile)
-	local target: Tile = if pool then Geo.to_tile(pool :: Npc) else (S.side :: Side).mast
+	local pool = Geo.nearest_walk(Read.npcs_with(CONST.INACTIVE_POOL))
+	local target: Tile = if pool then Geo.to_tile(pool) else (S.side :: Side).mast
 	if not S.pier_logged then
 		S.pier_logged = true
 		Log.log("Tempoross", `Energy {Read.hud_percent(HUD.ENERGY)}% and falling, heading to the pier`)
@@ -3230,9 +3132,9 @@ end
 
 function Handler.untether_nearby_on_request()
 	events.must_untether = false
-	local t = Geo.nearest_walk(Read.locs_named({ "Mast", "Totem pole" }), snap.me, Geo.to_tile)
-	if t and Geo.loc_distance(t :: Loc, snap.me) <= 2 then
-		Task.use_loc(t :: Loc, { "Untether" })
+	local t = Geo.nearest_walk(Read.locs_named({ "Mast", "Totem pole" }))
+	if t and Objects.distance(t, snap.me) <= 2 then
+		Task.use_loc(t, { "Untether" })
 		Route.sleep_watching(600)
 	end
 end
@@ -3241,49 +3143,32 @@ function Task.stand_safe(spot: Npc): boolean
 	return Hazard.hazard_at(Route.npc_stand(spot)) == nil
 end
 
-function Task.nearest_spot(): Npc?
-	local totem = (S.side :: Side).totem
-	return Geo.nearest_npc(snap.npcs, snap.me, function(n: Npc): boolean
-		return (CONST.SINGLE_SPOTS[n.id] or n.id == CONST.DOUBLE_SPOT)
-			and Geo.distance(n, totem) <= 14
-			and Task.stand_safe(n)
-	end)
-end
-
 function Task.walk_to_spots()
 	local found: Npc? = nil
-	local o = Route.walk_checks(false)
-	local checks: ((Tile) -> boolean?)? = o.on_step
-	o.on_step = function(tile: Tile): boolean?
-		if checks and checks(tile) == false then
-			return false
-		end
-		found = Task.nearest_spot()
-		return found == nil
-	end
-	o.near = 5
-	o.timeout_ms = 30000
 	Log.log("Tempoross", "   Heading for the fishing spots")
-	Walker.walk((S.side :: Side).totem, o)
+	Route.walk((S.side :: Side).totem, 5, 30000, function(): boolean
+		found = Geo.nearest_npc(snap.npcs, snap.me, function(n: Npc): boolean
+			return Task.is_spot(n) and Task.stand_safe(n)
+		end)
+		return found == nil
+	end)
 	if found then
-		Log.log("Tempoross", `   Fishing spot in sight at {(found :: Npc).x},{(found :: Npc).y}`)
-		Task.fish_at(found :: Npc)
+		Log.log("Tempoross", `   Fishing spot in sight at {found.x},{found.y}`)
+		Task.fish_at(found)
 	end
 end
 
 function Handler.wait_spot()
-	local s = S.side :: Side
-	if Geo.distance(snap.me, s.totem) > 8 then
+	if Geo.distance(snap.me, (S.side :: Side).totem) > 8 then
 		Task.walk_to_spots()
 		return
 	end
 	local near, blocked = 0, "nothing near the totem"
 	for _, n in ipairs(snap.npcs) do
-		if (CONST.SINGLE_SPOTS[n.id] or n.id == CONST.DOUBLE_SPOT) and Geo.distance(n, s.totem) <= 14 then
+		if Task.is_spot(n) then
 			near += 1
-			blocked = if Hazard.hazard_at(Route.route_end(Geo.to_tile(n)))
-				then Hazard.describe_hazard(Hazard.hazard_at(Route.route_end(Geo.to_tile(n))) :: Npc)
-				else "a route through a hazard"
+			local hazard = Hazard.hazard_at(Route.route_end(Geo.to_tile(n)))
+			blocked = if hazard then Hazard.describe_hazard(hazard) else "a route through a hazard"
 		end
 	end
 	Log.log("Tempoross", `   No fishing spot clear of fires and storms ({near} spots near the totem, {blocked})`)
@@ -3299,6 +3184,20 @@ end
 function Handler.board(ladder: Loc)
 	if Task.use_loc(ladder, { "Climb" }) then
 		Game.wait_boarding(Read.on_boat)
+	end
+end
+
+local function skip_unless(state: State, act: () -> boolean): () -> ()
+	return function()
+		if not act() then
+			S.skip[state] = true
+		end
+	end
+end
+
+local function pause(min_ms: number, max_ms: number): () -> ()
+	return function()
+		sleep(Random.int(min_ms, max_ms))
 	end
 end
 
@@ -3364,8 +3263,9 @@ Handler.states = {
 	ATTACK = Handler.attack,
 	GO_TO_PIER = Handler.go_to_pier,
 	REPAIR = function()
-		Log.log("Tempoross", "Repairing", (plan.broken :: Loc).name)
-		Task.repair(plan.broken :: Loc)
+		local broken = plan.broken :: Loc
+		Log.log("Tempoross", "Repairing", broken.name)
+		Task.start_loc("repair", broken, { "Repair" })
 	end,
 	FISH_DOUBLE = function()
 		Log.log("Tempoross", "Double spot")
@@ -3378,31 +3278,22 @@ Handler.states = {
 		Task.take_tool("Harpoons", Read.has_harpoon)
 		S.worn_cache = nil
 	end,
-	TAKE_ROPE = function()
-		if not Task.take_tool("Ropes", Read.has_rope) then
-			S.skip["TAKE_ROPE"] = true
-		end
-	end,
+	TAKE_ROPE = skip_unless("TAKE_ROPE", function(): boolean
+		return Task.take_tool("Ropes", Read.has_rope)
+	end),
 	LOAD_CANNON = Task.load_fish,
-	TAKE_HAMMER = function()
-		if not Task.take_tool("Hammers", Read.has_hammer, true) then
-			S.skip["TAKE_HAMMER"] = true
-		end
-	end,
-	TAKE_BUCKETS = function()
-		local before = Read.item_count(Items.BUCKET, Items.WATER)
-		local taken = Task.take_tool("Buckets", function()
-			return Read.item_count(Items.BUCKET, Items.WATER) > before
+	TAKE_HAMMER = skip_unless("TAKE_HAMMER", function(): boolean
+		return Task.take_tool("Hammers", Read.has_hammer, true)
+	end),
+	TAKE_BUCKETS = skip_unless("TAKE_BUCKETS", function(): boolean
+		local before = Read.buckets()
+		return Task.take_tool("Buckets", function()
+			return Read.buckets() > before
 		end, true)
-		if not taken then
-			S.skip["TAKE_BUCKETS"] = true
-		end
-	end,
-	FILL_BUCKETS = function()
-		if not Task.start_pumping(plan.pump :: Loc) then
-			S.skip["FILL_BUCKETS"] = true
-		end
-	end,
+	end),
+	FILL_BUCKETS = skip_unless("FILL_BUCKETS", function(): boolean
+		return Task.start_pumping(plan.pump :: Loc)
+	end),
 	COOK = function()
 		S.cook_fish_threshold = Random.int(CONFIG.cook.min, CONFIG.cook.max)
 		Task.cook()
@@ -3414,9 +3305,7 @@ Handler.states = {
 	WAIT_SPOT = Handler.wait_spot,
 	IDLE = function() end,
 
-	WAIT_VOYAGE = function()
-		sleep(Random.int(300, 600))
-	end,
+	WAIT_VOYAGE = pause(300, 600),
 	LEAVE = Game.leave,
 
 	HOP_WORLD = function()
@@ -3442,11 +3331,9 @@ Handler.states = {
 			S.randoms_retry_at = time() + CONST.RANDOMS_RETRY_MS
 		end
 	end,
-	LOBBY_ANTIBAN = function()
-		if not Antiban.do_antiban() then
-			S.skip["LOBBY_ANTIBAN"] = true
-		end
-	end,
+	LOBBY_ANTIBAN = skip_unless("LOBBY_ANTIBAN", function(): boolean
+		return Antiban.do_antiban()
+	end),
 	LEAVE_BOAT = function()
 		Log.log("Tempoross", `Only {plan.players} players, leaving the boat`)
 		Task.use_loc(plan.ladder :: Loc, { "Quick-climb", "Climb" })
@@ -3457,9 +3344,7 @@ Handler.states = {
 		Handler.wait_on_boat()
 	end,
 	ON_BOAT = Handler.wait_on_boat,
-	WAIT_NEXT_BOAT = function()
-		sleep(Random.int(600, 1200))
-	end,
+	WAIT_NEXT_BOAT = pause(600, 1200),
 	BOARD_NOW = function()
 		Log.log("Tempoross", `Boarding: {plan.players} players ready already, departure {plan.departure or "-"}`)
 		Handler.board(plan.ladder :: Loc)
@@ -3472,14 +3357,12 @@ Handler.states = {
 			Handler.board(ladder)
 		end
 	end,
-	WAIT_LOBBY = function()
-		sleep(Random.int(600, 1200))
-	end,
+	WAIT_LOBBY = pause(600, 1200),
 	WAIT_SURGE = Task.wait_out_surge,
 	WALK_PUMP = function()
-		local pump = Geo.nearest_walk(Read.locs_named({ "Water pump" }), snap.me, Geo.to_tile)
+		local pump = Geo.nearest_walk(Read.locs_named({ "Water pump" }))
 		if pump then
-			Route.walk_near(Geo.to_tile(pump :: Loc), CONST.PUMP_RANGE - 2)
+			Route.walk_near(Geo.to_tile(pump), CONST.PUMP_RANGE - 2)
 		end
 	end,
 	WALK_SHIP = function()
@@ -3508,10 +3391,7 @@ Handler.states = {
 			Task.fish_at(spot)
 		end)
 	end,
-	COOK_SAFELY = function()
-		local shrine = (S.side :: Side).shrine
-		Solo.move_safely(Route.loc_stand(shrine), Task.cook)
-	end,
+	COOK_SAFELY = Solo.cook_safely,
 	LOAD_ALL = Solo.load_all,
 	GO_TO_PIER_SOLO = Solo.go_to_pier,
 	FISHING_TO_COOK = function()
