@@ -217,6 +217,8 @@ function Solo.spam_off_totem()
 	local deadline = time() + CONST.SOLO.UNTETHER_SPAM_MS
 	local marks: { string } = {}
 	local released, clicked, flagged = false, false, false
+	local click_at = math.huge
+	local delay = CONST.SOLO.UNTETHER_CLICK_DELAY_MS
 	while time() < deadline do
 		local st = game_state()
 		local tick = Read.current_tick(st)
@@ -225,6 +227,7 @@ function Solo.spam_off_totem()
 			local tether = varbit(CONST.TETHERED_VARBIT) or 0
 			if animation == CONST.UNTETHER_ANIMATION or tether == 0 then
 				released = true
+				click_at = time() + Random.int(delay[1], delay[2])
 				table.insert(marks, `released T{tick} (animation {animation}, tether {tether})`)
 			end
 		end
@@ -243,10 +246,12 @@ function Solo.spam_off_totem()
 				Objects.hover_async(shrine)
 				Mouse.wait()
 			end
-			Mouse.click()
-			if not clicked then
-				clicked = true
-				table.insert(marks, `first click T{tick}`)
+			if time() >= click_at then
+				Mouse.click()
+				if not clicked then
+					clicked = true
+					table.insert(marks, `first click T{tick}`)
+				end
 			end
 		end
 		sleep(Random.int(90, 150))

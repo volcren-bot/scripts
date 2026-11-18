@@ -3007,6 +3007,9 @@ function Loop.get_lobby_state(skipped: { [State]: boolean }): State
 		end
 	end
 	if CONFIG.solo or (not Read.on_boat() and not Game.ready()) then
+		if CONFIG.solo and Game.ready() and Read.item_count(Items.BUCKET) > 0 and time() >= S.solo.humidify_at then
+			return "LOBBY_HUMIDIFY"
+		end
 		return if Geo.distance(snap.me, ladder) > 8 then "WALK_LADDER" else "SOLO_START"
 	end
 	local players = Read.lobby_players()
@@ -3521,6 +3524,7 @@ Handler.states = {
 	FORFEIT = Solo.forfeit,
 	SOLO_STOP = Solo.stop_here,
 	HUMIDIFY = Solo.humidify,
+	LOBBY_HUMIDIFY = Solo.humidify,
 	P3_BUCKETS = Solo.take_buckets,
 	P3_CROSS = Solo.cross,
 	P3_CLEAR = Solo.clear_beach,
