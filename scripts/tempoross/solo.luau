@@ -8,6 +8,9 @@ local time = Host.time
 local Biometrics = require("@lib/main/antiban/biometrics")
 local Camera = require("@lib/main/camera")
 local Core = require("./core")
+local DebugDraw = require("@lib/main/debug_draw")
+local Draw = require("@lib/utils/draw")
+local Geometry = require("@lib/utils/math/geometry")
 local Inventory = require("@lib/main/interfaces/gametabs/inventory")
 local Log = require("@lib/utils/log")
 local Magic = require("@lib/main/interfaces/gametabs/magic")
@@ -16,6 +19,7 @@ local Mouse = require("@lib/utils/input/mouse")
 local Npcs = require("@lib/main/entities/npcs")
 local Objects = require("@lib/main/entities/objects")
 local Player = require("@lib/main/player")
+local Projection = require("@lib/main/projection/projection")
 local Random = require("@lib/utils/math/random")
 local Ticks = require("@lib/utils/ticks")
 local Walker = require("@lib/main/walker")
@@ -26,6 +30,7 @@ type State = Core.State
 type Npc = Core.Npc
 type Loc = Core.Loc
 type Tile = Core.Tile
+type Point = { x: number, y: number }
 local CONST = Core.CONST
 local Items = Core.Items
 local HUD = Core.HUD
@@ -178,7 +183,7 @@ function Solo.load_exact(target: number)
 		end
 		Chat.read_chat()
 		return Chat.wave_coming()
-			or time() < events.surge_until
+			or Task.surge_blocks_loading()
 			or Task.off_crate_stand()
 			or Hazard.hazard_at(snap.me) ~= nil
 	end
@@ -603,7 +608,7 @@ function Solo.load_all()
 	Route.sleep_watching(Random.int(150, 250), nil, function(): boolean
 		Read.sync_inventory()
 		Chat.read_chat()
-		return Read.fish_count() == 0 or time() < events.surge_until or Task.off_crate_stand()
+		return Read.fish_count() == 0 or Task.surge_blocks_loading() or Task.off_crate_stand()
 	end)
 	if Read.fish_count() > 0 and Task.off_crate_stand() then
 		Doing.clear_activity()
@@ -1314,59 +1319,6 @@ function Solo.visible_fires(tiles: { Tile }): { Npc }
 	end)
 end
 
-function Solo.cluster_gap(a: { Npc }, b: { Npc }): number
-	local best = math.huge
-	for _, fa in ipairs(a) do
-		for _, fb in ipairs(b) do
-			best = math.min(best, Geo.distance(fa, fb))
-		end
-	end
-	return best
-end
-
-function Solo.first_of_route(clusters: { { Npc } }): { Npc }
-	local n = #clusters
-	local start: { number } = {}
-	local gap: { { number } } = {}
-	for i = 1, n do
-		start[i] = Solo.cluster_gap({ Hazard.fire_at(snap.me) }, clusters[i])
-		gap[i] = {}
-		for j = 1, n do
-			gap[i][j] = if i == j then 0 else Solo.cluster_gap(clusters[i], clusters[j])
-		end
-	end
-	if n > CONST.SOLO.P5_PLAN_MAX_CLUSTERS then
-		local first = 1
-		for i = 2, n do
-			if start[i] < start[first] then
-				first = i
-			end
-		end
-		return clusters[first]
-	end
-	local best_cost, best_first = math.huge, 1
-	local used: { boolean } = {}
-	local function search(at: number, depth: number, cost: number, first: number)
-		if cost >= best_cost then
-			return
-		end
-		if depth == n then
-			best_cost, best_first = cost, first
-			return
-		end
-		for i = 1, n do
-			if not used[i] then
-				used[i] = true
-				local step = if at == 0 then start[i] else gap[at][i]
-				search(i, depth + 1, cost + step, if at == 0 then i else first)
-				used[i] = false
-			end
-		end
-	end
-	search(0, 0, 0, 1)
-	return clusters[best_first]
-end
-
 function Solo.p5_clear_route(): boolean
 	local r = S.solo
 	Solo.p5_remember()
@@ -1375,32 +1327,42 @@ function Solo.p5_clear_route(): boolean
 		return false
 	end
 	local box_name = name :: string
+	if Solo.clear_fires(Hazard.fire_npcs(), box_name) then
+		return true
+	end
 	local goal: Tile
 	local look: Tile? = nil
 	if #targets > 0 then
-		local known: { Npc } = {}
+		local nearest, nearest_steps = targets[1], math.huge
 		for _, t in ipairs(targets) do
-			local fire: Npc = Hazard.fire_at(t)
-			table.insert(known, fire)
+			local steps = Route.walk_steps(Route.route_end(t))
+			if steps < nearest_steps then
+				nearest, nearest_steps = t, steps
+			end
 		end
-		local cluster = Solo.first_of_route(Hazard.fire_clusters(known))
-		local visible = Solo.visible_fires(cluster)
-		if #visible > 0 then
-			Solo.clear_fires(visible, box_name)
+		goal = Route.route_end(nearest)
+	else
+		local best: Tile? = nil
+		local best_steps = math.huge
+		for _, t in ipairs(unseen) do
+			local stand = Route.route_end(t)
+			local steps = Route.walk_steps(stand)
+			local straight = Geo.distance(snap.me, stand)
+			if steps > straight * CONST.SOLO.P5_LOOK_DETOUR + CONST.SOLO.P5_LOOK_DETOUR_STEPS then
+				r.p5_looked[box_name][`{t.x},{t.y}`] = true
+				Log.log("Tempoross", `   Not looking over {t.x},{t.y}: {steps} steps for {straight} straight`)
+			elseif steps < best_steps then
+				best, best_steps = t, steps
+			end
+		end
+		if best == nil then
 			return true
 		end
-		table.sort(cluster, function(a: Npc, b: Npc): boolean
-			return Geo.distance(a, snap.me) < Geo.distance(b, snap.me)
-		end)
-		goal = Route.route_end(Geo.to_tile(cluster[1]))
-	else
-		table.sort(unseen, function(a: Tile, b: Tile): boolean
-			return Geo.distance(a, snap.me) < Geo.distance(b, snap.me)
-		end)
-		look = unseen[1]
-		goal = Route.route_end(unseen[1])
+		local spot = best :: Tile
+		look = spot
+		goal = Route.route_end(spot)
 		if Geo.distance(snap.me, goal) <= 1 then
-			r.p5_looked[box_name][`{unseen[1].x},{unseen[1].y}`] = true
+			r.p5_looked[box_name][`{spot.x},{spot.y}`] = true
 			return true
 		end
 		Log.log("Tempoross", `   Looking over {box_name} toward {goal.x},{goal.y}`)
@@ -1410,9 +1372,23 @@ function Solo.p5_clear_route(): boolean
 		if look and r.p5_looked[box_name][`{look.x},{look.y}`] then
 			return true
 		end
-		return #Solo.visible_fires(Solo.p5_box_targets(box_name)) > 0
+		return Solo.scored_fire_visible()
 	end)
 	return true
+end
+
+function Solo.scored_fire_visible(): boolean
+	local _, left = Solo.current_box()
+	for _, fire in ipairs(Hazard.fire_npcs()) do
+		local gone = false
+		for _, box in ipairs(left) do
+			gone = gone or Solo.fire_in(box, fire)
+		end
+		if not gone then
+			return true
+		end
+	end
+	return false
 end
 
 function Solo.humidify_walk()
@@ -1504,9 +1480,17 @@ function Solo.drop_buckets(count: number, allow_water: boolean)
 	end
 	local slots: { number } = {}
 	for _, wanted in ipairs(if allow_water then { Items.BUCKET, Items.WATER } else { Items.BUCKET }) do
+		local held: { number } = {}
 		for _, slot in ipairs(item_container(Inventory.CONTAINER) or {}) do
-			if slot.id == wanted and #slots < count then
-				table.insert(slots, slot.slot)
+			if slot.id == wanted then
+				table.insert(held, slot.slot)
+			end
+		end
+		if #held > 0 then
+			for _, slot in ipairs((Inventory.pattern(held))) do
+				if #slots < count then
+					table.insert(slots, slot)
+				end
 			end
 		end
 	end
@@ -1514,7 +1498,7 @@ function Solo.drop_buckets(count: number, allow_water: boolean)
 		return
 	end
 	Log.log("Tempoross", `   Dropping {#slots} bucket{if #slots == 1 then "" else "s"}`)
-	Inventory.shift_drop_slots(slots)
+	Inventory.shift_drop_slots((Inventory.pattern(slots)))
 end
 
 function Solo.drop_midwalk()
@@ -1660,16 +1644,13 @@ function Solo.clear_p2()
 	if #fires == 0 then
 		return
 	end
-	table.sort(fires, function(a: Npc, b: Npc): boolean
-		return Geo.distance(a, snap.me) < Geo.distance(b, snap.me)
-	end)
-	local fire = fires[1]
+	local target, after = Solo.valued_target(fires)
+	local fire = target :: Npc
 	if Route.nearest_of(Route.beside(Hazard.fire_tiles(fire))) == nil then
 		S.solo.p2_skip[`{fire.x},{fire.y}`] = true
 		Log.log("Tempoross", `   Can't reach the fire at {fire.x},{fire.y}, skipping it`)
 		return
 	end
-	local after = fires[2]
 	Log.log("Tempoross", `   Putting out the fire at {fire.x},{fire.y} ({#fires} left on our side)`)
 	Hazard.douse(fire, if after then Geo.to_tile(after) else nil)
 end
@@ -1707,14 +1688,270 @@ function Solo.cluster_target(fires: { Npc }): (Npc?, Npc?)
 	return target, after
 end
 
+function Solo.travel_goal(): Tile?
+	local r = S.solo
+	if r.p5_stage ~= nil then
+		return if r.p5_stage == "north" then Solo.p5_north_target() else nil
+	end
+	if r.p4_stage == "ship" or r.p4_stage == "rush" then
+		return Solo.crate_target()
+	end
+	if r.p3_stage == "cross" then
+		return r.p3_pier
+	end
+	if r.p3_stage ~= nil then
+		return nil
+	end
+	if r.p2_loading then
+		return Solo.crate_target()
+	end
+	if r.p2_clear ~= "done" then
+		local spot = Task.best_spot(false, nil, true)
+		return if spot then Route.npc_stand(spot) else nil
+	end
+	return nil
+end
+
+function Solo.current_box(): (Box?, { Box })
+	local boxes = Solo.island_boxes()
+	if boxes == nil then
+		return nil, {}
+	end
+	local r = S.solo
+	local current = Solo.p5_current()
+	if r.p5_stage ~= nil and current ~= nil then
+		local left: { Box } = {}
+		for i = 1, r.p5_route_at - 1 do
+			table.insert(left, boxes[CONST.SOLO.P5_ROUTE[i]])
+		end
+		return boxes[current], left
+	end
+	local me = snap.me
+	for _, box: Box in boxes :: { [string]: Box } do
+		if me.x >= box.min_x and me.x <= box.max_x and me.y >= box.min_y and me.y <= box.max_y then
+			return box, {}
+		end
+	end
+	return nil, {}
+end
+
+function Solo.corner(quad: Geometry.Quad, name: string): Point
+	if name == "top" then
+		return quad.top
+	elseif name == "right" then
+		return quad.right
+	elseif name == "bottom" then
+		return quad.bottom
+	end
+	return quad.left
+end
+
+function Solo.box_segments(box: Box): { { Point } }
+	local edges: { { tile: Tile, from: string, to: string } } = {}
+	for x = box.min_x, box.max_x do
+		table.insert(edges, { tile = { x = x, y = box.min_y }, from = "top", to = "left" })
+	end
+	for y = box.min_y, box.max_y do
+		table.insert(edges, { tile = { x = box.max_x, y = y }, from = "left", to = "bottom" })
+	end
+	for x = box.max_x, box.min_x, -1 do
+		table.insert(edges, { tile = { x = x, y = box.max_y }, from = "bottom", to = "right" })
+	end
+	for y = box.max_y, box.min_y, -1 do
+		table.insert(edges, { tile = { x = box.min_x, y = y }, from = "right", to = "top" })
+	end
+	local segments: { { Point } } = {}
+	local first: Point? = nil
+	local last: Point? = nil
+	local whole = true
+	for _, edge in ipairs(edges) do
+		local quad = Projection.tile(edge.tile)
+		if quad == nil then
+			last = nil
+			whole = false
+		else
+			local a, b = Solo.corner(quad, edge.from), Solo.corner(quad, edge.to)
+			if last then
+				table.insert(segments, { last :: Point, a })
+			end
+			table.insert(segments, { a, b })
+			first = first or a
+			last = b
+		end
+	end
+	if whole and first and last then
+		table.insert(segments, { last :: Point, first :: Point })
+	end
+	return segments
+end
+
+function Solo.show_boxes()
+	local r = S.solo
+	local boxes = Solo.island_boxes()
+	local wanted = r.p5_stage ~= nil or (r.p3_stage ~= nil and r.p4_stage == nil)
+	if not DebugDraw.on() or boxes == nil or not wanted then
+		if S.boxes_shown ~= "" then
+			S.boxes_shown = ""
+			DebugDraw.set("island_boxes", nil)
+		end
+		return
+	end
+	local current, left = Solo.current_box()
+	local key = `{if current then `{current.min_x},{current.min_y}` else "none"}:{#left}`
+	if key == S.boxes_shown then
+		return
+	end
+	S.boxes_shown = key
+	DebugDraw.set("island_boxes", function()
+		for _, box: Box in boxes :: { [string]: Box } do
+			local color = if box == current
+				then CONST.CURRENT_BOX_COLOR
+				elseif table.find(left, box) then CONST.LEFT_BOX_COLOR
+				else CONST.BOX_COLOR
+			Draw.lines(Solo.box_segments(box), color, CONST.BOX_DEBUG_WIDTH)
+		end
+	end)
+end
+
+function Solo.covers(fire: Npc, things: { Tile }, range: number): boolean
+	for _, t in ipairs(things) do
+		if Hazard.fire_distance(fire, t) <= range then
+			return true
+		end
+	end
+	return false
+end
+
+function Solo.shared_stand(a: Npc, b: Npc): boolean
+	for _, t in ipairs(Route.beside(Hazard.fire_tiles(a))) do
+		if Hazard.beside_fire(b, t) and Hazard.fire_near(t, 0) == nil then
+			return true
+		end
+	end
+	return false
+end
+
+function Solo.fire_values(fires: { Npc }): { [number]: number }
+	local w = CONST.SOLO.FIRE_VALUE
+	local size: { [number]: number } = {}
+	for _, cluster in ipairs(Hazard.fire_clusters(fires)) do
+		for _, f in ipairs(cluster) do
+			size[f.index] = #cluster
+		end
+	end
+	local spots: { Tile } = {}
+	local pools: { Tile } = {}
+	for _, n in ipairs(snap.npcs) do
+		if n.id == CONST.SPIRIT_POOL or n.id == CONST.INACTIVE_POOL then
+			table.insert(pools, n)
+		elseif S.side ~= nil and Task.is_spot(n) then
+			table.insert(spots, n)
+		end
+	end
+	local crates: { Tile } = if S.side ~= nil then Task.crates() else {}
+	local shrines: { Tile } = if S.side ~= nil then { (S.side :: Side).shrine } else {}
+	local goal = Solo.travel_goal()
+	local path = if goal then Route.route_to(goal) or {} else {}
+	local function flag(on: boolean): number
+		return if on then 1 else 0
+	end
+	local base_weight = w.near + w.small + w.spot + w.shrine + w.crate + w.pool
+	local on_way: { [number]: boolean } = {}
+	local base: { [number]: number } = {}
+	local crossing: { [number]: boolean } = {}
+	for _, fire in ipairs(fires) do
+		local route = Route.route_to(fire)
+		local steps = if route then #route - 1 else math.huge
+		local raw = w.near * math.max(0, 1 - steps / w.far_steps)
+			+ w.small / (size[fire.index] or 1)
+			+ w.spot * flag(Solo.covers(fire, spots, w.spot_range))
+			+ w.shrine * flag(Solo.covers(fire, shrines, w.shrine_range))
+			+ w.crate * flag(Solo.covers(fire, crates, w.crate_range))
+			+ w.pool * flag(Solo.covers(fire, pools, w.pool_range))
+		base[fire.index] = raw / base_weight
+		on_way[fire.index] = Solo.covers(fire, path, 0)
+		crossing[fire.index] = route == nil or Route.first_fire(route, fire) ~= nil
+	end
+	local box, left = Solo.current_box()
+	local values: { [number]: number } = {}
+	for _, fire in ipairs(fires) do
+		local partner = 0
+		for _, other in ipairs(fires) do
+			if
+				other.index ~= fire.index
+				and Geo.distance(fire, other) <= w.pair_range
+				and Solo.shared_stand(fire, other)
+			then
+				partner = math.max(partner, base[other.index])
+			end
+		end
+		local value = (base[fire.index] * base_weight + w.pair * partner) / (base_weight + w.pair)
+		if on_way[fire.index] then
+			value += w.path
+		end
+		if crossing[fire.index] then
+			value *= w.crossing
+		end
+		if box ~= nil and not Solo.fire_in(box, fire) then
+			value *= w.outside
+		end
+		for _, gone in ipairs(left) do
+			if Solo.fire_in(gone, fire) and not Solo.fire_in(box, fire) then
+				value = 0
+			end
+		end
+		values[fire.index] = math.clamp(value, 0, 1)
+	end
+	return values
+end
+
+function Solo.show_values(fires: { Npc }, values: { [number]: number }, target: Npc?)
+	if not DebugDraw.on() then
+		return
+	end
+	local marks: { { tile: Tile, text: string, color: Draw.Color } } = {}
+	for _, fire in ipairs(fires) do
+		local chosen = target ~= nil and fire.index == (target :: Npc).index
+		table.insert(marks, {
+			tile = Geo.to_tile(fire),
+			text = string.format("%.2f", values[fire.index] or 0),
+			color = if chosen then CONST.FIRE_TARGET_COLOR else CONST.FIRE_VALUE_COLOR,
+		})
+	end
+	DebugDraw.set("fire_values", function()
+		for _, mark in ipairs(marks) do
+			local quad = Projection.tile(mark.tile)
+			if quad then
+				local size = CONST.FIRE_VALUE_SIZE
+				Draw.text(mark.text, quad.top.x - size, quad.top.y - size / 2, size, mark.color)
+			end
+		end
+	end)
+end
+
+function Solo.valued_target(fires: { Npc }): (Npc?, Npc?)
+	local values = Solo.fire_values(fires)
+	local ranked: { Npc } = {}
+	for _, fire in ipairs(fires) do
+		if values[fire.index] > 0 then
+			table.insert(ranked, fire)
+		end
+	end
+	table.sort(ranked, function(a: Npc, b: Npc): boolean
+		return values[a.index] > values[b.index]
+	end)
+	Solo.show_values(fires, values, ranked[1])
+	return ranked[1], ranked[2]
+end
+
 function Solo.clear_beach()
 	Solo.clear_fires(Solo.area_fires(Solo.in_box), "beach")
 end
 
-function Solo.clear_fires(fires: { Npc }, why: string)
-	local fire, after = Solo.cluster_target(fires)
+function Solo.clear_fires(fires: { Npc }, why: string): boolean
+	local fire, after = Solo.valued_target(fires)
 	if fire == nil then
-		return
+		return false
 	end
 	local near: { Npc } = {}
 	for _, other in ipairs(fires) do
@@ -1726,7 +1963,7 @@ function Solo.clear_fires(fires: { Npc }, why: string)
 	if spot == nil or #beside <= 1 then
 		Log.log("Tempoross", `   Clearing the fire at {fire.x},{fire.y} ({why})`)
 		Hazard.douse(fire, if after then Geo.to_tile(after) else nil)
-		return
+		return true
 	end
 	local batch: { [number]: boolean } = {}
 	for _, f in ipairs(beside) do
@@ -1739,6 +1976,7 @@ function Solo.clear_fires(fires: { Npc }, why: string)
 		end
 	end
 	Hazard.douse_from(spot, beside, why, rest)
+	return true
 end
 
 function Solo.stop_here()
@@ -1800,7 +2038,7 @@ function Solo.get_game_state(skipped: { [State]: boolean }): State
 		return Solo.part_two()
 	end
 	if r.loading then
-		if Task.surge_pending() then
+		if Task.surge_blocks_loading() then
 			return "WAIT_SURGE"
 		end
 		return if r.ship_hover ~= nil then "WALK_TO_LOAD" else "LOAD_EXACT"

@@ -582,6 +582,9 @@ function Hazard.fire_clusters(fires: { Npc }): { { Npc } }
 end
 
 function Hazard.show_fires(force: boolean?)
+	if CONFIG.solo and S.side ~= nil then
+		Solo.show_boxes()
+	end
 	local layers: { { tiles: { Tile }, color: Draw.Color } } = {}
 	local keys: { string } = {}
 	if DebugDraw.on() then
@@ -748,7 +751,10 @@ function Hazard.watch_projectiles()
 		if not S.projectiles_seen[key] then
 			S.projectiles_seen[key] = true
 			local eta = math.max(0, (p.end_cycle - p.cycle) * Projectiles.CYCLE_MS)
-			if p.id == CONST.FIRE_SPREAD then
+			if p.id == CONST.SURGE_PROJECTILE then
+				events.surge_target = { tile = { x = p.target_x, y = p.target_y }, at = now }
+				Log.log("Tempoross", `   Surge heading to {p.target_x},{p.target_y}, lands in {eta} ms`)
+			elseif p.id == CONST.FIRE_SPREAD then
 				S.incoming[key] = { tile = { x = p.target_x, y = p.target_y }, lands = now + eta }
 				Log.log(
 					"Tempoross",
@@ -773,6 +779,15 @@ function Hazard.incoming_at(tile: Tile, more: number): Npc?
 		end
 	end
 	return nil
+end
+
+function Hazard.landing_on_us(st: ClientState): Npc?
+	local here = Hazard.incoming_at(snap.me, 0)
+	if here then
+		return here
+	end
+	local dest = st.destination
+	return if dest then Hazard.incoming_at(dest, 0) else nil
 end
 
 function Hazard.describe_hazard(n: Npc): string
@@ -1482,6 +1497,34 @@ function Hazard.douse_route(fire: Npc): { Tile }?
 	return Route.nearest_of(Route.beside(Hazard.fire_tiles(fire))) or Route.route_to(fire)
 end
 
+function Hazard.douse_stands(fire: Npc): { { Tile } }
+	local routes: { { Tile } } = {}
+	local best = math.huge
+	for _, c in ipairs(Route.beside(Hazard.fire_tiles(fire))) do
+		local route = Route.reaching(c)
+		if route and #route < best then
+			best = #route
+			routes = { route }
+		elseif route and #route == best then
+			table.insert(routes, route)
+		end
+	end
+	return routes
+end
+
+function Hazard.unsafe_click(fire: Npc): (boolean, Tile?)
+	local unsafe, safe = false, nil
+	for _, route in ipairs(Hazard.douse_stands(fire)) do
+		local stand = route[#route]
+		if Route.first_fire(route, fire) == nil and Hazard.hazard_at(stand) == nil then
+			safe = safe or stand
+		else
+			unsafe = true
+		end
+	end
+	return unsafe, safe
+end
+
 function Hazard.douse_target(fire: Npc): Npc
 	for _ = 1, 4 do
 		local tiles = Hazard.douse_route(fire)
@@ -1544,6 +1587,22 @@ function Hazard.douse(fire: Npc, toward: Tile?): boolean
 	if ledger.clicks == 0 or time() - ledger.last > CONST.POUR_SETTLE_MS then
 		ledger.base, ledger.clicks = extinguished, 0
 	end
+	local unsafe, safe = Hazard.unsafe_click(fire)
+	if unsafe and safe and not Geo.same(safe, snap.me) then
+		local stand = safe :: Tile
+		Log.log(
+			"Tempoross",
+			`   Clicking the fire at {fire.x},{fire.y} may walk through fire, walking to {stand.x},{stand.y} first`
+		)
+		Route.click(stand)
+		local clicked = time()
+		Route.sleep_watching(CONST.STAND_WALK_MS, nil, function(): boolean
+			return Geo.same(snap.me, stand) or (not snap.walking and time() - clicked > Ticks.MS)
+		end)
+		if not Geo.same(snap.me, stand) then
+			return false
+		end
+	end
 	if not Task.use_npc(fire, { "Douse" }, { ignore = fire }) then
 		if Hazard.fire_distance(fire, snap.me) <= 1 then
 			S.doused[key] = time()
@@ -1578,6 +1637,14 @@ function Hazard.douse(fire: Npc, toward: Tile?): boolean
 			return true
 		end
 		Hazard.watch_projectiles()
+		local landing = Hazard.landing_on_us(st)
+		if landing then
+			poured()
+			Log.log("Tempoross", `   Fire landing at {landing.x},{landing.y} on our tile while dousing, stepping away`)
+			S.landing_dodged_at = time()
+			Route.step_away(Geo.to_tile(fire))
+			return false
+		end
 		local other = Route.fire_ahead(st.destination, fire)
 		if other then
 			poured()
@@ -1588,6 +1655,19 @@ function Hazard.douse(fire: Npc, toward: Tile?): boolean
 		sleep(CONST.POLL_MS)
 	end
 	return false
+end
+
+function Route.safe_walk(t: Tile, margin: number): boolean
+	local tiles = Route.reaching(t)
+	if tiles == nil or not Route.safe_route(tiles) or (Route.landing_ahead(tiles)) ~= nil then
+		return false
+	end
+	for i = 2, #tiles do
+		if Hazard.fire_near(tiles[i], margin) ~= nil or Hazard.incoming_at(tiles[i], margin) ~= nil then
+			return false
+		end
+	end
+	return true
 end
 
 function Route.safe_tile(towards: Tile?, margin: number?): Tile?
@@ -1611,7 +1691,7 @@ function Route.safe_tile(towards: Tile?, margin: number?): Tile?
 		local t = candidates[i].tile
 		local tiles = Route.reaching(t)
 		if tiles then
-			if Route.safe_route(tiles) then
+			if Route.safe_route(tiles) and (Route.landing_ahead(tiles)) == nil then
 				return t
 			end
 			reachable = reachable or t
@@ -1853,6 +1933,10 @@ function Task.usable_crates(quiet: boolean?): { Npc }
 			if not quiet then
 				Log.log("Tempoross", "   The crate at", crate.x, crate.y, "has an electrified cannon")
 			end
+		elseif Task.surge_cannon() ~= nil and Task.surge_threatens(crate) then
+			if not quiet then
+				Log.log("Tempoross", "   The crate at", crate.x, crate.y, "has the cannon the surge is heading to")
+			end
 		else
 			table.insert(usable, crate)
 		end
@@ -1867,6 +1951,14 @@ function Task.usable_crates(quiet: boolean?): { Npc }
 	return usable
 end
 
+function Task.surge_cannon(): Loc?
+	local target = events.surge_target
+	if target == nil or time() - target.at > CONST.SURGE_WAIT_MS then
+		return nil
+	end
+	return Geo.nearest_loc(Read.locs_named({ "Harpoonfish cannon", "Electrified harpoonfish cannon" }), target.tile)
+end
+
 function Task.surge_pending(): boolean
 	if time() >= events.surge_until then
 		return false
@@ -1878,7 +1970,46 @@ function Task.surge_pending(): boolean
 			return false
 		end
 	end
+	local struck = Task.surge_cannon()
+	if struck and Objects.distance(struck, mast) > CONST.CANNON_RANGE then
+		Log.log("Tempoross", `   The surge goes to the cannon at {struck.x},{struck.y}, not ours, carrying on`)
+		events.surge_until = 0
+		return false
+	end
 	return true
+end
+
+function Task.surge_threatens(crate: Npc): boolean
+	if not Task.surge_pending() then
+		return false
+	end
+	local struck = Task.surge_cannon()
+	if struck == nil then
+		return true
+	end
+	local cannons = Read.locs_named({ "Harpoonfish cannon", "Electrified harpoonfish cannon" })
+	local own = Geo.nearest_loc(cannons, crate)
+	return own ~= nil and own.x == struck.x and own.y == struck.y
+end
+
+function Task.surge_blocks_loading(): boolean
+	local a = S.activity
+	if a and a.kind == "load" and a.npc then
+		return Task.surge_threatens(a.npc :: Npc)
+	end
+	return Task.surge_pending() and not Task.surge_spares_a_crate()
+end
+
+function Task.surge_spares_a_crate(): boolean
+	if not Task.surge_pending() or Task.surge_cannon() == nil then
+		return false
+	end
+	for _, crate in ipairs(Task.crates()) do
+		if not Task.surge_threatens(crate) then
+			return true
+		end
+	end
+	return false
 end
 
 function Task.wait_out_surge()
@@ -1894,7 +2025,12 @@ function Task.wait_out_surge()
 end
 
 function Task.clear_crates()
-	local crates = Task.crates()
+	local crates: { Npc } = {}
+	for _, crate in ipairs(Task.crates()) do
+		if Task.surge_threatens(crate) then
+			table.insert(crates, crate)
+		end
+	end
 	local best: Tile? = nil
 	local best_d = math.huge
 	for dx = -6, 6 do
@@ -1905,14 +2041,15 @@ function Task.clear_crates()
 				clear = clear and Geo.distance(crate, t) >= CONST.SURGE_CLEARANCE
 			end
 			local d = Geo.distance(t, snap.me)
-			if clear and d < best_d and Route.reaching(t) then
+			if clear and d < best_d and Route.safe_walk(t, CONST.SURGE_FIRE_MARGIN) then
 				best, best_d = t, d
 			end
 		end
 	end
 	Doing.clear_activity()
 	if best == nil then
-		Route.step_away((S.side :: Side).mast)
+		Log.log("Tempoross", "   No safe way clear of the cannons, staying put")
+		Route.sleep_watching(Random.int(300, 600))
 		return
 	end
 	Log.log("Tempoross", `   Stepping clear of the cannons to {best.x},{best.y}`)
@@ -2010,7 +2147,7 @@ function Task.walk_to_crate(): Npc?
 end
 
 function Task.surge_waited(): boolean
-	if not Task.surge_pending() then
+	if not Task.surge_pending() or Task.surge_spares_a_crate() then
 		return false
 	end
 	Task.wait_out_surge()
@@ -2271,6 +2408,7 @@ function Game.new_game()
 	events.stunned_until = 0
 	events.waves_passed = 0
 	events.surge_until = 0
+	events.surge_target = nil
 	S.incoming = {}
 	S.projectiles_seen = {}
 	S.fires_known = {}
@@ -2708,6 +2846,12 @@ function Loop.common_game_state(): State?
 		plan.hazard = hazard
 		return "DODGE"
 	end
+	local dest = if snap.walking then Player.destination() else nil
+	local landing = if dest then Hazard.incoming_at(dest, 0) else nil
+	if landing then
+		plan.hazard = landing
+		return "DODGE"
+	end
 	if snap.walking and Read.item_count(Items.WATER) > 0 then
 		local ahead = Route.fire_ahead(Player.destination())
 		local live = ahead and Npcs.refresh(ahead)
@@ -2726,7 +2870,7 @@ function Loop.common_game_state(): State?
 		end
 	end
 
-	if Doing.is_doing("load") and Task.surge_pending() then
+	if Doing.is_doing("load") and Task.surge_blocks_loading() then
 		return "WAIT_SURGE"
 	end
 
@@ -2850,9 +2994,9 @@ function Hazard.douse_spot(near: { Npc }, countable: { Npc }, max_steps: number?
 end
 
 function Hazard.lands_on(fire: Npc, stand: Tile): boolean
-	local route = Hazard.douse_route(fire)
-	local last = route and route[#route]
-	return last ~= nil and Geo.same(last, stand) and Route.fire_free(route :: { Tile })
+	local routes = Hazard.douse_stands(fire)
+	local route = routes[1]
+	return #routes == 1 and Geo.same(route[#route], stand) and Route.fire_free(route)
 end
 
 function Hazard.douse_from(stand: Tile, fires: { Npc }, why: string, rest: { Npc }?): boolean
@@ -2881,7 +3025,11 @@ function Hazard.douse_from(stand: Tile, fires: { Npc }, why: string, rest: { Npc
 		end
 	end
 	local doused = false
+	local dodged = S.landing_dodged_at
 	for i, fire in ipairs(fires) do
+		if S.landing_dodged_at ~= dodged then
+			break
+		end
 		local following = fires[i + 1]
 		local toward = if following then Geo.to_tile(following) else nil
 		if toward == nil and rest and #rest > 0 then
