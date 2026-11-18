@@ -551,7 +551,9 @@ end
 
 function Solo.wants_humidify(): boolean
 	local r = S.solo
-	if time() < r.humidify_at or Doing.is_doing("load") or snap.tethered then
+	local blocked = CONST.SOLO.NO_HUMIDIFY_DURING :: { [string]: boolean }
+	local busy = S.activity ~= nil and blocked[(S.activity :: Activity).kind] == true
+	if time() < r.humidify_at or busy or snap.tethered then
 		return false
 	end
 	if r.p2_clear ~= nil and r.p3_stage == nil and #Solo.side_fires() == 0 then
@@ -569,11 +571,15 @@ function Solo.wants_humidify(): boolean
 		end
 	end
 	Read.sync_inventory()
-	return Read.item_count(Items.WATER) <= CONST.SOLO.HUMIDIFY_AT_WATER and Read.item_count(Items.BUCKET) > 0
+	local at_water = if r.p3_stage ~= nil then 0 else CONST.SOLO.HUMIDIFY_AT_WATER
+	return Read.item_count(Items.WATER) <= at_water and Read.item_count(Items.BUCKET) > 0
 end
 
 function Solo.cast_humidify(): boolean
+	Read.sync_inventory()
+	local water = Read.item_count(Items.WATER)
 	if Magic.cast("Humidify") then
+		S.solo.humidify_cast = { at = time(), water = water }
 		return true
 	end
 	S.solo.humidify_at = time() + CONST.SOLO.HUMIDIFY_RETRY_MS
@@ -862,15 +868,15 @@ function Solo.start_part_five(): State
 	r.p3_buckets = Geo.nearest_loc(Read.locs_named({ "Buckets" }), snap.me)
 	r.p5_box = Solo.home_box(north)
 	local limits: { string } = {}
-	local bases = CONST.SOLO.P5_BIG_CLUSTER_INTENSITY :: { [string]: number }
-	local jitter = CONST.SOLO.P5_BIG_CLUSTER_JITTER
+	local bases = CONST.SOLO.P5_LEAVE_INTENSITY :: { [string]: number }
+	local jitter = CONST.SOLO.P5_LEAVE_JITTER
 	for _, name in ipairs(CONST.SOLO.P5_ROUTE) do
 		r.p5_limits[name] = bases[name] + Random.int(-jitter, jitter + 1)
 		table.insert(limits, `{name} {r.p5_limits[name]}%`)
 	end
 	Doing.clear_activity()
 	Log.log("Tempoross", "Part 5: filling the inventory with buckets")
-	Log.log("Tempoross", `   Skipping big fire clusters from: {table.concat(limits, ", ")}`)
+	Log.log("Tempoross", `   Leaving each box at: {table.concat(limits, ", ")}`)
 	return Solo.part_five()
 end
 
@@ -950,8 +956,23 @@ function Solo.part_five(): State
 		if Read.fish_count() > 0 then
 			return "LOAD_ALL"
 		end
+		r.p5_stage = "hammer"
+		if not Read.has_hammer() then
+			Log.log("Tempoross", "   Fish loaded, taking a hammer before the spirit pool")
+		end
+	end
+	if r.p5_stage == "hammer" then
+		Read.sync_inventory()
+		if not Read.has_hammer() and r.hammer_tries < CONST.SOLO.HAMMER_TRIES then
+			if snap.free == 0 then
+				plan.drop = 1
+				return "P3_DROP"
+			end
+			r.hammer_tries += 1
+			return "TAKE_HAMMER"
+		end
 		r.p5_stage = "pool"
-		Log.log("Tempoross", "   Fish loaded, off to the north spirit pool")
+		Log.log("Tempoross", "   Off to the north spirit pool")
 	end
 	return "GO_TO_PIER_SOLO"
 end
@@ -1020,8 +1041,49 @@ function Solo.p5_candidates(): { Npc }
 	end)
 end
 
-function Solo.box_distance(box: Box, t: Tile): number
-	return math.max(box.min_x - t.x, t.x - box.max_x, box.min_y - t.y, t.y - box.max_y, 0)
+function Solo.box_samples(box: Box): { Tile }
+	local step = CONST.SOLO.P5_LOOK_STEP
+	local samples: { Tile } = {}
+	local x = box.min_x
+	while true do
+		local y = box.min_y
+		while true do
+			table.insert(samples, { x = x, y = y })
+			if y >= box.max_y then
+				break
+			end
+			y = math.min(y + step, box.max_y)
+		end
+		if x >= box.max_x then
+			break
+		end
+		x = math.min(x + step, box.max_x)
+	end
+	return samples
+end
+
+function Solo.p5_current(): string?
+	return CONST.SOLO.P5_ROUTE[S.solo.p5_route_at]
+end
+
+function Solo.p5_unseen(name: string): { Tile }
+	local r = S.solo
+	local looked = r.p5_looked[name]
+	if looked == nil then
+		looked = {}
+		for _, t in ipairs(Solo.box_samples((Solo.island_boxes() :: { [string]: Box })[name])) do
+			looked[`{t.x},{t.y}`] = false
+		end
+		r.p5_looked[name] = looked
+	end
+	local unseen: { Tile } = {}
+	for key, seen in pairs(looked) do
+		if not seen then
+			local x, y = string.match(key, "(-?%d+),(-?%d+)")
+			table.insert(unseen, { x = tonumber(x) :: number, y = tonumber(y) :: number })
+		end
+	end
+	return unseen
 end
 
 function Solo.p5_remember()
@@ -1042,54 +1104,63 @@ function Solo.p5_remember()
 		end
 	end
 	for key, t in pairs(r.p5_seen) do
-		if not visible[key] and Hazard.fire_distance(Hazard.fire_at(t), snap.me) <= CONST.SOLO.FIRE_FORGET_RANGE then
+		if
+			not visible[key]
+			and Hazard.fire_distance(Hazard.fire_at(t), snap.me) <= CONST.SOLO.FIRE_FORGET_RANGE
+			and Walker.on_screen(t)
+		then
 			r.p5_seen[key] = nil
 		end
 	end
-	for _, name in ipairs(CONST.SOLO.P5_ROUTE) do
-		if Solo.box_distance(boxes[name], snap.me) == 0 then
-			r.p5_entered[name] = true
+	local name = Solo.p5_current()
+	if name == nil then
+		return
+	end
+	local looked = r.p5_looked[name]
+	if looked == nil then
+		Solo.p5_unseen(name)
+		looked = r.p5_looked[name]
+	end
+	for _, t in ipairs(Solo.p5_unseen(name)) do
+		if Geo.distance(t, snap.me) <= CONST.SOLO.P5_LOOK_NEAR or Walker.on_screen(t) then
+			(looked :: { [string]: boolean })[`{t.x},{t.y}`] = true
 		end
 	end
 end
 
 function Solo.p5_box_targets(name: string): { Tile }
-	local r = S.solo
 	local box = (Solo.island_boxes() :: { [string]: Box })[name]
-	local known: { Npc } = {}
-	for _, t in pairs(r.p5_seen) do
-		local fire = Hazard.fire_at(t)
-		if Solo.fire_in(box, fire) then
-			table.insert(known, fire)
-		end
-	end
-	local skip_big = (Read.hud_percent(HUD.INTENSITY) or 0) >= r.p5_limits[name]
 	local targets: { Tile } = {}
-	for _, cluster in ipairs(Hazard.fire_clusters(known)) do
-		if not skip_big or #cluster <= CONST.SOLO.P5_MAX_CLUSTER then
-			for _, fire in ipairs(cluster) do
-				table.insert(targets, { x = fire.x, y = fire.y })
-			end
+	for _, t in pairs(S.solo.p5_seen) do
+		if Solo.fire_in(box, Hazard.fire_at(t)) then
+			table.insert(targets, t)
 		end
 	end
 	return targets
 end
 
-function Solo.p5_route_box(): (string?, { Tile })
+function Solo.p5_route_box(): (string?, { Tile }, { Tile })
 	local r = S.solo
 	if Solo.island_boxes() == nil then
-		return nil, {}
+		return nil, {}, {}
 	end
-	while r.p5_route_at <= #CONST.SOLO.P5_ROUTE do
-		local name = CONST.SOLO.P5_ROUTE[r.p5_route_at]
+	while Solo.p5_current() ~= nil do
+		local name = Solo.p5_current() :: string
+		local intensity = Read.hud_percent(HUD.INTENSITY) or 0
 		local targets = Solo.p5_box_targets(name)
-		if not r.p5_entered[name] or #targets > 0 then
-			return name, targets
+		if intensity >= r.p5_limits[name] then
+			Log.log("Tempoross", `   Leaving {name} at {intensity}% storm with {#targets} fires left`)
+			r.p5_route_at += 1
+		else
+			local unseen = Solo.p5_unseen(name)
+			if #targets > 0 or #unseen > 0 then
+				return name, targets, unseen
+			end
+			Log.log("Tempoross", `   {name} clear at {intensity}% storm`)
+			r.p5_route_at += 1
 		end
-		Log.log("Tempoross", `   {name} clear at {Read.hud_percent(HUD.INTENSITY) or "?"}% storm`)
-		r.p5_route_at += 1
 	end
-	return nil, {}
+	return nil, {}, {}
 end
 
 function Solo.p5_clearing_route(): boolean
@@ -1106,42 +1177,103 @@ function Solo.visible_fires(tiles: { Tile }): { Npc }
 	end)
 end
 
-function Solo.box_entry(box: Box): Tile
-	return Route.route_end({
-		x = math.clamp(snap.me.x, box.min_x, box.max_x),
-		y = math.clamp(snap.me.y, box.min_y, box.max_y),
-	})
+function Solo.cluster_gap(a: { Npc }, b: { Npc }): number
+	local best = math.huge
+	for _, fa in ipairs(a) do
+		for _, fb in ipairs(b) do
+			best = math.min(best, Geo.distance(fa, fb))
+		end
+	end
+	return best
+end
+
+function Solo.first_of_route(clusters: { { Npc } }): { Npc }
+	local n = #clusters
+	local start: { number } = {}
+	local gap: { { number } } = {}
+	for i = 1, n do
+		start[i] = Solo.cluster_gap({ Hazard.fire_at(snap.me) }, clusters[i])
+		gap[i] = {}
+		for j = 1, n do
+			gap[i][j] = if i == j then 0 else Solo.cluster_gap(clusters[i], clusters[j])
+		end
+	end
+	if n > CONST.SOLO.P5_PLAN_MAX_CLUSTERS then
+		local first = 1
+		for i = 2, n do
+			if start[i] < start[first] then
+				first = i
+			end
+		end
+		return clusters[first]
+	end
+	local best_cost, best_first = math.huge, 1
+	local used: { boolean } = {}
+	local function search(at: number, depth: number, cost: number, first: number)
+		if cost >= best_cost then
+			return
+		end
+		if depth == n then
+			best_cost, best_first = cost, first
+			return
+		end
+		for i = 1, n do
+			if not used[i] then
+				used[i] = true
+				local step = if at == 0 then start[i] else gap[at][i]
+				search(i, depth + 1, cost + step, if at == 0 then i else first)
+				used[i] = false
+			end
+		end
+	end
+	search(0, 0, 0, 1)
+	return clusters[best_first]
 end
 
 function Solo.p5_clear_route(): boolean
 	local r = S.solo
 	Solo.p5_remember()
-	local name, targets = Solo.p5_route_box()
+	local name, targets, unseen = Solo.p5_route_box()
 	if name == nil then
 		return false
 	end
-	local visible = Solo.visible_fires(targets)
-	if #visible > 0 then
-		Solo.clear_fires(visible, name)
-		return true
-	end
+	local box_name = name :: string
 	local goal: Tile
+	local look: Tile? = nil
 	if #targets > 0 then
-		table.sort(targets, function(a: Tile, b: Tile): boolean
-			return Geo.distance(a, snap.me) < Geo.distance(b, snap.me)
-		end)
-		goal = Route.route_end(targets[1])
-	else
-		goal = Solo.box_entry((Solo.island_boxes() :: { [string]: Box })[name])
-		if Geo.distance(snap.me, goal) <= 1 then
-			r.p5_entered[name] = true
+		local known: { Npc } = {}
+		for _, t in ipairs(targets) do
+			local fire: Npc = Hazard.fire_at(t)
+			table.insert(known, fire)
+		end
+		local cluster = Solo.first_of_route(Hazard.fire_clusters(known))
+		local visible = Solo.visible_fires(cluster)
+		if #visible > 0 then
+			Solo.clear_fires(visible, box_name)
 			return true
 		end
+		table.sort(cluster, function(a: Npc, b: Npc): boolean
+			return Geo.distance(a, snap.me) < Geo.distance(b, snap.me)
+		end)
+		goal = Route.route_end(Geo.to_tile(cluster[1]))
+	else
+		table.sort(unseen, function(a: Tile, b: Tile): boolean
+			return Geo.distance(a, snap.me) < Geo.distance(b, snap.me)
+		end)
+		look = unseen[1]
+		goal = Route.route_end(unseen[1])
+		if Geo.distance(snap.me, goal) <= 1 then
+			r.p5_looked[box_name][`{unseen[1].x},{unseen[1].y}`] = true
+			return true
+		end
+		Log.log("Tempoross", `   Looking over {box_name} toward {goal.x},{goal.y}`)
 	end
-	Log.log("Tempoross", `   Heading into {name} through {goal.x},{goal.y}`)
 	Solo.walk_with_buckets(goal, 1, function(): boolean
 		Solo.p5_remember()
-		return #Solo.visible_fires(Solo.p5_box_targets(name)) > 0
+		if look and r.p5_looked[box_name][`{look.x},{look.y}`] then
+			return true
+		end
+		return #Solo.visible_fires(Solo.p5_box_targets(box_name)) > 0
 	end)
 	return true
 end
@@ -1206,7 +1338,24 @@ function Solo.take_buckets()
 	end
 end
 
+function Solo.humidify_settling(): boolean
+	local r = S.solo
+	local cast = r.humidify_cast
+	if cast == nil then
+		return false
+	end
+	Read.sync_inventory()
+	if Read.item_count(Items.WATER) > cast.water or time() - cast.at > CONST.SOLO.HUMIDIFY_SETTLE_MS then
+		r.humidify_cast = nil
+		return false
+	end
+	return true
+end
+
 function Solo.drop_buckets(count: number, allow_water: boolean)
+	if Solo.humidify_settling() then
+		return
+	end
 	local slots: { number } = {}
 	for _, wanted in ipairs(if allow_water then { Items.BUCKET, Items.WATER } else { Items.BUCKET }) do
 		for _, slot in ipairs(item_container(Inventory.CONTAINER) or {}) do

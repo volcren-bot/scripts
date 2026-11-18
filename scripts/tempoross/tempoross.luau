@@ -159,7 +159,7 @@ function Read.read_npcs(): { Npc }?
 	end
 	for key, seen in pairs(S.fire_seen) do
 		if not present[key] then
-			if now - seen.at <= CONST.FIRE_GHOST_MS then
+			if now - seen.at <= CONST.FIRE_GHOST_MS and not S.doused[key] then
 				table.insert(list, seen.npc)
 			else
 				S.fire_seen[key] = nil
@@ -1464,6 +1464,7 @@ function Hazard.burning_at(fire: Npc): boolean
 end
 
 function Hazard.douse(fire: Npc, toward: Tile?): boolean
+	Read.sync_inventory()
 	local before = Read.item_count(Items.WATER)
 	if before == 0 then
 		return false
@@ -1473,27 +1474,50 @@ function Hazard.douse(fire: Npc, toward: Tile?): boolean
 		return false
 	end
 	fire = Hazard.douse_target(current)
+	local key = `{fire.x},{fire.y}`
 	S.solo.fire_hover = nil
+	local ledger = S.pours
+	if ledger.clicks == 0 or time() - ledger.last > CONST.POUR_SETTLE_MS or before > ledger.base then
+		ledger.base, ledger.clicks = before, 0
+	end
 	if not Task.use_npc(fire, { "Douse" }, { ignore = fire }) then
+		if Hazard.fire_distance(fire, snap.me) <= 1 then
+			S.doused[key] = time()
+		end
 		return false
 	end
+	ledger.clicks += 1
+	ledger.last = time()
+	local ordinal = ledger.clicks
 	Log.log("Tempoross", "   Dousing fire at", fire.x, fire.y)
 	if toward then
 		Hazard.prehover_after_douse(fire, toward)
 	end
+	local function poured(): boolean
+		Read.sync_inventory()
+		if ledger.base - Read.item_count(Items.WATER) >= ordinal then
+			S.doused[key] = time()
+			return true
+		end
+		return false
+	end
 	local deadline = time() + 6000
 	local animation_ended = false
 	while time() < deadline do
+		if poured() then
+			return true
+		end
 		local dousing = Read.my_animation() == CONST.DOUSE_ANIMATION
 		animation_ended = animation_ended or not dousing
 		local st = if dousing and animation_ended then nil else Read.refresh_moving()
 		if st == nil or not Hazard.burning_at(fire) then
-			S.doused[`{fire.x},{fire.y}`] = time()
+			S.doused[key] = time()
 			return true
 		end
 		Hazard.watch_projectiles()
 		local other = Route.fire_ahead(st.destination, fire)
 		if other then
+			poured()
 			Log.log("Tempoross", `   Fire at {other.x},{other.y} on the way to the fire at {fire.x},{fire.y}`)
 			events.fire_in_way = other
 			return false
