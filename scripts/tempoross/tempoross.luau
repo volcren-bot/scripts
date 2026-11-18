@@ -355,10 +355,12 @@ function Chat.read_chat()
 		if m.kind ~= 0 and m.kind ~= 105 and m.kind ~= 115 then
 			continue
 		end
-		local text = string.gsub(string.gsub(m.text, "<[^>]*>", ""), "@[%w_]+@", "")
+		local text = Chat.plain(m.text)
 		local at = time() - m.age
 		local washed = Chat.contains(text, "washes over")
-		if Chat.contains(text, "colossal wave closes in") then
+		if not S.chat_packets and Chat.contains(text, "You lose") then
+			Chat.lost_items(text)
+		elseif Chat.contains(text, "colossal wave closes in") then
 			events.wave_warning_at = at
 			events.tethered = false
 			Log.log("Tempoross", "Wave incoming")
@@ -410,11 +412,19 @@ function Chat.read_chat()
 	end
 end
 
+function Chat.plain(text: string): string
+	return (string.gsub(string.gsub(text, "<[^>]*>", ""), "@[%w_]+@", ""))
+end
+
 function Chat.hear_chat(p: Host.Packet)
-	local text = string.match(p.payload, "You lose[^\0]*")
-	if text == nil then
-		return
+	local fields = p.fields
+	local text = if fields then fields.text else nil
+	if type(text) == "string" and Chat.contains(text, "You lose") then
+		Chat.lost_items(Chat.plain(text))
 	end
+end
+
+function Chat.lost_items(text: string)
 	local st = Read.refresh_moving()
 	Log.log("Tempoross", `Lost items: {text}`)
 	Hazard.log_burn(st.destination)
@@ -1026,10 +1036,11 @@ function Read.heard_since(sound: number, since: number): boolean
 end
 
 function Read.hear_sound(p: Host.Packet)
-	if p.length ~= CONST.SOUND_PACKET.length then
+	local fields = p.fields
+	local id = if fields then fields.id else nil
+	if type(id) ~= "number" then
 		return
 	end
-	local id = string.byte(p.payload, 1) * 256 + string.byte(p.payload, 2)
 	events.heard[id] = (events.heard[id] or 0) + 1
 	events.heard_at[id] = time()
 	if id == CONST.SOUNDS.LOAD then
@@ -3340,6 +3351,7 @@ Handler.states = {
 		Hazard.dodge(plan.hazard :: Npc)
 	end,
 	DOUSE_FIRE = function()
+		Doing.clear_activity()
 		Hazard.douse(plan.fire :: Npc)
 	end,
 	ATTACK = Handler.attack,
@@ -3574,6 +3586,16 @@ function Loop.run()
 	Log.log("Tempoross", "Done")
 end
 
-Host.on_packet({ CONST.SOUND_PACKET.opcode }, Read.hear_sound)
-Host.on_packet({ CONST.CHAT_PACKET }, Chat.hear_chat)
+if Host.packet_opcode("SYNTH_SOUND") then
+	Host.on_packet({ "SYNTH_SOUND" }, Read.hear_sound)
+else
+	S.load_sound_missing = true
+	Log.warn("Tempoross", "This client has no sound packet: loads are counted from the inventory")
+end
+if Host.packet_opcode("MESSAGE_GAME") then
+	S.chat_packets = true
+	Host.on_packet({ "MESSAGE_GAME" }, Chat.hear_chat)
+else
+	Log.warn("Tempoross", "This client has no game message packet: burns are read from the chat box")
+end
 Loop.run()
