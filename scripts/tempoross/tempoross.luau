@@ -434,6 +434,8 @@ function Chat.lost_items(text: string)
 	if CONFIG.solo and S.solo.p3_stage ~= nil and not Chat.contains(text, "fish") then
 		local part = if S.solo.p5_stage then 5 elseif S.solo.p4_stage then 4 else 3
 		Log.log("Tempoross", `   Burned in part {part} without losing fish, carrying on`)
+	elseif CONFIG.solo and S.solo.p4_stage ~= nil and S.solo.p5_stage == nil then
+		events.burn_check = { at = time(), before = Solo.recent_fish() }
 	else
 		events.burned = true
 	end
@@ -2265,6 +2267,7 @@ function Game.new_game()
 	events.must_untether = false
 	events.wave_hit_us = false
 	events.burned = false
+	events.burn_check = nil
 	events.stunned_until = 0
 	events.waves_passed = 0
 	events.surge_until = 0
@@ -3481,7 +3484,11 @@ Handler.states = {
 	WALK_TO_LOAD = Solo.walk_to_load,
 	FISH_SAFELY = function()
 		local spot = plan.spot :: Npc
-		Solo.move_safely(Route.npc_stand(spot), function()
+		local stand = Route.npc_stand(spot)
+		if Solo.douse_path(stand) then
+			return
+		end
+		Solo.move_safely(stand, function()
 			Task.fish_at(spot)
 		end)
 	end,

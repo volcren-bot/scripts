@@ -5,6 +5,7 @@ local item_container = Host.item_container
 local varbit = Host.varbit
 local sleep = Host.sleep
 local time = Host.time
+local Biometrics = require("@lib/main/antiban/biometrics")
 local Camera = require("@lib/main/camera")
 local Core = require("./core")
 local Inventory = require("@lib/main/interfaces/gametabs/inventory")
@@ -16,6 +17,7 @@ local Npcs = require("@lib/main/entities/npcs")
 local Objects = require("@lib/main/entities/objects")
 local Player = require("@lib/main/player")
 local Random = require("@lib/utils/math/random")
+local Ticks = require("@lib/utils/ticks")
 local Walker = require("@lib/main/walker")
 type Box = Core.Box
 type Activity = Core.Activity
@@ -108,6 +110,11 @@ function Solo.track_loaded()
 		r.inventory_loads += r.last_fish - fish
 	end
 	r.last_fish = fish
+	local now = time()
+	table.insert(r.fish_seen, { at = now, fish = fish })
+	while #r.fish_seen > 0 and now - r.fish_seen[1].at > CONST.SOLO.FISH_SEEN_MS do
+		table.remove(r.fish_seen, 1)
+	end
 	if not S.load_sound_missing and r.load_sounds == 0 and r.inventory_loads >= CONST.SOLO.LOAD_SOUND_MISSING then
 		S.load_sound_missing = true
 		Log.log(
@@ -505,6 +512,66 @@ function Solo.get_past_fires(target: Tile, tiles: { Tile }): boolean
 	return false
 end
 
+function Solo.path_fires(tiles: { Tile }): { Npc }
+	local all = Hazard.fire_npcs()
+	local order: { Npc } = {}
+	local taken: { [number]: boolean } = {}
+	local function take(fire: Npc)
+		taken[fire.index] = true
+		table.insert(order, fire)
+	end
+	for i = 2, #tiles do
+		for _, fire in ipairs(all) do
+			if not taken[fire.index] and Hazard.fire_distance(fire, tiles[i]) <= CONST.FIRE_REACH then
+				take(fire)
+				for _, other in ipairs(all) do
+					if not taken[other.index] and Geo.distance(fire, other) <= Hazard.fire_size(fire) then
+						take(other)
+					end
+				end
+			end
+		end
+	end
+	return order
+end
+
+function Solo.douse_path(target: Tile): boolean
+	local water = Read.item_count(Items.WATER)
+	if S.solo.p4_stage ~= "fish" or S.solo.waypoint ~= nil or water == 0 then
+		return false
+	end
+	local tiles = Route.route_to(target)
+	if tiles == nil then
+		return false
+	end
+	local fires = Solo.path_fires(tiles)
+	if #fires == 0 then
+		return false
+	end
+	local batch: { Npc } = {}
+	local names: { string } = {}
+	for i = 1, math.min(#fires, water) do
+		batch[i] = fires[i]
+		names[i] = `{fires[i].x},{fires[i].y}`
+	end
+	Log.log(
+		"Tempoross",
+		`   {#fires} fires on the path to {target.x},{target.y}, putting out {#batch} in order: {table.concat(
+			names,
+			" "
+		)}`
+	)
+	Doing.clear_activity()
+	for i, fire in ipairs(batch) do
+		local following = batch[i + 1]
+		local toward = if following then Geo.to_tile(following) else target
+		if not Hazard.douse(fire, toward) and Hazard.burning_at(fire) then
+			break
+		end
+	end
+	return true
+end
+
 function Solo.pier_tile(): Tile?
 	local pool = Geo.nearest_npc(Read.npcs_with(CONST.INACTIVE_POOL), snap.me)
 		or Geo.nearest_npc(Read.npcs_with(CONST.SPIRIT_POOL), snap.me)
@@ -641,7 +708,7 @@ end
 
 function Solo.fish_and_cook(target: number, cooking_last: State): State?
 	local count = Read.fish_count()
-	local raw = Read.item_count(Items.RAW_FISH)
+	local raw = if S.solo.p4_raw then 0 else Read.item_count(Items.RAW_FISH)
 	local cooking = Doing.is_doing("cook")
 	if count >= target then
 		return if raw == 0 then nil elseif cooking then cooking_last else "COOK_SAFELY"
@@ -712,6 +779,40 @@ function Solo.part_two(): State
 	return "GO_TO_PIER_SOLO"
 end
 
+function Solo.recent_fish(): number
+	local r = S.solo
+	local most = r.last_fish
+	for _, seen in ipairs(r.fish_seen) do
+		most = math.max(most, seen.fish)
+	end
+	return most
+end
+
+function Solo.settle_burn()
+	local check = events.burn_check
+	if check == nil or time() - check.at < Ticks.MS then
+		return
+	end
+	events.burn_check = nil
+	Read.sync_inventory()
+	local lost = math.max(0, check.before - Read.fish_count())
+	if lost < CONST.SOLO.P4_BURN_KEEP_GOING_FISH then
+		Log.log("Tempoross", `   Burned in part 4 and lost {lost} fish, carrying on`)
+		return
+	end
+	Log.log("Tempoross", `   Burned in part 4 and lost {lost} fish`)
+	events.burned = true
+end
+
+function Solo.p4_loaded(): number
+	local r = S.solo
+	return r.loaded - r.p4_load_base
+end
+
+function Solo.p4_target(): number
+	return CONST.SOLO.THIRD_BATCH - Solo.p4_loaded()
+end
+
 function Solo.forfeit()
 	local why = if events.burned
 		then "A fire burned us"
@@ -772,6 +873,7 @@ function Solo.part_three(): State
 		end
 		r.p3_stage = "done"
 		r.p4_stage = "fish"
+		r.p4_load_base = r.loaded
 		Log.log("Tempoross", `Part 4: {why}, fishing {CONST.SOLO.THIRD_BATCH} fish`)
 	end
 	return Solo.part_four()
@@ -789,8 +891,9 @@ end
 function Solo.p4_room(): State?
 	Read.sync_inventory()
 	local count = Read.fish_count()
-	local short = CONST.SOLO.THIRD_BATCH - count - snap.free
-	if count >= CONST.SOLO.THIRD_BATCH or short <= 0 then
+	local target = Solo.p4_target()
+	local short = target - count - snap.free
+	if count >= target or short <= 0 then
 		return nil
 	end
 	local on_double = Doing.is_doing("fish") and (S.activity :: Activity).double
@@ -803,7 +906,7 @@ function Solo.p4_room(): State?
 		end
 		return nil
 	end
-	if Read.item_count(Items.RAW_FISH) > 0 then
+	if Read.item_count(Items.RAW_FISH) > 0 and not S.solo.p4_raw then
 		return "P4_COOK_DROP"
 	end
 	plan.drop = short
@@ -811,7 +914,11 @@ function Solo.p4_room(): State?
 end
 
 function Solo.cook_safely()
-	Solo.move_safely(Route.loc_stand((S.side :: Side).shrine), function()
+	local stand = Route.loc_stand((S.side :: Side).shrine)
+	if Solo.douse_path(stand) then
+		return
+	end
+	Solo.move_safely(stand, function()
 		Task.cook()
 	end)
 end
@@ -839,14 +946,14 @@ function Solo.part_four(): State
 		if room then
 			return room
 		end
-		local fishing = Solo.fish_and_cook(CONST.SOLO.THIRD_BATCH, "COOKING_TO_LOAD")
+		local fishing = Solo.fish_and_cook(Solo.p4_target(), "COOKING_TO_LOAD")
 		if fishing then
 			return fishing
 		end
 		r.p4_stage = "ship"
 		r.p2_box = Solo.home_box(S.side :: Side)
 		r.p2_skip = {}
-		Log.log("Tempoross", `   {Read.fish_count()} cooked fish, clearing the ship and loading them`)
+		Log.log("Tempoross", `   {Read.fish_count()} fish, clearing the ship and loading them`)
 	end
 	local essence = Read.hud_percent(HUD.ESSENCE)
 	if r.pools >= 2 or (essence ~= nil and essence <= CONST.SOLO.P4_STOP_ESSENCE) then
@@ -855,6 +962,23 @@ function Solo.part_four(): State
 	local count = Read.fish_count()
 	local fires = Solo.ship_fires_left()
 	local storm = (Read.hud_percent(HUD.INTENSITY) or 0) >= CONST.SOLO.P4_LOAD_INTENSITY
+	if
+		r.p4_stage == "ship"
+		and not storm
+		and count < Solo.p4_target()
+		and not Doing.is_doing("load")
+		and not Solo.at_crate()
+		and time() - r.left_crate_at >= CONST.SOLO.STEP_OFF_COUNT_MS
+	then
+		r.p4_stage = "fish"
+		r.p4_raw = true
+		Doing.clear_activity()
+		Log.log(
+			"Tempoross",
+			`   {Solo.p4_loaded()} loaded and {count} fish left, fishing {Solo.p4_target() - count} more to load raw`
+		)
+		return Solo.part_four()
+	end
 	if count > 0 and (storm or not fires or Doing.is_doing("load")) then
 		if storm and r.p4_stage ~= "rush" then
 			r.p4_stage = "rush"
@@ -1334,15 +1458,24 @@ end
 function Solo.take_buckets()
 	local r = S.solo
 	local loc = r.p3_buckets :: Loc
-	for _ = 1, 2 do
+	local menu_ready = false
+	for take = 1, 2 do
 		Read.sync_inventory()
 		if snap.free == 0 then
 			return
 		end
 		local before = snap.free
-		if not Task.use_loc(loc, { "Take-10" }) then
+		local taken = if menu_ready and Minimenu.is_open()
+			then Objects.interact(loc, { "Take-10" }, false)
+			else Task.use_loc(loc, { "Take-10" })
+		if not taken then
 			return
 		end
+		menu_ready = take == 1
+			and before > 10
+			and not Biometrics.random_boolean(CONST.SOLO.TAKE_BUCKETS_SLOW_CHANCE)
+			and Objects.hover(loc)
+			and Minimenu.open()
 		Route.sleep_watching(CONST.SOLO.TAKE_BUCKETS_WAIT_MS, nil, function(): boolean
 			Read.sync_inventory()
 			return snap.free < before
@@ -1643,6 +1776,7 @@ function Solo.get_game_state(skipped: { [State]: boolean }): State
 	if S.side ~= nil then
 		Solo.track_pools()
 	end
+	Solo.settle_burn()
 	if events.wave_hit_us or events.burned or Solo.late_wave() then
 		return "FORFEIT"
 	end
