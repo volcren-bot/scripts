@@ -5,15 +5,12 @@ local widget = Host.widget
 local loc_shown = Host.loc_shown
 local sleep = Host.sleep
 local time = Host.time
-type ClientState = Host.ClientState
-type Tile = Host.Tile
-type Loc = Host.Loc
-type Npc = Host.Npc
 local Antiban = require("@lib/main/antiban/antiban")
 local AntibanTasks = require("@lib/main/antiban/antiban_tasks")
 local Biometrics = require("@lib/main/antiban/biometrics")
 local Chat = require("@lib/main/interfaces/chatbox/chat")
 local ChatOptions = require("@lib/main/interfaces/chatbox/chat_options")
+local Core = require("./core")
 local GameState = require("@lib/main/game_state")
 local Inventory = require("@lib/main/interfaces/gametabs/inventory")
 local Item = require("@lib/utils/item")
@@ -21,311 +18,42 @@ local Log = require("@lib/utils/log")
 local Login = require("@lib/main/interfaces/login/login")
 local Npcs = require("@lib/main/entities/npcs")
 local Objects = require("@lib/main/entities/objects")
-local Players = require("@lib/main/entities/players")
 local Random = require("@lib/utils/math/random")
 local SpecialAttack = require("@lib/main/interfaces/special_attack")
 local SpotAnims = require("@lib/main/entities/spot_anims")
 local Stats = require("@lib/main/interfaces/gametabs/stats")
 local StatsReport = require("@lib/utils/stats_report")
-local Ticks = require("@lib/utils/ticks")
 local Toplevel = require("@lib/main/interfaces/mainscreen/toplevel")
-local Transports = require("@lib/main/transports")
 local Walker = require("@lib/main/walker")
-local WorldSwitcher = require("@lib/main/interfaces/gametabs/worldswitcher")
 local Wornitems = require("@lib/main/interfaces/gametabs/wornitems")
-
-local NAME = "Wintertodt"
-local TICK = Ticks.MS
-
-type Mode = "group" | "solo"
-type Side = "west" | "east"
-type Corner = "sw" | "se" | "nw" | "ne"
-type SoloGoal = "points" | "xp"
-type Danger = { x: number, y: number, radius: number }
-type BrazierState = "UNLIT" | "LIT" | "BROKEN" | "DEAD"
-type Tool = "axe" | "tinderbox" | "knife" | "hammer"
-
-type SideSpots = {
-	brazier: Tile,
-	stand: { Tile },
-	root: Tile,
-	root_stand: Tile,
-	pyromancer: Tile,
-	break_z: number,
-}
-
-local function line(x1: number, y1: number, x2: number, y2: number): { Tile }
-	local tiles: { Tile } = {}
-	for x = math.min(x1, x2), math.max(x1, x2) do
-		for y = math.min(y1, y2), math.max(y1, y2) do
-			table.insert(tiles, { x = x, y = y })
-		end
-	end
-	return tiles
-end
-
-local function joined(a: { Tile }, b: { Tile }): { Tile }
-	local out = table.clone(a)
-	table.move(b, 1, #b, #out + 1, out)
-	return out
-end
-
-local WEST: SideSpots = {
-	brazier = { x = 1621, y = 3998 },
-	stand = joined(line(1619, 3997, 1619, 3999), line(1620, 3996, 1622, 3996)),
-	root = { x = 1620, y = 3988 },
-	root_stand = { x = 1622, y = 3988 },
-	pyromancer = { x = 1619, y = 3996 },
-	break_z = -2246,
-}
-
-local EAST: SideSpots = {
-	brazier = { x = 1639, y = 3998 },
-	stand = joined(line(1641, 3997, 1641, 3999), line(1638, 3996, 1640, 3996)),
-	root = { x = 1639, y = 3988 },
-	root_stand = { x = 1638, y = 3988 },
-	pyromancer = { x = 1641, y = 3996 },
-	break_z = -2246,
-}
-
-local CONST = {
-	HUD = { GROUP = 396, POINTS = 6, WARMTH = 20, ENERGY = 26 },
-	BRAZIER_STATES = { [29312] = "UNLIT", [29313] = "BROKEN", [29314] = "LIT" } :: { [number]: BrazierState },
-	SIDES = { west = WEST, east = EAST } :: { [Side]: SideSpots },
-	SOLO = {
-		CORNERS = {
-			sw = WEST,
-			se = EAST,
-			nw = {
-				brazier = { x = 1621, y = 4016 },
-				stand = joined(line(1619, 4015, 1619, 4017), line(1620, 4018, 1622, 4018)),
-				root = { x = 1621, y = 4025 },
-				root_stand = { x = 1623, y = 4025 },
-				pyromancer = { x = 1619, y = 4018 },
-				break_z = -2238,
-			},
-			ne = {
-				brazier = { x = 1639, y = 4016 },
-				stand = joined(line(1641, 4015, 1641, 4017), line(1638, 4018, 1640, 4018)),
-				root = { x = 1638, y = 4025 },
-				root_stand = { x = 1637, y = 4025 },
-				pyromancer = { x = 1641, y = 4018 },
-				break_z = -2246,
-			},
-		} :: { [Corner]: SideSpots },
-		ROUTE_GAP = { "se", "ne", "nw", "sw" } :: { Corner },
-		ROUTE_AROUND = { "ne", "se", "sw", "nw" } :: { Corner },
-		FOCUS = "sw" :: Corner,
-		END_CORNERS = { "sw", "se" } :: { Corner },
-		GAP = "Jump Gap 29326",
-		OPEN_UNTIL = { 20, 30 },
-		LOW_ENERGY = 8,
-		REWARD_POINTS = 500,
-		POINTS_SPREAD = 1000,
-		DOSES_PER_POTION = 4,
-		VISIT_MS = { 90000, 150000 },
-		VIALS = {
-			{ count = 10, option = "Take-10 concoctions" },
-			{ count = 5, option = "Take-5 concoctions" },
-			{ count = 1, option = "Take-concoction" },
-		},
-		SNOW = { CENTRE = 502, CORNER = 1311, LANDED_CYCLES = 15, REACH = 3, AREA = 1, BLAST = 2, Z_SLACK = 4 },
-		IDLE_MS = { 600, 1800 },
-		CHECK_MS = 300,
-	},
-	HALL = { x1 = 1627, y1 = 3979, x2 = 1633, y2 = 3985 },
-	DOORS = { x = 1630, y = 3965 },
-	VIAL_CRATES = { { x = 1626, y = 3982 }, { x = 1634, y = 3982 } } :: { Tile },
-	SPROUTING_ROOTS = { { x = 1635, y = 3978 }, { x = 1625, y = 3978 } } :: { Tile },
-	BREWMA = { x = 1635, y = 3986 },
-	TOOL_CRATES = {
-		axe = { x = 1626, y = 3984 },
-		tinderbox = { x = 1634, y = 3984 },
-		hammer = { x = 1626, y = 3980 },
-		knife = { x = 1634, y = 3980 },
-	} :: { [Tool]: Tile },
-	TOOL_ORDER = { "axe", "tinderbox", "knife", "hammer" } :: { Tool },
-	VIAL_OPTION = "Take-5 concoctions",
-	FIND_RANGE = 3,
-	NEAR_BRAZIER = 2,
-	HOVER_RANGE = 15,
-	BREWMA_RANGE = 10,
-	HERBS_NEEDED = 5,
-	SPACE_NEEDED = 5,
-	KEEP_ITEMS = 10,
-	TOOL_ATTEMPTS = 5,
-	POLL_MS = 50,
-	TINY_ANTIBAN_CHANCE = 0.4,
-	ACTIVITY_WAITS = {
-		WAIT_PICKING = true,
-		WAIT_MIXING = true,
-		WAIT_CUTTING = true,
-		WAIT_FLETCHING = true,
-		WAIT_BURNING = true,
-		WAIT_BOSS = true,
-		SOLO_IDLE = true,
-	} :: { [string]: boolean },
-	REPORT = { counters_key = "" },
-}
-
-local ITEMS = {
-	ROOT = "Bruma root",
-	KINDLING = "Bruma kindling",
-	HERB = "Bruma herb",
-	UNF = "Rejuvenation potion (unf)",
-	POTION = "Rejuvenation potion (1..4)",
-	POTION_1 = "Rejuvenation potion (1)",
-	KNIVES = { "Knife", "Fletching knife" } :: { Item.Item },
-}
-
-local TOOL_NAMES: { [Tool]: { [string]: boolean } } = {
-	axe = {},
-	tinderbox = { ["tinderbox"] = true, ["bruma torch"] = true, ["bruma torch (off-hand)"] = true },
-	knife = { ["knife"] = true, ["fletching knife"] = true },
-	hammer = { ["hammer"] = true, ["imcando hammer"] = true, ["imcando hammer (off-hand)"] = true },
-}
-
-local Read, Wait, Task, Game, Loop, Solo, Handler = {}, {}, {}, {}, {}, {}, {}
-
-local CONFIG = {
-	mode = "group" :: Mode,
-	solo_goal = "points" :: SoloGoal,
-	solo_potions = 8,
-	solo_points = 5000,
-	side = "west" :: Side,
-	alternate = true,
-	prioritize_brazier = false,
-	help_pyromancers = true,
-	wintertodt_worlds = true,
-	stop_fletch_energy = 20,
-	max_kills = 0,
-	max_minutes = 0,
-	max_firemaking = 0,
-	timeouts = { idle_minutes = 5 },
-	antiban = true,
-}
-
-local stats = { kills = 0, rewarded = 0, rewards = 0, points = 0, owed = 0 }
-
-type SoloRound = {
-	started: boolean,
-	opened: boolean,
-	lit: { [Corner]: boolean },
-	open_until: number,
-	ending: boolean,
-	end_corner: Corner,
-	points_bonus: number,
-	visited: { [Corner]: number },
-	visit_every: number,
-	checked_at: number,
-	at: Corner?,
-	turn_back: boolean,
-}
-
-local function new_round(): SoloRound
-	return {
-		started = false,
-		opened = false,
-		lit = {},
-		open_until = Random.int(CONST.SOLO.OPEN_UNTIL[1], CONST.SOLO.OPEN_UNTIL[2]),
-		ending = false,
-		end_corner = CONST.SOLO.FOCUS,
-		points_bonus = Random.int(0, CONST.SOLO.POINTS_SPREAD),
-		visited = {},
-		visit_every = Random.int(CONST.SOLO.VISIT_MS[1], CONST.SOLO.VISIT_MS[2]),
-		checked_at = 0,
-		at = nil,
-		turn_back = false,
-	}
-end
-
-type RunState = {
-	finished: boolean,
-	antiban_ready: boolean,
-	antiban_began_at: number,
-	started_at: number,
-	last_progress_at: number,
-	last_xp: number,
-	current: Side,
-	corner: Corner,
-	round: SoloRound,
-	worlds: { number }?,
-	herbs_wanted: number,
-	has_herblore: boolean,
-	warmth: number,
-	boss: number,
-	min_warmth: number,
-	chat_uid: number,
-	round_points: number,
-	stale_points: number?,
-	subdued: number?,
-	picking: boolean,
-	mixing: boolean,
-	cutting: boolean,
-	fletching: boolean,
-	burning: boolean,
-	hovering: boolean,
-}
-
-local S: RunState = {
-	finished = false,
-	antiban_ready = false,
-	antiban_began_at = 0,
-	started_at = 0,
-	last_progress_at = 0,
-	last_xp = 0,
-	current = "west",
-	corner = CONST.SOLO.FOCUS,
-	round = new_round(),
-	herbs_wanted = CONST.HERBS_NEEDED,
-	has_herblore = false,
-	warmth = 100,
-	boss = 0,
-	min_warmth = 50,
-	chat_uid = -1,
-	round_points = 0,
-	picking = false,
-	mixing = false,
-	cutting = false,
-	fletching = false,
-	burning = false,
-	hovering = false,
-}
-
-type State =
-	"LOADING"
-	| "LOGIN"
-	| "LEVEL_UP"
-	| "ENTER_ROOM"
-	| "DROP_ITEMS"
-	| "MAKE_SPACE"
-	| "GET_VIALS"
-	| "PICK_HERBS"
-	| "MIX_POTIONS"
-	| "TALK_TO_BREWMA"
-	| "SWITCH_SIDES"
-	| "WARM_UP"
-	| "WALK_ROOT"
-	| "WALK_BRAZIER"
-	| "USE_SPEC"
-	| "CUT_ROOTS"
-	| "FLETCH_LOGS"
-	| "BURN_FUEL"
-	| "HOVER_BRAZIER"
-	| "FIX_BRAZIER"
-	| "HELP_PYRO"
-	| "WAIT_PICKING"
-	| "WAIT_MIXING"
-	| "WAIT_CUTTING"
-	| "WAIT_FLETCHING"
-	| "WAIT_BURNING"
-	| "WAIT_BOSS"
-	| "HOP_WORLD"
-	| "DODGE"
-	| "SOLO_IDLE"
-	| "STOP"
-
-local report = StatsReport.new()
+type ClientState = Core.ClientState
+type Tile = Core.Tile
+type Loc = Core.Loc
+type Npc = Core.Npc
+type Danger = Core.Danger
+type BrazierState = Core.BrazierState
+type Tool = Core.Tool
+type SideSpots = Core.SideSpots
+type State = Core.State
+local NAME = Core.NAME
+local TICK = Core.TICK
+local CONST = Core.CONST
+local ITEMS = Core.ITEMS
+local TOOL_NAMES = Core.TOOL_NAMES
+local CONFIG = Core.CONFIG
+local stats = Core.stats
+local S = Core.S
+local report = Core.report
+local Read = Core.Read
+local Wait = Core.Wait
+local Task = Core.Task
+local Game = Core.Game
+local Loop = Core.Loop
+local Solo = Core.Solo
+local Group = Core.Group
+local Handler = Core.Handler
+require("./solo")
+require("./group")
 
 function Read.me(): Tile?
 	return Walker.position()
@@ -661,7 +389,7 @@ end
 function Wait.picking(): boolean
 	local count = Read.used()
 	local hit = false
-	local ok = Wait.until_true(5 * TICK, function()
+	local ok: boolean = Wait.until_true(5 * TICK, function()
 		hit = Read.got_hit()
 		return hit or Read.used() > count
 	end)
@@ -672,7 +400,7 @@ end
 function Wait.mixing(): boolean
 	local count, xp = Read.used(), Read.total_xp()
 	local hit = false
-	local ok = Wait.until_true(5 * TICK, function()
+	local ok: boolean = Wait.until_true(5 * TICK, function()
 		hit = Read.got_hit()
 		return hit or Read.total_xp() > xp or Read.used() < count
 	end)
@@ -684,7 +412,7 @@ function Wait.cutting(): boolean
 	local count, xp = Read.used(), Read.total_xp()
 	local brazier = if CONFIG.prioritize_brazier then Read.brazier_state() else nil
 	local boss_low = false
-	local ok = Wait.until_true(7 * TICK, function()
+	local ok: boolean = Wait.until_true(7 * TICK, function()
 		boss_low = CONFIG.mode == "group" and Read.boss_energy() < count - 4
 		return boss_low
 			or Read.total_xp() > xp
@@ -699,7 +427,7 @@ function Wait.fletching(): boolean
 	local count, xp = Read.count(ITEMS.KINDLING), Read.total_xp()
 	local brazier = Read.brazier_state()
 	local hit, boss_low = false, false
-	local ok = Wait.until_true(5 * TICK, function()
+	local ok: boolean = Wait.until_true(5 * TICK, function()
 		hit = Read.got_hit()
 		boss_low = CONFIG.mode == "group" and Read.boss_energy() < Read.fuel(0.9)
 		return hit
@@ -716,7 +444,7 @@ function Wait.burning(): boolean
 	local count, xp = Read.used(), Read.total_xp()
 	local brazier = Read.brazier_state()
 	local hit, ran_out = false, false
-	local ok = Wait.until_true(5 * TICK, function()
+	local ok: boolean = Wait.until_true(5 * TICK, function()
 		hit = Read.got_hit()
 		ran_out = Read.count({ ITEMS.ROOT, ITEMS.KINDLING }) == 0
 		return hit or ran_out or Read.total_xp() > xp or Read.used() < count or Read.brazier_state() ~= brazier
@@ -994,7 +722,7 @@ function Task.warm_up(): boolean
 	Task.stop_actions(true)
 	local warm = false
 	while not warm do
-		local potion = if CONFIG.mode == "solo" then Read.lowest_potion() else ITEMS.POTION
+		local potion = if CONFIG.mode == "solo" then Solo.lowest_potion() else ITEMS.POTION
 		if potion == nil or not Inventory.interact(potion, "Drink") then
 			return false
 		end
@@ -1027,13 +755,6 @@ function Task.drop_items(supplies: { Item.Item }): boolean
 	end
 	local ordered = Inventory.pattern(drop)
 	return Inventory.shift_drop_slots(ordered)
-end
-
-function Task.switch_sides()
-	if Biometrics.random_boolean() then
-		S.current = if S.current == "west" then "east" else "west"
-		Log.log(NAME, `Switching to the {S.current} brazier`)
-	end
 end
 
 function Game.sign_in(): boolean
@@ -1072,7 +793,7 @@ function Game.setup_antiban()
 	Antiban.add_task(AntibanTasks.hover_skills, 18 * MINUTE, 0.33)
 	Antiban.add_task(AntibanTasks.adjust_minimap_zoom, 13 * MINUTE, 0.33)
 	if CONFIG.mode == "group" and CONFIG.alternate then
-		Antiban.add_task(Task.switch_sides, Biometrics.random_mode_integer(20, 10, 30) * MINUTE, 0.33)
+		Antiban.add_task(Group.switch_sides, Biometrics.random_mode_integer(20, 10, 30) * MINUTE, 0.33)
 	end
 
 	Antiban.add_walk_task(AntibanTasks.adjust_camera, 2 * MINUTE, 0.33)
@@ -1099,36 +820,6 @@ function Game.setup_antiban()
 	S.antiban_ready = true
 	Log.log(NAME, "Antiban set up")
 end
-
-function Game.check_world()
-	if not CONFIG.wintertodt_worlds then
-		Log.warn(NAME, "For guaranteed results use a Wintertodt world.")
-		return
-	end
-	if not WorldSwitcher.open(true) then
-		error("Failed to open the world switcher.")
-	end
-	local worlds: { number } = {}
-	for _, row in ipairs(WorldSwitcher.rows() or {}) do
-		if row.available and row.activity and string.find(string.lower(row.activity), "wintertodt", 1, true) then
-			table.insert(worlds, row.world)
-		end
-	end
-	if #worlds == 0 then
-		error("The world list has no Wintertodt worlds.")
-	end
-	local world = WorldSwitcher.current()
-	if world and table.find(worlds, world) then
-		Log.log(NAME, `On Wintertodt world {world}`)
-		WorldSwitcher.close()
-		return
-	end
-	Log.log(NAME, `World {world or "?"} isn't a Wintertodt world (those are {table.concat(worlds, ", ")}), hopping`)
-	if not WorldSwitcher.random(worlds) then
-		error("Failed to hop to a Wintertodt world.")
-	end
-end
-
 function Game.setup()
 	while true do
 		local s = game_state()
@@ -1154,7 +845,7 @@ function Game.setup()
 	end
 	Task.get_tools()
 	if CONFIG.mode == "group" then
-		Game.check_world()
+		Group.check_world()
 	end
 
 	if CONFIG.antiban and not S.antiban_ready then
@@ -1230,18 +921,6 @@ function Loop.hook_antiban()
 	Antiban.on_start_break, Antiban.on_finish_break = Loop.before_break, Loop.antiban_ended
 	Antiban.on_start_sleep, Antiban.on_finish_sleep = Loop.before_break, Loop.antiban_ended
 end
-
-function Loop.supply_state(): State
-	local need_vials = Read.count(ITEMS.UNF) == 0
-	local need_herbs = Read.count(ITEMS.HERB) < CONST.HERBS_NEEDED
-	local low_space = Read.free() < CONST.SPACE_NEEDED
-	local vials_first = Biometrics.random_boolean()
-	if need_vials and (vials_first or not need_herbs) then
-		return if low_space then "MAKE_SPACE" else "GET_VIALS"
-	end
-	return if low_space then "MAKE_SPACE" else "PICK_HERBS"
-end
-
 function Loop.common_state(): (State?, Tile?)
 	local reason = Loop.goal_reached()
 	if reason then
@@ -1277,92 +956,6 @@ function Loop.common_state(): (State?, Tile?)
 	end
 	return nil, me
 end
-
-function Loop.get_state(): State
-	local common, me = Loop.common_state()
-	if common or me == nil then
-		return common or "LOADING"
-	end
-	if Read.threat() then
-		return "DODGE"
-	end
-
-	if Read.count(ITEMS.UNF) > 0 and Read.count(ITEMS.HERB) >= CONST.HERBS_NEEDED then
-		return if S.has_herblore then "MIX_POTIONS" else "TALK_TO_BREWMA"
-	end
-
-	if Read.count(ITEMS.POTION) == 0 then
-		return Loop.supply_state()
-	end
-
-	local warmth = Read.warmth()
-	if warmth ~= nil and warmth <= S.min_warmth then
-		return "WARM_UP"
-	end
-
-	local near_brazier = Read.near_brazier(me)
-
-	if Read.boss_energy() == 0 then
-		if S.warmth <= 50 then
-			return "WARM_UP"
-		end
-		if Read.count(ITEMS.POTION) <= 2 then
-			return Loop.supply_state()
-		end
-		if not near_brazier then
-			return "WALK_BRAZIER"
-		end
-		if not S.hovering then
-			return "HOVER_BRAZIER"
-		end
-		return "WAIT_BOSS"
-	end
-
-	if Read.count({ ITEMS.HERB, ITEMS.UNF }) > 0 then
-		return "DROP_ITEMS"
-	end
-
-	local brazier = Read.brazier_state()
-	if brazier == "BROKEN" or brazier == "UNLIT" then
-		return "FIX_BRAZIER"
-	end
-	if brazier == "DEAD" then
-		return if CONFIG.help_pyromancers then "HELP_PYRO" else "SWITCH_SIDES"
-	end
-
-	local waiting: State? = if S.cutting
-		then "WAIT_CUTTING"
-		elseif S.fletching then "WAIT_FLETCHING"
-		elseif S.burning then "WAIT_BURNING"
-		else nil
-	if waiting then
-		return if S.hovering then waiting else "HOVER_BRAZIER"
-	end
-
-	local has_root, has_kindling = Read.count(ITEMS.ROOT) > 0, Read.count(ITEMS.KINDLING) > 0
-	if S.boss < Read.fuel(1.3) or Inventory.is_full() or has_kindling or near_brazier then
-		if not near_brazier then
-			return "WALK_BRAZIER"
-		end
-		if has_root and S.boss > CONFIG.stop_fletch_energy then
-			return "FLETCH_LOGS"
-		end
-		if has_root or has_kindling then
-			return "BURN_FUEL"
-		end
-	end
-
-	if Read.distance(me, Read.spots().root_stand) > 0 then
-		return "WALK_ROOT"
-	end
-
-	local spec_cost = if Read.axe_wielded() then SpecialAttack.cost() else nil
-	if spec_cost ~= nil and not SpecialAttack.is_enabled() and (SpecialAttack.energy() or 0) >= spec_cost then
-		return "USE_SPEC"
-	end
-	return "CUT_ROOTS"
-end
-
 function Read.breaks_brazier(spot: Host.SpotAnim): boolean
 	for _, spots in pairs(CONST.SOLO.CORNERS) do
 		if spots.brazier.x - 1 == spot.x and spots.brazier.y - 1 == spot.y then
@@ -1409,17 +1002,6 @@ function Read.threat(): boolean
 	local me = Read.me()
 	return me ~= nil and Read.in_danger(me, Read.dangers())
 end
-
-function Read.lowest_potion(): string?
-	for dose = 1, CONST.SOLO.DOSES_PER_POTION do
-		local name = `Rejuvenation potion ({dose})`
-		if Read.count(name) > 0 then
-			return name
-		end
-	end
-	return nil
-end
-
 function Read.surplus(): { Item.Item }
 	if CONFIG.mode == "solo" then
 		return { ITEMS.HERB, ITEMS.UNF }
@@ -1444,112 +1026,6 @@ function Read.vial_option(): string
 	end
 	return vials[#vials].option
 end
-
-function Read.others_here(): boolean
-	local me = Players.me()
-	for _, p in ipairs(Host.players() or {}) do
-		if (me == nil or p.index ~= me.index) and not Read.outside({ x = p.x, y = p.y }) then
-			return true
-		end
-	end
-	return false
-end
-
-function Read.corner(corner: Corner): SideSpots
-	return CONST.SOLO.CORNERS[corner]
-end
-
-function Read.needs_light(corner: Corner): boolean
-	return Read.brazier_state(Read.corner(corner)) ~= "LIT"
-end
-
-function Solo.missing_potions(): number
-	local per = CONST.SOLO.DOSES_PER_POTION
-	return math.max(0, math.ceil((CONFIG.solo_potions * per - Read.doses()) / per))
-end
-
-function Solo.route(): { Corner }
-	for _, climb in ipairs(Transports.allowed_climbs()) do
-		if string.find(climb, CONST.SOLO.GAP, 1, true) then
-			return CONST.SOLO.ROUTE_GAP
-		end
-	end
-	return CONST.SOLO.ROUTE_AROUND
-end
-
-function Solo.nearest(me: Tile, corners: { Corner }, wanted: (Corner) -> boolean): Corner?
-	local best, best_d = nil, math.huge
-	for _, corner in ipairs(corners) do
-		local d = Read.distance(me, Read.corner(corner).brazier)
-		if d < best_d and wanted(corner) then
-			best, best_d = corner, d
-		end
-	end
-	return best
-end
-
-function Solo.supply_state(): State?
-	local missing = Solo.missing_potions()
-	if missing == 0 then
-		return if Read.count(Read.surplus()) > 0 then "DROP_ITEMS" else nil
-	end
-	local need_vials = math.max(0, missing - Read.count(ITEMS.UNF))
-	local need_herbs = math.max(0, missing - Read.count(ITEMS.HERB))
-	if need_vials == 0 and need_herbs == 0 then
-		return if S.has_herblore then "MIX_POTIONS" else "TALK_TO_BREWMA"
-	end
-	if Read.free() < need_vials + need_herbs then
-		return "MAKE_SPACE"
-	end
-	return if need_vials > 0 then "GET_VIALS" else "PICK_HERBS"
-end
-
-function Solo.make_space(): boolean
-	local missing = Solo.missing_potions()
-	local wanted = math.max(0, missing - Read.count(ITEMS.UNF)) + math.max(0, missing - Read.count(ITEMS.HERB))
-	local short = wanted - Read.free()
-	local drop: { number } = {}
-	for _, item in ipairs({ ITEMS.ROOT, ITEMS.KINDLING }) do
-		for _, slot in ipairs(Inventory.indices_of(item) or {}) do
-			if #drop >= short then
-				break
-			end
-			table.insert(drop, slot)
-		end
-	end
-	if #drop < short then
-		error(`Not enough inventory space for {CONFIG.solo_potions} rejuvenation potions.`)
-	end
-	local ordered = Inventory.pattern(drop)
-	return Inventory.shift_drop_slots(ordered)
-end
-
-function Solo.hop(): boolean
-	if S.worlds == nil then
-		if not WorldSwitcher.open(true) then
-			return false
-		end
-		local worlds: { number } = {}
-		for _, row in ipairs(WorldSwitcher.rows() or {}) do
-			if row.members and row.available and row.activity == "-" then
-				table.insert(worlds, row.world)
-			end
-		end
-		if #worlds == 0 then
-			error("The world list has no plain members worlds to hop to.")
-		end
-		Log.log(NAME, `{#worlds} plain members worlds to hop between`)
-		S.worlds = worlds
-	end
-	Log.log(NAME, "Someone else is in the Wintertodt room, hopping")
-	Task.stop_actions(true)
-	if not WorldSwitcher.random(S.worlds :: { number }) then
-		return false
-	end
-	S.round, S.round_points, S.stale_points = new_round(), 0, nil
-	return true
-end
-
 function Task.dodge(): boolean
 	local me = Read.me()
 	local dangers = Read.dangers()
@@ -1615,239 +1091,6 @@ function Read.blast_at(dangers: { Danger }, brazier: Tile): boolean
 	end
 	return false
 end
-
-function Solo.keeps_lit(): boolean
-	return S.round.ending or CONFIG.solo_goal == "xp" or S.boss > CONST.SOLO.LOW_ENERGY
-end
-
-function Wait.idle()
-	local range = CONST.SOLO.IDLE_MS
-	Wait.sleep(Random.int(range[1], range[2]))
-end
-
-function Solo.light_state(turn_back: boolean): State
-	S.round.turn_back = turn_back
-	if Read.brazier_state() == "DEAD" then
-		return "HELP_PYRO"
-	end
-	return "FIX_BRAZIER"
-end
-
-function Solo.keep_walking(here: Tile, left: Corner?): boolean
-	local r = S.round
-	if left == nil or left == S.corner or time() - r.checked_at < CONST.SOLO.CHECK_MS then
-		return true
-	end
-	r.checked_at = time()
-	if not Read.needs_light(left) then
-		return true
-	end
-	local back = Read.distance(here, Read.corner(left).brazier)
-	if back < Read.distance(here, Read.spots().brazier) then
-		Log.log(NAME, `The {left} brazier went out and is closer, turning back`)
-		return false
-	end
-	return true
-end
-
-function Solo.light(): boolean
-	local left = if S.round.turn_back then S.round.at else nil
-	local ok = Task.click_brazier(function(here: Tile): boolean
-		return Solo.keep_walking(here, left)
-	end)
-	if ok then
-		S.round.at = S.corner
-	end
-	return ok
-end
-
-function Solo.work_state(me: Tile, can_feed: boolean): State
-	if S.cutting then
-		return "WAIT_CUTTING"
-	end
-	if S.fletching then
-		return "WAIT_FLETCHING"
-	end
-	if S.burning then
-		return "WAIT_BURNING"
-	end
-	local roots, kindling = Read.count(ITEMS.ROOT), Read.count(ITEMS.KINDLING)
-	local near = Read.near_brazier(me)
-	if roots + kindling > 0 and (Inventory.is_full() or near or roots == 0) then
-		if CONFIG.solo_goal == "points" and roots > 0 then
-			return if near then "FLETCH_LOGS" else "WALK_BRAZIER"
-		end
-		return if can_feed then "BURN_FUEL" else "SOLO_IDLE"
-	end
-	return "CUT_ROOTS"
-end
-
-function Solo.focus_state(me: Tile, light: boolean): State
-	local state = Read.brazier_state()
-	if state == "DEAD" then
-		return "HELP_PYRO"
-	end
-	if light and (state == "BROKEN" or state == "UNLIT") then
-		return Solo.light_state(false)
-	end
-	return Solo.work_state(me, state == "LIT")
-end
-
-function Solo.next_to_open(): Corner?
-	local r = S.round
-	for _, corner in ipairs(Solo.route()) do
-		if not r.lit[corner] then
-			if Read.brazier_state(Read.corner(corner)) ~= "LIT" then
-				return corner
-			end
-			r.lit[corner] = true
-		end
-	end
-	return nil
-end
-
-function Solo.visit_due(): Corner?
-	local r = S.round
-	local route = Solo.route()
-	for i = #route, 1, -1 do
-		local corner = route[i]
-		if corner ~= CONST.SOLO.FOCUS and time() - (r.visited[corner] or 0) > r.visit_every then
-			return corner
-		end
-	end
-	return nil
-end
-
-function Solo.visit_state(me: Tile, corner: Corner): State
-	S.corner = corner
-	local spots = Read.spots()
-	local pyro = Read.pyromancer()
-	if pyro == nil or Read.distance(me, spots.pyromancer) > CONST.FIND_RANGE + 2 then
-		return "WALK_BRAZIER"
-	end
-	if Read.incapacitated(pyro) then
-		return "HELP_PYRO"
-	end
-	S.round.visited[corner] = time()
-	S.corner = CONST.SOLO.FOCUS
-	return "SOLO_IDLE"
-end
-
-function Solo.low_state(me: Tile): State
-	S.corner = CONST.SOLO.FOCUS
-	if Read.brazier_state() == "DEAD" then
-		return "HELP_PYRO"
-	end
-	if S.cutting then
-		return "WAIT_CUTTING"
-	end
-	if S.fletching then
-		return "WAIT_FLETCHING"
-	end
-	if not Inventory.is_full() then
-		return "CUT_ROOTS"
-	end
-	if Read.count(ITEMS.ROOT) > 0 then
-		return "FLETCH_LOGS"
-	end
-	local due = Solo.visit_due()
-	if due then
-		return Solo.visit_state(me, due)
-	end
-	if not Read.near_brazier(me) then
-		return "WALK_BRAZIER"
-	end
-	return "SOLO_IDLE"
-end
-
-function Solo.end_state(me: Tile): State
-	S.corner = S.round.end_corner
-	return Solo.focus_state(me, true)
-end
-
-function Solo.between_rounds(me: Tile): State
-	if S.round.started then
-		S.round = new_round()
-	end
-	if S.warmth <= 50 and Read.doses() > 0 then
-		return "WARM_UP"
-	end
-	S.corner = Solo.route()[1]
-	if not Read.near_brazier(me) then
-		return "WALK_BRAZIER"
-	end
-	if not S.hovering then
-		return "HOVER_BRAZIER"
-	end
-	return "WAIT_BOSS"
-end
-
-function Solo.round_state(me: Tile, energy: number): State
-	local r = S.round
-	r.started = true
-	if not r.ending and CONFIG.solo_goal == "points" and S.round_points >= CONFIG.solo_points + r.points_bonus then
-		r.ending = true
-		r.end_corner = Solo.nearest(me, CONST.SOLO.END_CORNERS, function()
-			return true
-		end) or CONST.SOLO.FOCUS
-		Log.log(NAME, `{S.round_points} points, ending the round at the {r.end_corner} brazier`)
-	end
-	if r.ending then
-		return Solo.end_state(me)
-	end
-	if not r.opened then
-		local corner = Solo.next_to_open()
-		if corner then
-			S.corner = corner
-			return Solo.light_state(false)
-		end
-		r.opened = true
-		Log.log(NAME, "All four braziers lit")
-	end
-	if energy > r.open_until then
-		local all: { Corner } = { "sw", "se", "nw", "ne" }
-		local out = Solo.nearest(me, all, Read.needs_light)
-		if out then
-			S.corner = out
-			return Solo.light_state(true)
-		end
-	end
-	S.corner = CONST.SOLO.FOCUS
-	if CONFIG.solo_goal == "xp" or energy > CONST.SOLO.LOW_ENERGY then
-		return Solo.focus_state(me, true)
-	end
-	return Solo.low_state(me)
-end
-
-function Solo.get_state(): State
-	local common, me = Loop.common_state()
-	if common or me == nil then
-		return common or "LOADING"
-	end
-	if Read.others_here() and S.round_points < CONST.SOLO.REWARD_POINTS then
-		return "HOP_WORLD"
-	end
-	if Read.threat() then
-		return "DODGE"
-	end
-	local doses = Read.doses()
-	local warmth = Read.warmth()
-	if warmth ~= nil and warmth <= S.min_warmth and doses > 0 then
-		return "WARM_UP"
-	end
-	local energy = Read.boss_energy()
-	if doses == 0 or energy == 0 then
-		local supply = Solo.supply_state()
-		if supply then
-			return supply
-		end
-	end
-	if energy == 0 then
-		return Solo.between_rounds(me)
-	end
-	return Solo.round_state(me, energy)
-end
-
 Handler.states = {
 	LOADING = function()
 		sleep(100)
@@ -1863,7 +1106,7 @@ Handler.states = {
 	WAIT_CUTTING = Wait.cutting,
 	WAIT_FLETCHING = Wait.fletching,
 	WAIT_BURNING = Wait.burning,
-	SWITCH_SIDES = Task.switch_sides,
+	SWITCH_SIDES = Group.switch_sides,
 	DROP_ITEMS = function()
 		Task.drop_items(Read.surplus())
 	end,
@@ -1900,7 +1143,7 @@ Handler.states = {
 	HELP_PYRO = Task.help_pyromancer,
 	HOP_WORLD = Solo.hop,
 	DODGE = Task.dodge,
-	SOLO_IDLE = Wait.idle,
+	SOLO_IDLE = Solo.idle,
 	WALK_ROOT = function()
 		Task.walk(Read.spots().root_stand, 0)
 	end,
@@ -1985,7 +1228,7 @@ function Loop.run()
 	S.last_progress_at = time()
 	Loop.hook_antiban()
 
-	Loop.play(if CONFIG.mode == "solo" then Solo.get_state else Loop.get_state)
+	Loop.play(if CONFIG.mode == "solo" then Solo.get_state else Group.get_state)
 
 	if Read.logged_in(game_state()) then
 		Task.walk_to_hall()
