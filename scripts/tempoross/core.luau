@@ -23,6 +23,14 @@ local CONST = {
 	SPIRIT_POOL = 10571,
 
 	TETHERED_VARBIT = 11895,
+	SOUND_PACKET = { opcode = 30, length = 5 },
+	CHAT_PACKET = 85,
+	SOUNDS = { LOAD = 4959, EXTINGUISH = 1733, COOK = 2577, POOL_HIT = 4944, VULNERABLE = 2742, TETHER = 1439 },
+	FISH_CAUGHT_VARP = 4527,
+	POINTS_VARP = 2933,
+	POINTS_SCALE = 64,
+	CATCH_GRACE_MS = 6 * 600,
+	VULNERABLE_SOUND_MS = 3000,
 	UNTETHER_ANIMATION = 832,
 	DOUSE_ANIMATION = 2771,
 	RANDOMS_PAUSE_MS = { 800, 2600 },
@@ -156,6 +164,7 @@ local CONST = {
 		P5_LOOK_NEAR = 5,
 		P5_PLAN_MAX_CLUSTERS = 7,
 		HAMMER_TRIES = 2,
+		LOAD_SOUND_MISSING = 3,
 		FIRE_FORGET_RANGE = 13,
 		TOP_UP_FISH = 2,
 		P4_STOP_ESSENCE = 20,
@@ -229,7 +238,6 @@ local Items = {
 
 local HUD = {
 	GROUP = 437,
-	POINTS = 25,
 	ENERGY = 35,
 	ESSENCE = 45,
 	INTENSITY = 55,
@@ -284,6 +292,7 @@ export type RunState = {
 	fires_known: { [string]: boolean },
 	fire_seen: { [string]: { npc: Npc, at: number } },
 	doused: { [string]: number },
+	load_sound_missing: boolean,
 	pours: { base: number, clicks: number, last: number },
 	crate_stand_off_until: number,
 	arrival_fade: boolean,
@@ -304,6 +313,8 @@ export type SoloRound = {
 	doubled: boolean,
 	loading: boolean,
 	loaded: number,
+	load_sounds: number,
+	inventory_loads: number,
 	last_fish: number,
 	first_loaded_at: number?,
 	p2_loading: boolean,
@@ -346,6 +357,8 @@ local function new_solo_round(): SoloRound
 		doubled = false,
 		loading = false,
 		loaded = 0,
+		load_sounds = 0,
+		inventory_loads = 0,
 		last_fish = 0,
 		p2_loading = false,
 		humidify_at = 0,
@@ -402,6 +415,7 @@ local S: RunState = {
 	fires_known = {},
 	fire_seen = {},
 	doused = {},
+	load_sound_missing = false,
 	pours = { base = 0, clicks = 0, last = 0 },
 	crate_stand_off_until = 0,
 	arrival_fade = false,
@@ -436,6 +450,8 @@ export type Activity = {
 	double: boolean,
 	last_signature: string,
 	last_tile: string,
+	catches: number,
+	last_catch_ms: number,
 }
 
 local events = {
@@ -450,6 +466,8 @@ local events = {
 	surge_until = 0,
 	fire_in_way = nil :: Npc?,
 	stunned_until = 0,
+	heard = {} :: { [number]: number },
+	heard_at = {} :: { [number]: number },
 }
 
 export type Side = {

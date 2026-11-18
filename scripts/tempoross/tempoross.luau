@@ -406,19 +406,26 @@ function Chat.read_chat()
 			if n then
 				stats.permits += tonumber(n) :: number
 			end
-		elseif Chat.contains(text, "You lose") then
-			local st = Read.refresh_moving()
-			Log.log("Tempoross", `Lost items {math.floor(m.age)} ms ago: {text}`)
-			Hazard.log_burn(st.destination)
-			if Chat.contains(text, "to the fire") then
-				if CONFIG.solo and S.solo.p3_stage ~= nil and not Chat.contains(text, "fish") then
-					local part = if S.solo.p5_stage then 5 elseif S.solo.p4_stage then 4 else 3
-					Log.log("Tempoross", `   Burned in part {part} without losing fish, carrying on`)
-				else
-					events.burned = true
-				end
-			end
 		end
+	end
+end
+
+function Chat.hear_chat(p: Host.Packet)
+	local text = string.match(p.payload, "You lose[^\0]*")
+	if text == nil then
+		return
+	end
+	local st = Read.refresh_moving()
+	Log.log("Tempoross", `Lost items: {text}`)
+	Hazard.log_burn(st.destination)
+	if not Chat.contains(text, "to the fire") then
+		return
+	end
+	if CONFIG.solo and S.solo.p3_stage ~= nil and not Chat.contains(text, "fish") then
+		local part = if S.solo.p5_stage then 5 elseif S.solo.p4_stage then 4 else 3
+		Log.log("Tempoross", `   Burned in part {part} without losing fish, carrying on`)
+	else
+		events.burned = true
 	end
 end
 
@@ -1005,6 +1012,31 @@ function Read.has_hammer(): boolean
 		or table.find(Read.worn_ids(), Items.IMCANDO_HAMMER) ~= nil
 end
 
+function Read.points(): number?
+	local raw = Host.varp(CONST.POINTS_VARP)
+	return if raw then raw // CONST.POINTS_SCALE else nil
+end
+
+function Read.fish_caught(): number
+	return Host.varp(CONST.FISH_CAUGHT_VARP) or 0
+end
+
+function Read.heard_since(sound: number, since: number): boolean
+	return (events.heard_at[sound] or -1) >= since
+end
+
+function Read.hear_sound(p: Host.Packet)
+	if p.length ~= CONST.SOUND_PACKET.length then
+		return
+	end
+	local id = string.byte(p.payload, 1) * 256 + string.byte(p.payload, 2)
+	events.heard[id] = (events.heard[id] or 0) + 1
+	events.heard_at[id] = time()
+	if id == CONST.SOUNDS.LOAD then
+		S.solo.load_sounds += 1
+	end
+end
+
 function Read.progress_signature(): string
 	return `{Read.item_count(Items.RAW_FISH)}/{Read.item_count(Items.COOKED_FISH)}/{Read.fish_count()}/{Read.item_count(
 		Items.WATER
@@ -1020,6 +1052,8 @@ function Doing.begin_activity(kind: string, npc: Npc?, loc: Loc?)
 		double = npc ~= nil and npc.id == CONST.DOUBLE_SPOT,
 		last_signature = Read.progress_signature(),
 		last_tile = `{snap.me.x},{snap.me.y}`,
+		catches = Read.fish_caught(),
+		last_catch_ms = 0,
 	}
 	Log.log(
 		"Tempoross",
@@ -1102,9 +1136,25 @@ function Doing.check_activity()
 	if can_go and a.kind ~= "tether" and Doing.player_is_working(a.kind) then
 		a.last_progress_ms = time()
 	end
+	if a.kind == "fish" then
+		local caught = Read.fish_caught()
+		if caught > a.catches then
+			a.catches = caught
+			a.last_catch_ms = time()
+			a.last_progress_ms = time()
+		end
+	end
+	local sound = if a.kind == "cook"
+		then CONST.SOUNDS.COOK
+		elseif a.kind == "attack" then CONST.SOUNDS.POOL_HIT
+		else nil
+	if sound and Read.heard_since(sound, a.last_progress_ms) then
+		a.last_progress_ms = time()
+	end
 	if a.npc then
 		local now = Npcs.refresh(a.npc :: Npc)
-		if now == nil or now.id ~= (a.npc :: Npc).id then
+		local catching = a.kind == "fish" and time() - a.last_catch_ms < CONST.CATCH_GRACE_MS
+		if (now == nil or now.id ~= (a.npc :: Npc).id) and not catching then
 			Log.log("Tempoross", "   Target gone")
 			S.activity = nil
 			return
@@ -1477,8 +1527,9 @@ function Hazard.douse(fire: Npc, toward: Tile?): boolean
 	local key = `{fire.x},{fire.y}`
 	S.solo.fire_hover = nil
 	local ledger = S.pours
-	if ledger.clicks == 0 or time() - ledger.last > CONST.POUR_SETTLE_MS or before > ledger.base then
-		ledger.base, ledger.clicks = before, 0
+	local extinguished = events.heard[CONST.SOUNDS.EXTINGUISH] or 0
+	if ledger.clicks == 0 or time() - ledger.last > CONST.POUR_SETTLE_MS then
+		ledger.base, ledger.clicks = extinguished, 0
 	end
 	if not Task.use_npc(fire, { "Douse" }, { ignore = fire }) then
 		if Hazard.fire_distance(fire, snap.me) <= 1 then
@@ -1494,8 +1545,7 @@ function Hazard.douse(fire: Npc, toward: Tile?): boolean
 		Hazard.prehover_after_douse(fire, toward)
 	end
 	local function poured(): boolean
-		Read.sync_inventory()
-		if ledger.base - Read.item_count(Items.WATER) >= ordinal then
+		if (events.heard[CONST.SOUNDS.EXTINGUISH] or 0) - ledger.base >= ordinal then
 			S.doused[key] = time()
 			return true
 		end
@@ -1703,7 +1753,12 @@ function Task.tether()
 				return
 			end
 			local s = game_state()
-			if time() - clicked > 3600 and s.destination == nil and not Doing.player_is_working("tether") then
+			if
+				time() - clicked > 3600
+				and s.destination == nil
+				and not Doing.player_is_working("tether")
+				and not Read.heard_since(CONST.SOUNDS.TETHER, clicked)
+			then
 				Log.log("Tempoross", "   No tether yet, clicking again")
 				break
 			end
@@ -1752,6 +1807,9 @@ end
 
 function Hazard.tempoross_vulnerable(): boolean
 	if #Read.npcs_with(CONST.SPIRIT_POOL) > 0 then
+		return true
+	end
+	if Read.heard_since(CONST.SOUNDS.VULNERABLE, time() - CONST.VULNERABLE_SOUND_MS) then
 		return true
 	end
 	local energy = Read.hud_percent(HUD.ENERGY)
@@ -2239,9 +2297,9 @@ function Game.log_status()
 		"Tempoross",
 		`   Energy {Read.hud_percent(HUD.ENERGY) or "?"}%, essence {Read.hud_percent(HUD.ESSENCE) or "?"}%, intensity {Read.hud_percent(
 			HUD.INTENSITY
-		) or "?"}%, {Read.widget_text(HUD.GROUP, HUD.POINTS) or ""}, fish {Read.fish_count()} ({Read.item_count(
-			Items.RAW_FISH
-		)} raw), doing {if S.activity then (S.activity :: Activity).kind else "nothing"}`
+		) or "?"}%, Points: {Read.points() or "?"}, fish {Read.fish_count()} ({Read.item_count(Items.RAW_FISH)} raw), doing {if S.activity
+			then (S.activity :: Activity).kind
+			else "nothing"}`
 	)
 end
 
@@ -3516,4 +3574,6 @@ function Loop.run()
 	Log.log("Tempoross", "Done")
 end
 
+Host.on_packet({ CONST.SOUND_PACKET.opcode }, Read.hear_sound)
+Host.on_packet({ CONST.CHAT_PACKET }, Chat.hear_chat)
 Loop.run()

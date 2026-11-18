@@ -105,12 +105,25 @@ function Solo.track_loaded()
 	Read.sync_inventory()
 	local fish = Read.fish_count()
 	if fish < r.last_fish and (Solo.at_crate() or time() - r.left_crate_at < CONST.SOLO.STEP_OFF_COUNT_MS) then
-		r.loaded += r.last_fish - fish
+		r.inventory_loads += r.last_fish - fish
 	end
 	r.last_fish = fish
+	if not S.load_sound_missing and r.load_sounds == 0 and r.inventory_loads >= CONST.SOLO.LOAD_SOUND_MISSING then
+		S.load_sound_missing = true
+		Log.log(
+			"Tempoross",
+			`   No crate sound after {r.inventory_loads} fish left at the crate: its packet may have changed, counting from the inventory`
+		)
+	end
+	r.loaded = if S.load_sound_missing then r.inventory_loads else r.load_sounds
 	if r.loaded >= CONST.SOLO.FIRST_BATCH and r.first_loaded_at == nil then
 		r.first_loaded_at = time()
-		Log.log("Tempoross", `   Loaded {r.loaded} fish, energy {Read.hud_percent(HUD.ENERGY) or "?"}%`)
+		Log.log(
+			"Tempoross",
+			`   Loaded {r.loaded} fish ({r.inventory_loads} left the inventory at the crate), energy {Read.hud_percent(
+				HUD.ENERGY
+			) or "?"}%`
+		)
 	end
 end
 
@@ -553,7 +566,7 @@ function Solo.wants_humidify(): boolean
 	local r = S.solo
 	local blocked = CONST.SOLO.NO_HUMIDIFY_DURING :: { [string]: boolean }
 	local busy = S.activity ~= nil and blocked[(S.activity :: Activity).kind] == true
-	if time() < r.humidify_at or busy or snap.tethered then
+	if time() < r.humidify_at or busy or snap.tethered or Solo.humidify_settling() then
 		return false
 	end
 	if r.p2_clear ~= nil and r.p3_stage == nil and #Solo.side_fires() == 0 then
@@ -1412,13 +1425,25 @@ function Solo.humidify_midwalk()
 		r.p3_humidify = false
 		return
 	end
+	local cast = r.humidify_cast
+	if cast then
+		Read.sync_inventory()
+		if Read.item_count(Items.WATER) > cast.water then
+			r.humidify_cast = nil
+			r.p3_humidify = false
+			return
+		end
+		if time() - cast.at <= CONST.SOLO.HUMIDIFY_SETTLE_MS then
+			return
+		end
+		r.humidify_cast = nil
+		Log.log("Tempoross", "   Humidify didn't fill the buckets, casting again")
+	end
 	if time() < r.humidify_at or Player.destination() == nil then
 		return
 	end
 	Log.log("Tempoross", `   Casting Humidify while walking ({Read.item_count(Items.WATER)} buckets of water)`)
-	if Solo.cast_humidify() then
-		r.p3_humidify = false
-	end
+	Solo.cast_humidify()
 end
 
 function Solo.in_box(fire: Npc): boolean
