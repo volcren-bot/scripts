@@ -1406,7 +1406,9 @@ function Solo.fire_values(fires: { Npc }, wanted: { [number]: boolean }?): { [nu
 	end
 	local base_weight = w.near + w.small + w.spot + w.shrine + w.crate + w.pool
 	local base: { [number]: number } = {}
+	local steps_to: { [number]: number } = {}
 	local crossing: { [number]: boolean } = {}
+	local part_four = S.solo.p4_stage ~= nil and S.solo.p5_stage == nil
 	local function base_of(fire: Npc): number
 		local known = base[fire.index]
 		if known ~= nil then
@@ -1414,6 +1416,7 @@ function Solo.fire_values(fires: { Npc }, wanted: { [number]: boolean }?): { [nu
 		end
 		local route = Route.route_to(fire)
 		local steps = if route then #route - 1 else math.huge
+		steps_to[fire.index] = steps
 		local raw = w.near * math.max(0, 1 - steps / w.far_steps)
 			+ w.small / (size[fire.index] or 1)
 			+ w.spot * flag(Solo.covers(fire, spots, w.spot_range))
@@ -1432,17 +1435,23 @@ function Solo.fire_values(fires: { Npc }, wanted: { [number]: boolean }?): { [nu
 			continue
 		end
 		local own = base_of(fire)
-		local partner = 0
-		for _, other in ipairs(fires) do
-			if
-				other.index ~= fire.index
-				and Geo.distance(fire, other) <= w.pair_range
-				and Solo.shared_stand(fire, other, covered)
-			then
-				partner = math.max(partner, base_of(other))
+		local value: number
+		if part_four then
+			local near = math.clamp(1 - steps_to[fire.index] / w.p4_far_steps, w.p4_min, 1)
+			value = near / (1 + w.p4_size * ((size[fire.index] or 1) - 1))
+		else
+			local partner = 0
+			for _, other in ipairs(fires) do
+				if
+					other.index ~= fire.index
+					and Geo.distance(fire, other) <= w.pair_range
+					and Solo.shared_stand(fire, other, covered)
+				then
+					partner = math.max(partner, base_of(other))
+				end
 			end
+			value = (own * base_weight + w.pair * partner) / (base_weight + w.pair)
 		end
-		local value = (own * base_weight + w.pair * partner) / (base_weight + w.pair)
 		if Solo.covers(fire, path, 0) then
 			value += w.path
 		end

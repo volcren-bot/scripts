@@ -425,6 +425,7 @@ function Island.part_four_needs(needs: Needs)
 	local r = S.solo
 	local need = CONST.ISLAND.need
 	if r.p4_stage == "fish" then
+		needs.fire = need.fire
 		Island.fishing_needs(needs, Solo.p4_target(), not r.p4_raw)
 		Island.part_four_room(needs)
 		local ramp = Island.p4_load_ramp()
@@ -1438,7 +1439,7 @@ function Island.evaluate(): { Item }
 	local values = if #fires > 0 then Solo.fire_values(fires, wanted) else {}
 	for index in pairs(hub) do
 		if values[index] ~= nil and wanted[index] then
-			values[index] = math.clamp(values[index] + CONST.SOLO.FIRE_VALUE.hub, 0, 1)
+			values[index] = math.max(values[index], CONST.SOLO.FIRE_VALUE.hub_floor)
 		end
 	end
 	lap("values")
