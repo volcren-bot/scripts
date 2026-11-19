@@ -400,6 +400,8 @@ function Chat.read_chat()
 			Log.log("Tempoross", "A cannon is about to be electrified")
 		elseif Chat.contains(text, "clouds roll in") then
 			Log.log("Tempoross", "Storm brewing")
+		elseif Chat.contains(text, "Tempoross is vulnerable") then
+			S.vulnerable = true
 		elseif Chat.contains(text, "skies clear as Tempoross retreats") then
 			events.game_result = "won"
 		elseif Chat.contains(text, "Points:") and Chat.contains(text, "Personal best") then
@@ -771,6 +773,21 @@ function Hazard.watch_projectiles()
 				)
 			end
 		end
+	end
+end
+
+function Hazard.watching_projectiles(act: () -> ())
+	if not Host.packet_opcode("TICK") then
+		act()
+		return
+	end
+	local id = Host.on_packet({ "TICK" }, function()
+		Hazard.watch_projectiles()
+	end)
+	local ok, err = pcall(act)
+	Host.off_packet(id)
+	if not ok then
+		error(err, 0)
 	end
 end
 
@@ -2078,14 +2095,17 @@ function Hazard.track_energy()
 end
 
 function Hazard.tempoross_vulnerable(): boolean
-	if #Read.npcs_with(CONST.SPIRIT_POOL) > 0 then
-		return true
-	end
-	if Read.heard_since(CONST.SOUNDS.VULNERABLE, time() - CONST.VULNERABLE_SOUND_MS) then
-		return true
-	end
 	local energy = Read.hud_percent(HUD.ENERGY)
-	return energy ~= nil and energy <= 0 and S.energy_dir == "down"
+	if
+		#Read.npcs_with(CONST.SPIRIT_POOL) > 0
+		or Read.heard_since(CONST.SOUNDS.VULNERABLE, time() - CONST.VULNERABLE_SOUND_MS)
+		or (energy ~= nil and energy <= 0)
+	then
+		S.vulnerable = true
+	elseif energy ~= nil and energy >= 100 then
+		S.vulnerable = false
+	end
+	return S.vulnerable
 end
 
 function Task.crates(): { Npc }
@@ -2603,6 +2623,7 @@ function Game.new_game()
 	table.clear(S.growing_due)
 	table.clear(S.cloud_started)
 	S.energy_dir, S.last_energy = "up", nil
+	S.vulnerable = false
 	S.pier_energy = Random.int(CONFIG.pier.min_energy, CONFIG.pier.max_energy)
 	S.worn_cache = nil
 	S.solo = new_solo_round()
@@ -3060,7 +3081,7 @@ function Loop.common_game_state(): State?
 
 	if
 		Hazard.tempoross_vulnerable()
-		and not (CONFIG.solo and S.solo.p2_loading and Read.fish_count() > 0)
+		and not (CONFIG.solo and Solo.loading_first())
 		and not (CONFIG.solo and Solo.ship_fires_left())
 	then
 		return "ATTACK"
@@ -3744,12 +3765,15 @@ Handler.states = {
 	LOAD_EXACT = function()
 		Solo.load_exact(CONST.SOLO.FIRST_BATCH)
 	end,
+	LOAD_TO_TOTAL = function()
+		Solo.load_exact(Solo.part_two_cooked())
+	end,
 	FORFEIT = Solo.forfeit,
 	SOLO_STOP = Solo.stop_here,
 	HUMIDIFY = Solo.humidify,
 	LOBBY_HUMIDIFY = Solo.humidify,
 	P3_BUCKETS = Solo.take_buckets,
-	P3_CROSS = Solo.walk_item,
+	P3_ROUTE = Solo.walk_item,
 	P3_DROP = function()
 		Solo.drop_buckets(plan.drop or 0, plan.drop_water ~= false)
 	end,

@@ -155,7 +155,7 @@ local CONST = {
 			crew = 1,
 			tool = 1,
 			humidify = 1,
-			crossing = 1,
+			route = 0.4,
 			look = 0.45,
 			north = 1,
 			north_later = 0.3,
@@ -175,6 +175,7 @@ local CONST = {
 			load = 4.5,
 			pool = 4,
 			humidify = 3,
+			step = 2.5,
 			drop = 2,
 			path = 1,
 		},
@@ -194,7 +195,7 @@ local CONST = {
 			tether = true,
 			shrine = true,
 			pump = true,
-			crossing = true,
+			route = true,
 			north = true,
 		},
 		jump_range = 3,
@@ -203,6 +204,9 @@ local CONST = {
 		slow_ms = 150,
 		stick = 0.05,
 		multi_bonus = 0.15,
+		path_step = 0.02,
+		here_bonus = 0.05,
+		path_rounds = 4,
 		tools = {
 			{ kind = "buckets", name = "Buckets" },
 			{ kind = "ropes", name = "Ropes" },
@@ -233,7 +237,7 @@ local CONST = {
 			ropes = Draw.color(210, 170, 110),
 			harpoons = Draw.color(255, 200, 200),
 			humidify = Draw.color(0, 160, 255),
-			crossing = Draw.color(255, 120, 200),
+			route = Draw.color(255, 120, 200),
 			look = Draw.color(255, 255, 160),
 			north = Draw.color(120, 200, 255),
 			dodge = Draw.color(255, 60, 160),
@@ -269,11 +273,31 @@ local CONST = {
 		STEP_OFF_COUNT_MS = 2500,
 		TAKE_BUCKETS_WAIT_MS = 2400,
 		TAKE_BUCKETS_PER_CLICK = 10,
+		MULTI_WALK_MS = 1200,
+		MULTI_WALK_TILE_MS = 300,
+		DROP_BATCH = 4,
+		MULTI_RETRY_MS = 5000,
 		TAKE_BUCKETS_SLOW_CHANCE = 0.1,
 		P4_BURN_KEEP_GOING_FISH = 3,
 		FISH_SEEN_MS = 2400,
-		DROP_MIN_TILES = 5,
-		P3_STOP_INTENSITY = 30,
+		MAP_MAST = { x = 3036, y = 2850 },
+		P3_ROUTE = {
+			{ x = 3026, y = 2838 },
+			{ x = 3030, y = 2833 },
+			{ x = 3047, y = 2833 },
+			{ x = 3047, y = 2842 },
+			{ x = 3047, y = 2833 },
+			{ x = 3050, y = 2837 },
+			{ x = 3048, y = 2830 },
+			{ x = 3044, y = 2825 },
+			{ x = 3040, y = 2823 },
+			{ x = 3032, y = 2823 },
+			{ x = 3037, y = 2824 },
+			{ x = 3037, y = 2828 },
+			{ x = 3037, y = 2831 },
+		},
+		P3_FIRE_RANGE = 3,
+		P3_WAYPOINT_NEAR = 2,
 		P4_LOAD_INTENSITY = 95,
 		LEAVE_INTENSITY = 90,
 		P4_LOAD_RAMP_FROM = 80,
@@ -301,7 +325,6 @@ local CONST = {
 		FIRE_FORGET_RANGE = 13,
 		TOP_UP_FISH = 2,
 		P4_STOP_ESSENCE = 20,
-		DROP_PER_STEP = 2,
 		NORTH_BOX = { west = -6, east = 15, south = -5, north = 29 },
 		ISLAND_BOXES = {
 			south_beach = { west = -2, east = 14, south = -26, north = -7 },
@@ -316,7 +339,6 @@ local CONST = {
 		BOX_MARGIN = 2,
 		HUB_DETOUR = 2,
 		CLUSTER_GAP = 3,
-		CLUSTER_WEIGHT = 3,
 		FIRE_VALUE = {
 			near = 0.35,
 			small = 0.15,
@@ -327,9 +349,9 @@ local CONST = {
 			pool = 0.1,
 			path = 0.2,
 			hub_floor = 0.55,
-			p4_far_steps = 12,
-			p4_min = 0.05,
-			p4_size = 0.33,
+			near_steps = 12,
+			near_min = 0.05,
+			cluster_size = 0.33,
 			far_steps = 30,
 			crossing = 0.5,
 			outside = 0.5,
@@ -342,6 +364,7 @@ local CONST = {
 		TETHER_POLL_MS = 60,
 		WAVE_BUSY_MS = 10000,
 		TETHER_WARNING_MS = 9000,
+		TETHER_DOUSE_CUTOFF_MS = 2500,
 		HOVER_RAW = 2,
 	},
 }
@@ -420,6 +443,7 @@ export type RunState = {
 	stray_since: number?,
 	energy_dir: "up" | "down",
 	last_energy: number?,
+	vulnerable: boolean,
 	cook_fish_threshold: number,
 	pier_energy: number,
 	last_status: number,
@@ -530,7 +554,7 @@ export type SoloRound = {
 	island_signature: string,
 	loop_round: number,
 	acting: string?,
-	multi_at: Tile?,
+	multi_failed: { [string]: number },
 	hub_flood: { key: string, flood: Flood }?,
 	poured_at: number?,
 	fishing_target: number,
@@ -548,7 +572,8 @@ export type SoloRound = {
 	p2_clear: string?,
 	p2_skip: { [string]: boolean },
 	p3_buckets: Loc?,
-	p3_pier: Tile?,
+	p3_route: { Tile },
+	p3_leg: number,
 	p3_box: Box?,
 	p2_box: Box?,
 	island_boxes: { [string]: Box }?,
@@ -574,6 +599,7 @@ local function new_solo_round(): SoloRound
 		loading = false,
 		loaded = 0,
 		load_sounds = 0,
+		multi_failed = {},
 		inventory_loads = 0,
 		last_raw = 0,
 		loaded_raw = 0,
@@ -595,6 +621,8 @@ local function new_solo_round(): SoloRound
 		humidify_at = 0,
 		left_crate_at = 0,
 		p3_humidify = false,
+		p3_route = {},
+		p3_leg = 1,
 		p2_skip = {},
 		p5_route_at = 1,
 		p5_looked = {},
@@ -619,6 +647,7 @@ local S: RunState = {
 	item_names_cache = {},
 	blocked_since = {},
 	energy_dir = "up",
+	vulnerable = false,
 	cook_fish_threshold = 0,
 	pier_energy = 0,
 	last_status = 0,
@@ -743,6 +772,7 @@ export type State =
 	| "TAKE_ROPE"
 	| "LOAD_CANNON"
 	| "TAKE_HAMMER"
+	| "LOAD_TO_TOTAL"
 	| "TAKE_BUCKETS"
 	| "FILL_BUCKETS"
 	| "COOK"
@@ -787,7 +817,7 @@ export type State =
 	| "SOLO_STOP"
 	| "HUMIDIFY"
 	| "P3_BUCKETS"
-	| "P3_CROSS"
+	| "P3_ROUTE"
 	| "P3_DROP"
 	| "P5_WALK"
 	| "STEP_OFF"

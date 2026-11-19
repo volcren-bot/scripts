@@ -167,10 +167,10 @@ function Solo.load_exact(target: number)
 		if not hovered and r.loaded >= target - 1 and Read.fish_count() > 1 then
 			hovered = Solo.hover_next()
 		end
-		return Task.off_crate_stand()
+		return false
 	end
 	Route.sleep_watching(Random.int(1500, 2500), nil, stop)
-	if r.loaded >= target or (Read.fish_count() > 0 and Task.off_crate_stand()) then
+	if r.loaded >= target then
 		r.left_crate_at = time()
 		Doing.clear_activity()
 	end
@@ -179,6 +179,12 @@ end
 function Solo.hover_next(): boolean
 	local items: { Core.IslandItem } = S.island or {}
 	local next = items[2]
+	for _, item in ipairs(items) do
+		if item.kind == "step" and item.score > 0 then
+			next = item
+			break
+		end
+	end
 	if next == nil or next.score <= 0 then
 		return false
 	end
@@ -447,7 +453,7 @@ function Solo.late_wave(): boolean
 end
 
 function Solo.fish_target(): number
-	return if S.solo.first_loaded_at then CONST.SOLO.SECOND_BATCH else CONST.SOLO.FIRST_BATCH
+	return if S.solo.first_loaded_at then Solo.part_two_left() else CONST.SOLO.FIRST_BATCH
 end
 
 function Solo.move_safely(target: Tile, act: () -> ())
@@ -535,11 +541,8 @@ function Solo.load_all()
 	Route.sleep_watching(Random.int(150, 250), nil, function(): boolean
 		Read.sync_inventory()
 		Chat.read_chat()
-		return Read.fish_count() == 0 or Task.surge_blocks_loading() or Task.off_crate_stand()
+		return Read.fish_count() == 0 or Task.surge_blocks_loading()
 	end)
-	if Read.fish_count() > 0 and Task.off_crate_stand() then
-		Doing.clear_activity()
-	end
 end
 
 function Solo.go_to_pier()
@@ -571,7 +574,7 @@ function Solo.wants_humidify(): boolean
 	if r.p2_clear ~= nil and r.p3_stage == nil and #Solo.side_fires() == 0 then
 		return false
 	end
-	if r.p3_stage == "buckets" or r.p3_stage == "humidify" or (r.p3_stage == "cross" and r.p3_humidify) then
+	if r.p3_stage == "buckets" or r.p3_stage == "humidify" or (r.p3_stage == "route" and r.p3_humidify) then
 		return false
 	end
 	if r.p5_stage == "buckets" or r.p5_stage == "humidify" or r.p5_stage == "fish" or r.p5_stage == "load" then
@@ -643,19 +646,47 @@ end
 function Solo.multi_douse()
 	local item = plan.item :: Core.IslandItem
 	local stand = item.stand :: Tile
-	local fires = item.fires :: { Npc }
+	local fires = table.clone(item.fires :: { Npc })
 	local r = S.solo
+	local lead: number? = nil
 	if not Geo.same(snap.me, stand) then
+		Read.set_me(game_state().position)
+		for i, fire in ipairs(fires) do
+			local route = Hazard.douse_route(fire)
+			local last = route and route[#route]
+			if lead == nil and last and Geo.same(last, stand) and Route.fire_free(route :: { Tile }) then
+				lead = i
+			end
+		end
+	end
+	if lead then
+		local first = fires[lead :: number]
+		table.remove(fires, lead :: number)
+		table.insert(fires, 1, first)
+		Log.log(
+			"Tempoross",
+			`   Dousing the fire at {first.x},{first.y} walks to {stand.x},{stand.y}, putting out {#fires} fires from there`
+		)
+	elseif not Geo.same(snap.me, stand) then
+		local tiles = Route.route_to(stand)
+		if tiles == nil or not Route.fire_free(tiles) then
+			Log.log("Tempoross", `   The way to {stand.x},{stand.y} from {snap.me.x},{snap.me.y} crosses a fire now`)
+			Route.sleep_watching(CONST.POLL_MS)
+			return
+		end
 		Log.log("Tempoross", `   Standing at {stand.x},{stand.y} to put out {#fires} fires from one tile`)
 		Solo.move_safely(stand, function()
-			Route.walk(stand, 0, 15000)
+			Route.walk(stand, 0, CONST.SOLO.MULTI_WALK_MS + (#tiles - 1) * CONST.SOLO.MULTI_WALK_TILE_MS)
 		end)
 		Read.set_me(game_state().position)
 		if not Geo.same(snap.me, stand) then
+			if not Island.watch() then
+				r.multi_failed[`{stand.x},{stand.y}`] = time() + CONST.SOLO.MULTI_RETRY_MS
+				Log.log("Tempoross", `   Couldn't reach {stand.x},{stand.y}, leaving that tile out for a while`)
+			end
 			return
 		end
 	end
-	r.multi_at = stand
 	for i, fire in ipairs(fires) do
 		if Island.watch() then
 			break
@@ -663,7 +694,6 @@ function Solo.multi_douse()
 		local following = fires[i + 1]
 		Hazard.douse(fire, if following then Geo.to_tile(following) else nil)
 	end
-	r.multi_at = nil
 end
 
 function Solo.dodge()
@@ -1085,17 +1115,25 @@ function Solo.drop_buckets(count: number, allow_water: boolean)
 		return
 	end
 	Log.log("Tempoross", `   Dropping {#slots} bucket{if #slots == 1 then "" else "s"}`)
-	Inventory.shift_drop_slots((Inventory.pattern(slots)))
+	local ordered = Inventory.pattern(slots)
+	local size = CONST.SOLO.DROP_BATCH
+	for from = 1, #ordered, size do
+		local batch = table.move(ordered, from, math.min(from + size - 1, #ordered), 1, {})
+		Hazard.watching_projectiles(function()
+			Inventory.shift_drop_slots(batch)
+		end)
+		Read.set_me(game_state().position)
+		if from + size <= #ordered and (Hazard.incoming_at(snap.me, 0) or Island.watch()) then
+			Log.log("Tempoross", "   Stopping the drop to deal with the new top score")
+			return
+		end
+	end
 end
 
 function Solo.walk_to(target: Tile, near: number)
 	Solo.move_safely(target, function()
 		Route.walk(target, near, 30000)
 	end)
-end
-
-function Solo.in_box(fire: Npc): boolean
-	return Solo.fire_in(S.solo.p3_box, fire)
 end
 
 function Solo.area_fires(accept: (Npc) -> boolean): { Npc }
@@ -1123,23 +1161,30 @@ function Solo.island_boxes(): { [string]: Box }?
 	if r.island_boxes then
 		return r.island_boxes
 	end
-	local here = S.side
-	if here == nil then
+	local origin, flip = Solo.island_frame()
+	if origin == nil then
 		return nil
 	end
-	local west = if here.name == "west" then here else Ship.other_side()
-	if west == nil then
-		return nil
-	end
-	local flip = if west.totem.y > west.mast.y then 1 else -1
 	local boxes: { [string]: Box } = {}
 	local offsets =
 		CONST.SOLO.ISLAND_BOXES :: { [string]: { west: number, east: number, south: number, north: number } }
 	for name, b in offsets do
-		boxes[name] = Solo.flipped_box(Geo.to_tile(west.mast), b, flip)
+		boxes[name] = Solo.flipped_box(origin :: Tile, b, flip)
 	end
 	r.island_boxes = boxes
 	return boxes
+end
+
+function Solo.island_frame(): (Tile?, number)
+	local here = S.side
+	if here == nil then
+		return nil, 1
+	end
+	local west = if here.name == "west" then here else Ship.other_side()
+	if west == nil then
+		return nil, 1
+	end
+	return Geo.to_tile(west.mast), if west.totem.y > west.mast.y then 1 else -1
 end
 
 function Solo.home_box(side: Side): Box
@@ -1167,37 +1212,66 @@ function Solo.side_fires(): { Npc }
 	return Solo.area_fires(Solo.our_side_fire)
 end
 
-function Solo.beach_target(): (Npc?, Npc?)
-	return Solo.cluster_target(Solo.area_fires(Solo.in_box))
+function Solo.p3_route(): { Tile }?
+	local origin, flip = Solo.island_frame()
+	if origin == nil then
+		return nil
+	end
+	local o = origin :: Tile
+	local map = CONST.SOLO.MAP_MAST :: Tile
+	local tiles: { Tile } = {}
+	for _, t in ipairs(CONST.SOLO.P3_ROUTE :: { Tile }) do
+		table.insert(tiles, { x = o.x + flip * (t.x - map.x), y = o.y + flip * (t.y - map.y) })
+	end
+	return tiles
 end
 
-function Solo.cluster_target(fires: { Npc }): (Npc?, Npc?)
-	local best: { Npc }, target: Npc?, best_score = {}, nil, math.huge
-	for _, cluster in ipairs(Hazard.fire_clusters(fires)) do
-		local nearest, nearest_steps = cluster[1], math.huge
-		for _, fire in ipairs(cluster) do
-			local steps = Route.walk_steps(fire)
-			if steps < nearest_steps then
-				nearest, nearest_steps = fire, steps
+function Solo.p3_waypoint(): Tile?
+	local r = S.solo
+	if r.p3_stage ~= "route" then
+		return nil
+	end
+	return r.p3_route[r.p3_leg]
+end
+
+function Solo.advance_route()
+	local r = S.solo
+	local target = Solo.p3_waypoint()
+	while target ~= nil do
+		local t = target :: Tile
+		local tiles = Route.route_to(t)
+		if tiles == nil then
+			Log.log("Tempoross", `   Can't reach waypoint {r.p3_leg} at {t.x},{t.y}, skipping it`)
+		else
+			local stand = tiles[#tiles] or t
+			if Geo.distance(snap.me, stand) > CONST.SOLO.P3_WAYPOINT_NEAR then
+				return
 			end
+			Log.log(
+				"Tempoross",
+				`   Waypoint {r.p3_leg} of {#r.p3_route} at {t.x},{t.y} reached at {Read.hud_percent(HUD.INTENSITY) or "?"}% storm`
+			)
 		end
-		local score = nearest_steps + CONST.SOLO.CLUSTER_WEIGHT * #cluster
-		if score < best_score then
-			best, target, best_score = cluster, nearest, score
+		r.p3_leg += 1
+		target = Solo.p3_waypoint()
+	end
+end
+
+function Solo.route_fires(): { [number]: boolean }
+	local set: { [number]: boolean } = {}
+	if Read.item_count(Items.WATER) == 0 and Read.item_count(Items.BUCKET) == 0 then
+		return set
+	end
+	local range = CONST.SOLO.P3_FIRE_RANGE
+	local here = { Geo.to_tile(snap.me) }
+	local target = Solo.p3_waypoint()
+	local leg = if target then Route.route_to(target) or {} else {}
+	for _, fire in ipairs(Hazard.fire_npcs()) do
+		if Solo.covers(fire, here, range) or Solo.covers(fire, leg, range) then
+			set[fire.index] = true
 		end
 	end
-	if target == nil then
-		return nil, nil
-	end
-	local after: Npc? = nil
-	for _, fire in ipairs(best) do
-		if
-			fire.index ~= target.index and (after == nil or Geo.distance(fire, target) < Geo.distance(after, target))
-		then
-			after = fire
-		end
-	end
-	return target, after
+	return set
 end
 
 function Solo.travel_goal(): Tile?
@@ -1208,8 +1282,8 @@ function Solo.travel_goal(): Tile?
 	if r.p4_stage == "ship" or r.p4_stage == "rush" then
 		return Solo.crate_target()
 	end
-	if r.p3_stage == "cross" then
-		return r.p3_pier
+	if r.p3_stage == "route" then
+		return Solo.p3_waypoint()
 	end
 	if r.p3_stage ~= nil then
 		return nil
@@ -1238,7 +1312,7 @@ function Solo.current_box(): (Box?, { Box })
 		end
 		return boxes[current], left
 	end
-	if r.p3_stage == "clear" and r.p3_box ~= nil then
+	if r.p3_stage == "route" and r.p3_box ~= nil then
 		return r.p3_box, {}
 	end
 	local me = snap.me
@@ -1408,13 +1482,14 @@ function Solo.fire_values(fires: { Npc }, wanted: { [number]: boolean }?): { [nu
 	local base: { [number]: number } = {}
 	local steps_to: { [number]: number } = {}
 	local crossing: { [number]: boolean } = {}
-	local part_four = S.solo.p4_stage ~= nil and S.solo.p5_stage == nil
+	local on_route = S.solo.p3_stage == "route"
+	local close_first = on_route or Island.part() == 2 or (S.solo.p4_stage ~= nil and S.solo.p5_stage == nil)
 	local function base_of(fire: Npc): number
 		local known = base[fire.index]
 		if known ~= nil then
 			return known
 		end
-		local route = Route.route_to(fire)
+		local route = if close_first then Hazard.douse_route(fire) else Route.route_to(fire)
 		local steps = if route then #route - 1 else math.huge
 		steps_to[fire.index] = steps
 		local raw = w.near * math.max(0, 1 - steps / w.far_steps)
@@ -1427,7 +1502,10 @@ function Solo.fire_values(fires: { Npc }, wanted: { [number]: boolean }?): { [nu
 		crossing[fire.index] = route == nil or Solo.crosses_fire(route, fire, covered)
 		return raw / base_weight
 	end
-	local box, left = Solo.current_box()
+	local box: Box?, left: { Box } = nil, {}
+	if not on_route then
+		box, left = Solo.current_box()
+	end
 	local values: { [number]: number } = {}
 	for _, fire in ipairs(fires) do
 		if wanted ~= nil and not wanted[fire.index] then
@@ -1436,9 +1514,9 @@ function Solo.fire_values(fires: { Npc }, wanted: { [number]: boolean }?): { [nu
 		end
 		local own = base_of(fire)
 		local value: number
-		if part_four then
-			local near = math.clamp(1 - steps_to[fire.index] / w.p4_far_steps, w.p4_min, 1)
-			value = near / (1 + w.p4_size * ((size[fire.index] or 1) - 1))
+		if close_first then
+			local near = math.clamp(1 - steps_to[fire.index] / w.near_steps, w.near_min, 1)
+			value = if on_route then near else near / (1 + w.cluster_size * ((size[fire.index] or 1) - 1))
 		else
 			local partner = 0
 			for _, other in ipairs(fires) do
@@ -1452,7 +1530,7 @@ function Solo.fire_values(fires: { Npc }, wanted: { [number]: boolean }?): { [nu
 			end
 			value = (own * base_weight + w.pair * partner) / (base_weight + w.pair)
 		end
-		if Solo.covers(fire, path, 0) then
+		if not close_first and Solo.covers(fire, path, 0) then
 			value += w.path
 		end
 		if crossing[fire.index] then
@@ -1549,7 +1627,7 @@ function Solo.track_island(): State?
 		)
 		events.wave_hit_at = nil
 	end
-	local loading_first = S.solo.p2_loading and Read.fish_count() > 0
+	local loading_first = Solo.loading_first()
 	local attack = Hazard.tempoross_vulnerable() and not loading_first and not Solo.ship_fires_left()
 	if Doing.is_doing("attack") and not attack then
 		Doing.clear_activity()
@@ -1583,6 +1661,19 @@ function Solo.advance_one()
 	end
 end
 
+function Solo.loading_first(): boolean
+	local r = S.solo
+	return r.p2_loading and Read.fish_count() > 0 and (r.p3_stage ~= nil or r.loaded < Solo.part_two_cooked())
+end
+
+function Solo.part_two_left(): number
+	return math.max(0, Solo.part_two_cooked() - S.solo.loaded)
+end
+
+function Solo.part_two_cooked(): number
+	return CONST.SOLO.FIRST_BATCH + CONST.SOLO.SECOND_BATCH
+end
+
 function Solo.advance_two()
 	local r = S.solo
 	if r.pools >= 1 then
@@ -1592,7 +1683,15 @@ function Solo.advance_two()
 	local count = Read.fish_count()
 	local raw = Read.item_count(Items.RAW_FISH)
 	local intensity = Read.hud_percent(HUD.INTENSITY) or 0
-	if not r.p2_loading and count > 0 and intensity >= CONST.SOLO.LEAVE_INTENSITY then
+	if not r.p2_loading and intensity >= CONST.SOLO.LEAVE_INTENSITY then
+		local cooked = r.loaded_cooked + count - raw
+		if cooked < Solo.part_two_cooked() or raw > 0 then
+			if r.stop_reason == nil then
+				r.stop_reason =
+					`Storm at {intensity}% with {cooked} of {Solo.part_two_cooked()} cooked fish and {raw} raw for part 2`
+			end
+			return
+		end
 		r.p2_loading = true
 		Doing.clear_activity()
 		Log.log("Tempoross", `Intensity {intensity}%, loading the {count} fish we have ({raw} raw)`)
@@ -1613,7 +1712,7 @@ function Solo.advance_two()
 			Log.log("Tempoross", "   Our side is clear, fishing")
 		end
 	end
-	if not r.p2_loading and r.p2_clear == "done" and Solo.fishing_done(CONST.SOLO.SECOND_BATCH, true) then
+	if not r.p2_loading and r.p2_clear == "done" and Solo.fishing_done(Solo.part_two_left(), true) then
 		r.p2_loading = true
 		Log.log("Tempoross", `{count} cooked fish, loading them all`)
 	end
@@ -1621,6 +1720,13 @@ end
 
 function Solo.advance_three()
 	local r = S.solo
+	if r.p3_stage == nil and (r.loaded_cooked ~= Solo.part_two_cooked() or r.loaded_raw > 0) then
+		if r.stop_reason == nil then
+			r.stop_reason =
+				`Loaded {r.loaded_cooked} cooked and {r.loaded_raw} raw fish by the end of part 2 instead of {Solo.part_two_cooked()} cooked`
+		end
+		return
+	end
 	if r.p3_stage == nil then
 		r.p3_stage = "buckets"
 		r.p3_buckets = Geo.nearest_loc(Read.locs_named({ "Buckets" }), snap.me)
@@ -1641,35 +1747,35 @@ function Solo.advance_three()
 			return
 		end
 		S.side = side
-		local buckets = Geo.nearest_loc(Read.locs_named({ "Buckets" }), side.totem)
-		local pier = Route.route_end(Geo.to_tile(buckets or side.totem))
-		r.p3_pier = pier
 		local boxes = Solo.island_boxes()
-		r.p3_box = if boxes then boxes.south_beach else nil
-		r.p3_stage = "cross"
-		Log.log("Tempoross", `   Crossing to the {side.name} side, pier at {pier.x},{pier.y}`)
-	end
-	if r.p3_stage == "cross" then
-		if Geo.distance(snap.me, r.p3_pier :: Tile) > 1 then
+		local route = Solo.p3_route()
+		if boxes == nil or route == nil then
+			Log.log("Tempoross", "   Couldn't place the island boxes and the part 3 route")
+			r.stop_reason = "stop"
 			return
 		end
-		r.p3_stage = "clear"
-		Log.log("Tempoross", "   On the other side, clearing the pier and the beach")
+		r.p3_box = (boxes :: { [string]: Box }).south_beach
+		r.p3_route = route :: { Tile }
+		r.p3_leg = 1
+		r.p3_stage = "route"
+		local points: { string } = {}
+		for _, t in ipairs(r.p3_route) do
+			table.insert(points, `{t.x},{t.y}`)
+		end
+		Log.log("Tempoross", `   Route through the south beach: {table.concat(points, " ")}`)
 	end
-	if r.p3_stage == "clear" then
-		local intensity = Read.hud_percent(HUD.INTENSITY) or 0
-		local why = if intensity >= CONST.SOLO.P3_STOP_INTENSITY
-			then `storm at {intensity}%, leaving {#Solo.area_fires(Solo.in_box)} fires on the beach`
-			elseif Read.item_count(Items.WATER) == 0 then "out of water"
-			elseif Solo.beach_target() == nil then "beach clear"
-			else nil
-		if why == nil then
+	if r.p3_stage == "route" then
+		Solo.advance_route()
+		if Solo.p3_waypoint() ~= nil or next(Solo.route_fires()) ~= nil then
 			return
 		end
 		r.p3_stage = "done"
 		r.p4_stage = "fish"
 		r.p4_load_base = r.loaded
-		Log.log("Tempoross", `Part 4: {why}, fishing {CONST.SOLO.THIRD_BATCH} fish`)
+		Log.log(
+			"Tempoross",
+			`Part 4: route done at {Read.hud_percent(HUD.INTENSITY) or "?"}% storm, fishing {CONST.SOLO.THIRD_BATCH} fish`
+		)
 	end
 	Solo.advance_four()
 end
@@ -1897,21 +2003,14 @@ end
 function Solo.shrine_state(): State
 	local r = S.solo
 	local count = Read.fish_count()
-	local fishing = Doing.is_doing("fish")
 	if Island.part() == 1 then
 		local target = CONST.SOLO.FIRST_BATCH
-		if fishing and count < target then
-			return "FISH_TO_TARGET"
-		end
 		if Doing.is_doing("cook") then
 			return if count >= target and events.waves_passed > 0 then "COOKING_TO_LOAD" else "CONTINUE"
 		end
 		return "COOK"
 	end
 	local done = count >= r.fishing_target
-	if fishing and not done then
-		return "FISH_TO_TARGET"
-	end
 	if Doing.is_doing("cook") then
 		return if done then "COOKING_TO_LOAD" else "CONTINUE"
 	end
@@ -1942,7 +2041,7 @@ function Solo.crate_state(item: Core.IslandItem): State
 		return if r.ship_hover ~= nil then "WALK_TO_LOAD" else "LOAD_EXACT"
 	end
 	if Doing.is_doing("load") then
-		return "LOAD_ALL"
+		return if r.p2_loading and r.p3_stage == nil then "LOAD_TO_TOTAL" else "LOAD_ALL"
 	end
 	plan.crate = item
 	return "LOAD_SCORED"
@@ -1999,9 +2098,9 @@ function Solo.state_for(item: Core.IslandItem, index: number, skipped: { [State]
 	elseif kind == "look" or kind == "north" then
 		plan.item = item
 		return "P5_WALK"
-	elseif kind == "crossing" then
+	elseif kind == "route" then
 		plan.item = item
-		return "P3_CROSS"
+		return "P3_ROUTE"
 	elseif kind == "pump" then
 		if skipped["FILL_BUCKETS"] then
 			return nil
