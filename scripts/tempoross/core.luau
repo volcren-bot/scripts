@@ -7,6 +7,7 @@ export type Tile = Host.Tile
 export type ClientState = Host.ClientState
 local Draw = require("@lib/utils/draw")
 local Position = require("@lib/main/position")
+local SafeSpot = require("@lib/main/safespot")
 local StatsReport = require("@lib/utils/stats_report")
 local Ticks = require("@lib/utils/ticks")
 
@@ -49,7 +50,7 @@ local CONST = {
 	FIRE_REACH = 0,
 	CRATE_FIRE_RANGE = 5,
 	CRATE_STAND_RETRY_MS = 10000,
-	SPOT_COST = { single_fish_ms = 3200, double_fish_ms = 1400, tile_ms = 300, switch_ms = 600 },
+	SPOT_COST = { single_fish_ms = 3200, double_fish_ms = 2133, tile_ms = 300, switch_ms = 600 },
 	INCOMING_FIRE = -8643,
 	FIRE_SPREAD = 1839,
 	SURGE_PROJECTILE = 1842,
@@ -127,6 +128,125 @@ local CONST = {
 	REPAIR_STEPS = 6,
 	REPAIR_WAIT_MS = 6000,
 
+	ISLAND = {
+		far_steps = 40,
+		min_fit = 0.05,
+		fit_floor = 0.5,
+		double_factor = 1.5,
+		spot_fire_factor = 0.75,
+		look_items = 4,
+		need = {
+			double = 1,
+			single = 0.8,
+			shrine = 0.6,
+			shrine_first = 0.9,
+			shrine_full = 1,
+			crate = 1,
+			crate_waiting = 0.4,
+			tether = 1,
+			pump = 1,
+			fire = 1,
+			fire_idle = 0.3,
+			fire_path = 1,
+			fire_waiting = 0.4,
+			pier = 0.5,
+			pier_after_fires = 0.45,
+			attack = 1,
+			crew = 1,
+			tool = 1,
+			humidify = 1,
+			crossing = 1,
+			look = 0.45,
+			north = 1,
+			north_later = 0.3,
+			urgent = 1,
+			step = 0.5,
+			wait = 0.05,
+			through_fire = 0.25,
+		},
+		rank = {
+			crew = 9,
+			stunned = 8,
+			repair = 7.5,
+			tether = 7,
+			untether = 6,
+			dodge = 5,
+			surge = 5,
+			load = 4.5,
+			pool = 4,
+			humidify = 3,
+			drop = 2,
+			path = 1,
+		},
+		alone = {
+			crew = true,
+			stunned = true,
+			step = true,
+			repair = true,
+			dodge = true,
+			surge = true,
+			untether = true,
+			pool = true,
+			pier = true,
+			humidify = true,
+			drop = true,
+			wait = true,
+			tether = true,
+			shrine = true,
+			pump = true,
+			crossing = true,
+			north = true,
+		},
+		jump_range = 3,
+		second_crate_fit = 0.98,
+		crate_mast_range = 4,
+		slow_ms = 150,
+		stick = 0.05,
+		multi_bonus = 0.15,
+		tools = {
+			{ kind = "buckets", name = "Buckets" },
+			{ kind = "ropes", name = "Ropes" },
+			{ kind = "harpoons", name = "Harpoons" },
+		},
+	},
+	ISLAND_DRAW = {
+		text_size = 16,
+		text_width = 3,
+		shadow_offset = 2,
+		shadow_color = Draw.color(0, 0, 0),
+		score_color = Draw.color(255, 255, 255),
+		best_color = Draw.color(0, 255, 0),
+		default_color = Draw.color(200, 200, 200),
+		outline_width = 3,
+		colors = {
+			single = Draw.color(0, 200, 255),
+			double = Draw.color(0, 80, 255),
+			shrine = Draw.color(255, 140, 0),
+			crate = Draw.color(255, 255, 0),
+			tether = Draw.color(255, 0, 255),
+			pump = Draw.color(255, 255, 255),
+			fire = Draw.color(255, 0, 0),
+			pier = Draw.color(120, 255, 120),
+			pool = Draw.color(0, 255, 120),
+			crew = Draw.color(200, 160, 255),
+			buckets = Draw.color(160, 220, 255),
+			ropes = Draw.color(210, 170, 110),
+			harpoons = Draw.color(255, 200, 200),
+			humidify = Draw.color(0, 160, 255),
+			crossing = Draw.color(255, 120, 200),
+			look = Draw.color(255, 255, 160),
+			north = Draw.color(120, 200, 255),
+			dodge = Draw.color(255, 60, 160),
+			surge = Draw.color(160, 120, 255),
+			stunned = Draw.color(255, 255, 255),
+			untether = Draw.color(255, 120, 255),
+			drop = Draw.color(255, 80, 80),
+			wait = Draw.color(150, 150, 150),
+			step = Draw.color(255, 200, 120),
+			repair = Draw.color(255, 170, 0),
+			multi = Draw.color(255, 90, 0),
+		},
+	},
 	SOLO = {
 		FISH_SLOTS = 19,
 		FIRST_BATCH = 17,
@@ -142,19 +262,21 @@ local CONST = {
 		HOVER_MIN_TILES = 4,
 		WAYPOINT_RADIUS = 8,
 		WAYPOINT_TRIES = 60,
-		LOAD_AT_INTENSITY = 95,
 		HUMIDIFY_AT_WATER = 3,
 		HUMIDIFY_RETRY_MS = 10000,
 		HUMIDIFY_SETTLE_MS = 3500,
 		THIRD_BATCH = 19,
 		STEP_OFF_COUNT_MS = 2500,
 		TAKE_BUCKETS_WAIT_MS = 2400,
+		TAKE_BUCKETS_PER_CLICK = 10,
 		TAKE_BUCKETS_SLOW_CHANCE = 0.1,
 		P4_BURN_KEEP_GOING_FISH = 3,
 		FISH_SEEN_MS = 2400,
 		DROP_MIN_TILES = 5,
 		P3_STOP_INTENSITY = 30,
 		P4_LOAD_INTENSITY = 95,
+		LEAVE_INTENSITY = 90,
+		P4_LOAD_RAMP_FROM = 80,
 		P4_HUMIDIFY_FIRE_RANGE = 12,
 		NO_HUMIDIFY_DURING = { fish = true, cook = true, load = true, attack = true },
 		P4_DOUBLE_FREE = 8,
@@ -175,13 +297,11 @@ local CONST = {
 		P5_LOOK_NEAR = 5,
 		P5_LOOK_DETOUR = 2,
 		P5_LOOK_DETOUR_STEPS = 6,
-		HAMMER_TRIES = 2,
 		LOAD_SOUND_MISSING = 3,
 		FIRE_FORGET_RANGE = 13,
 		TOP_UP_FISH = 2,
 		P4_STOP_ESSENCE = 20,
 		DROP_PER_STEP = 2,
-		BEACH_BOX = { west = -1, east = 15, south = -4, north = 15 },
 		NORTH_BOX = { west = -6, east = 15, south = -5, north = 29 },
 		ISLAND_BOXES = {
 			south_beach = { west = -2, east = 14, south = -26, north = -7 },
@@ -193,6 +313,8 @@ local CONST = {
 			northwest_beach = { west = -25, east = -2, south = 11, north = 28 },
 			north_beach = { west = -1, east = 14, south = 11, north = 29 },
 		},
+		BOX_MARGIN = 2,
+		HUB_DETOUR = 2,
 		CLUSTER_GAP = 3,
 		CLUSTER_WEIGHT = 3,
 		FIRE_VALUE = {
@@ -204,6 +326,7 @@ local CONST = {
 			crate = 0.15,
 			pool = 0.1,
 			path = 0.2,
+			hub = 0.4,
 			far_steps = 30,
 			crossing = 0.5,
 			outside = 0.5,
@@ -213,9 +336,9 @@ local CONST = {
 			pool_range = 2,
 			pair_range = 3,
 		},
-		DOUSE_SPOT_RANGE = 4,
-		SHARED_SPOT_EXTRA_STEPS = 3,
 		TETHER_POLL_MS = 60,
+		WAVE_BUSY_MS = 10000,
+		TETHER_WARNING_MS = 9000,
 		HOVER_RAW = 2,
 	},
 }
@@ -231,6 +354,7 @@ local Task: any = {}
 local Game: any = {}
 local Loop: any = {}
 local Solo: any = {}
+local Island: any = {}
 local Group: any = {}
 local Handler: any = {}
 
@@ -331,12 +455,48 @@ export type RunState = {
 	fires_shown: string,
 	landing_dodged_at: number,
 	boxes_shown: string,
+	route_cache: {
+		tick: number,
+		routes: { [string]: { Tile } | false },
+		floods: { [string]: Flood | false },
+		grid: SafeSpot.Grid | false | nil,
+	},
 	incoming: { [string]: { tile: Tile, lands: number } },
 	projectiles_seen: { [string]: boolean },
 	fire_size: number?,
 	preparing: boolean,
 	forfeiting: boolean,
 	solo: SoloRound,
+	island: { IslandItem }?,
+}
+
+export type IslandItem = {
+	kind: string,
+	npc: Npc?,
+	loc: Loc?,
+	tiles: { Tile },
+	steps: number,
+	fit: number,
+	need: number,
+	score: number,
+	between: boolean?,
+	slots: { number }?,
+	rank: number,
+	stand: Tile?,
+	drop: { count: number, water: boolean }?,
+	wait: State?,
+	fires: { Npc }?,
+}
+
+export type Flood = {
+	x: number,
+	y: number,
+	width: number,
+	height: number,
+	from: number,
+	dist: { [number]: number },
+	prev: { [number]: number },
+	order: { [number]: number },
 }
 
 export type Box = { min_x: number, max_x: number, min_y: number, max_y: number }
@@ -348,6 +508,9 @@ export type SoloRound = {
 	loaded: number,
 	load_sounds: number,
 	inventory_loads: number,
+	last_raw: number,
+	loaded_raw: number,
+	loaded_cooked: number,
 	last_fish: number,
 	first_loaded_at: number?,
 	p2_loading: boolean,
@@ -358,6 +521,21 @@ export type SoloRound = {
 	p4_stage: string?,
 	p4_load_base: number,
 	p4_raw: boolean,
+	crates_seen: { [string]: Tile },
+	island_top: string,
+	island_round: number,
+	island_signature: string,
+	loop_round: number,
+	acting: string?,
+	multi_at: Tile?,
+	hub_flood: { key: string, flood: Flood }?,
+	poured_at: number?,
+	fishing_target: number,
+	fishing_cook: boolean,
+	watch_tick: number,
+	watch_changed: boolean,
+	stray_since: number?,
+	stop_reason: string?,
 	fish_seen: { { at: number, fish: number } },
 	p5_stage: string?,
 	p5_north: Side?,
@@ -372,7 +550,6 @@ export type SoloRound = {
 	p2_box: Box?,
 	island_boxes: { [string]: Box }?,
 	p5_route_at: number,
-	hammer_tries: number,
 	p5_looked: { [string]: { [string]: boolean } },
 	p5_seen: { [string]: Tile },
 	p5_limits: { [string]: number },
@@ -395,9 +572,21 @@ local function new_solo_round(): SoloRound
 		loaded = 0,
 		load_sounds = 0,
 		inventory_loads = 0,
+		last_raw = 0,
+		loaded_raw = 0,
+		loaded_cooked = 0,
 		last_fish = 0,
 		p4_load_base = 0,
 		p4_raw = false,
+		crates_seen = {},
+		island_top = "",
+		island_round = 0,
+		island_signature = "",
+		loop_round = 0,
+		watch_tick = -1,
+		watch_changed = false,
+		fishing_target = 0,
+		fishing_cook = false,
 		fish_seen = {},
 		p2_loading = false,
 		humidify_at = 0,
@@ -405,7 +594,6 @@ local function new_solo_round(): SoloRound
 		p3_humidify = false,
 		p2_skip = {},
 		p5_route_at = 1,
-		hammer_tries = 0,
 		p5_looked = {},
 		p5_seen = {},
 		p5_limits = {},
@@ -462,6 +650,7 @@ local S: RunState = {
 	fires_shown = "",
 	landing_dodged_at = 0,
 	boxes_shown = "",
+	route_cache = { tick = -1, routes = {}, floods = {} },
 	incoming = {},
 	projectiles_seen = {},
 	preparing = false,
@@ -596,13 +785,12 @@ export type State =
 	| "HUMIDIFY"
 	| "P3_BUCKETS"
 	| "P3_CROSS"
-	| "P3_CLEAR"
-	| "P2_CLEAR"
 	| "P3_DROP"
-	| "P4_COOK_DROP"
-	| "P5_CLEAR"
-	| "P5_HUMIDIFY_WALK"
-	| "P5_FISHING"
+	| "P5_WALK"
+	| "STEP_OFF"
+	| "MULTI_DOUSE"
+	| "DOUSE_TOP"
+	| "LOAD_SCORED"
 
 export type Plan = {
 	hazard: Npc?,
@@ -615,6 +803,10 @@ export type Plan = {
 	players: number?,
 	departure: number?,
 	drop: number?,
+	drop_water: boolean?,
+	after: Tile?,
+	crate: IslandItem?,
+	item: IslandItem?,
 }
 
 local plan: Plan = {}
@@ -644,6 +836,7 @@ return {
 	Game = Game,
 	Loop = Loop,
 	Solo = Solo,
+	Island = Island,
 	Group = Group,
 	Handler = Handler,
 }
