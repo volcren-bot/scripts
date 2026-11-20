@@ -8,9 +8,6 @@ local time = Host.time
 local Biometrics = require("@lib/main/antiban/biometrics")
 local Camera = require("@lib/main/camera")
 local Core = require("./core")
-local DebugDraw = require("@lib/main/debug_draw")
-local Draw = require("@lib/utils/draw")
-local Geometry = require("@lib/utils/math/geometry")
 local Inventory = require("@lib/main/interfaces/gametabs/inventory")
 local Log = require("@lib/utils/log")
 local Magic = require("@lib/main/interfaces/gametabs/magic")
@@ -19,7 +16,6 @@ local Mouse = require("@lib/utils/input/mouse")
 local Npcs = require("@lib/main/entities/npcs")
 local Objects = require("@lib/main/entities/objects")
 local Player = require("@lib/main/player")
-local Projection = require("@lib/main/projection/projection")
 local Random = require("@lib/utils/math/random")
 local Ticks = require("@lib/utils/ticks")
 local Walker = require("@lib/main/walker")
@@ -30,7 +26,6 @@ type State = Core.State
 type Npc = Core.Npc
 type Loc = Core.Loc
 type Tile = Core.Tile
-type Point = { x: number, y: number }
 local CONST = Core.CONST
 local Items = Core.Items
 local HUD = Core.HUD
@@ -1345,89 +1340,6 @@ function Solo.current_box(): (Box?, { Box })
 		end
 	end
 	return nil, {}
-end
-
-function Solo.corner(quad: Geometry.Quad, name: string): Point
-	if name == "top" then
-		return quad.top
-	elseif name == "right" then
-		return quad.right
-	elseif name == "bottom" then
-		return quad.bottom
-	end
-	return quad.left
-end
-
-function Solo.box_segments(box: Box): { { Point } }
-	local edges: { { tile: Tile, from: string, to: string } } = {}
-	for x = box.min_x, box.max_x do
-		table.insert(edges, { tile = { x = x, y = box.min_y }, from = "top", to = "left" })
-	end
-	for y = box.min_y, box.max_y do
-		table.insert(edges, { tile = { x = box.max_x, y = y }, from = "left", to = "bottom" })
-	end
-	for x = box.max_x, box.min_x, -1 do
-		table.insert(edges, { tile = { x = x, y = box.max_y }, from = "bottom", to = "right" })
-	end
-	for y = box.max_y, box.min_y, -1 do
-		table.insert(edges, { tile = { x = box.min_x, y = y }, from = "right", to = "top" })
-	end
-	local segments: { { Point } } = {}
-	local first: Point? = nil
-	local last: Point? = nil
-	local whole = true
-	local edge_tiles: { Tile } = {}
-	for i, edge in ipairs(edges) do
-		edge_tiles[i] = edge.tile
-	end
-	local quads = Projection.tiles(edge_tiles)
-	for i, edge in ipairs(edges) do
-		local quad = quads[i]
-		if quad == nil then
-			last = nil
-			whole = false
-		else
-			local a, b = Solo.corner(quad, edge.from), Solo.corner(quad, edge.to)
-			if last then
-				table.insert(segments, { last :: Point, a })
-			end
-			table.insert(segments, { a, b })
-			first = first or a
-			last = b
-		end
-	end
-	if whole and first and last then
-		table.insert(segments, { last :: Point, first :: Point })
-	end
-	return segments
-end
-
-function Solo.show_boxes()
-	local r = S.solo
-	local boxes = Solo.island_boxes()
-	local wanted = r.p5_stage ~= nil or (r.p3_stage ~= nil and r.p4_stage == nil)
-	if not DebugDraw.on() or boxes == nil or not wanted then
-		if S.boxes_shown ~= "" then
-			S.boxes_shown = ""
-			DebugDraw.set("island_boxes", nil)
-		end
-		return
-	end
-	local current, left = Solo.current_box()
-	local key = `{if current then `{current.min_x},{current.min_y}` else "none"}:{#left}`
-	if key == S.boxes_shown then
-		return
-	end
-	S.boxes_shown = key
-	DebugDraw.set("island_boxes", function()
-		for _, box: Box in boxes :: { [string]: Box } do
-			local color = if box == current
-				then CONST.CURRENT_BOX_COLOR
-				elseif table.find(left, box) then CONST.LEFT_BOX_COLOR
-				else CONST.BOX_COLOR
-			Draw.lines(Solo.box_segments(box), color, CONST.BOX_DEBUG_WIDTH)
-		end
-	end)
 end
 
 function Solo.covers(fire: Npc, things: { Tile }, range: number): boolean

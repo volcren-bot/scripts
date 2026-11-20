@@ -82,27 +82,7 @@ local SEGMENTS: { [string]: string } = {
 	["7"] = "abc",
 	["8"] = "abcdefg",
 	["9"] = "abcdfg",
-	A = "abcefg",
-	b = "cdefg",
-	C = "adef",
-	d = "bcdeg",
-	E = "adefg",
-	F = "aefg",
-	H = "bcefg",
-	J = "bcde",
-	L = "def",
-	n = "ceg",
-	o = "cdeg",
-	P = "abefg",
-	r = "eg",
-	t = "defg",
-	U = "bcdef",
-	y = "bcdfg",
 }
-
-local TAG_LETTERS = "AbCdEFHJLnoPrtUy"
-local tags: { [string]: string } = {}
-local tag_used: { [string]: boolean } = {}
 
 local UNCONFINED: { [string]: boolean } = {
 	dodge = true,
@@ -277,7 +257,9 @@ function Island.fishing_needs(needs: Needs, target: number, can_cook: boolean)
 		return
 	end
 	needs.double = need.double
-	needs.single = need.single
+	if raw == 0 or target - count <= CONST.SOLO.TOP_UP_FISH then
+		needs.single = need.single
+	end
 	if raw > 0 and not Doing.is_doing("fish") then
 		needs.shrine = if target - count > CONST.SOLO.TOP_UP_FISH then need.shrine_first else need.shrine
 	end
@@ -1884,8 +1866,8 @@ function Island.text_width(text: string, h: number): number
 	return width
 end
 
-function Island.text(text: string, center: Point, color: Draw.Color, size: number?)
-	local h = size or CONST.ISLAND_DRAW.text_size
+function Island.text(text: string, center: Point, color: Draw.Color)
+	local h = CONST.ISLAND_DRAW.text_size
 	local x = center.x - Island.text_width(text, h) / 2
 	local y = center.y - h / 2
 	local strokes: { { Point } } = {}
@@ -1909,9 +1891,8 @@ function Island.text(text: string, center: Point, color: Draw.Color, size: numbe
 			{ x = seg[2].x + offset, y = seg[2].y + offset },
 		})
 	end
-	local width = math.max(1, math.floor(CONST.ISLAND_DRAW.text_width * h / CONST.ISLAND_DRAW.text_size + 0.5))
-	Draw.lines(shadow, CONST.ISLAND_DRAW.shadow_color, width + 2)
-	Draw.lines(strokes, color, width)
+	Draw.lines(shadow, CONST.ISLAND_DRAW.shadow_color, CONST.ISLAND_DRAW.text_width + 2)
+	Draw.lines(strokes, color, CONST.ISLAND_DRAW.text_width)
 end
 
 function Island.center(quads: { Geometry.Quad? }, from: number, to: number): Point?
@@ -1956,39 +1937,11 @@ function Island.outline(tiles: { Tile }, quads: { Geometry.Quad? }, from: number
 	return segments
 end
 
-function Island.tag(item: Item): string
-	local t = (item.npc or item.stand or item.tiles[1]) :: any
-	local key = if t then `{item.kind} {t.x},{t.y}` else item.kind
-	local name = tags[key]
-	if name then
-		return name
-	end
-	local picked = ""
-	repeat
-		local chars: { string } = {}
-		for i = 1, 5 do
-			local k = math.random(1, #TAG_LETTERS)
-			chars[i] = string.sub(TAG_LETTERS, k, k)
-		end
-		picked = table.concat(chars)
-	until not tag_used[picked]
-	tags[key] = picked
-	tag_used[picked] = true
-	Log.log("Tempoross", `   Tag {picked} is {key}`)
-	return picked
-end
-
 function Island.draw(items: { Item })
 	if not DebugDraw.on() then
 		return
 	end
 	local shown = table.clone(items)
-	local names: { [Item]: string } = {}
-	for _, item in ipairs(shown) do
-		if item.slots == nil then
-			names[item] = Island.tag(item)
-		end
-	end
 	local colors: { [string]: Draw.Color } = CONST.ISLAND_DRAW.colors :: any
 	DebugDraw.set("island", function()
 		local burning: { [string]: boolean } = {}
@@ -2026,11 +1979,6 @@ function Island.draw(items: { Item })
 				local center = Island.center(quads, from, from + #item.tiles - 1)
 				if center then
 					Island.text(string.format("%.2f", item.score), center, text_color)
-					local below = {
-						x = center.x,
-						y = center.y + (CONST.ISLAND_DRAW.text_size + CONST.ISLAND_DRAW.tag_size) / 2 + 4,
-					}
-					Island.text(names[item] or "", below, text_color, CONST.ISLAND_DRAW.tag_size)
 				end
 			end
 		end

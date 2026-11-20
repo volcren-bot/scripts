@@ -587,9 +587,6 @@ function Hazard.fire_clusters(fires: { Npc }): { { Npc } }
 end
 
 function Hazard.show_fires(force: boolean?)
-	if CONFIG.solo and S.side ~= nil then
-		Solo.show_boxes()
-	end
 	local layers: { { tiles: { Tile }, color: Draw.Color } } = {}
 	local keys: { string } = {}
 	if DebugDraw.on() then
