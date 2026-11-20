@@ -173,6 +173,7 @@ local CONST = {
 			humidify = 3,
 			step = 2.5,
 			drop = 2,
+			pickup = 2,
 			path = 1,
 		},
 		alone = {
@@ -234,6 +235,7 @@ local CONST = {
 			harpoons = Draw.color(255, 200, 200),
 			humidify = Draw.color(0, 160, 255),
 			route = Draw.color(255, 120, 200),
+			pickup = Draw.color(160, 220, 255),
 			look = Draw.color(255, 255, 160),
 			north = Draw.color(120, 200, 255),
 			dodge = Draw.color(255, 60, 160),
@@ -295,6 +297,12 @@ local CONST = {
 		P3_FIRE_RANGE = 3,
 		P3_WAYPOINT_NEAR = 2,
 		P3_SEE_RANGE = 12,
+		P3_CLEAR_INTENSITY = 50,
+		P3_SWEEP_BACK = 4,
+		P3_DROP_BATCH = { 2, 3 },
+		P3_DROP_WALK = 4,
+		P3_MIN_BUCKETS = 7,
+		P3_PICKUP_WAIT_MS = 2400,
 		P4_LOAD_INTENSITY = 95,
 		LEAVE_INTENSITY = 90,
 		P4_LOAD_RAMP_FROM = 80,
@@ -349,6 +357,7 @@ local CONST = {
 			hub_floor = 0.55,
 			near_steps = 12,
 			near_min = 0.05,
+			tour_step = 0.1,
 			cluster_size = 0.33,
 			far_steps = 30,
 			crossing = 0.5,
@@ -525,6 +534,8 @@ export type Flood = {
 
 export type Box = { min_x: number, max_x: number, min_y: number, max_y: number }
 
+export type ClearStop = { key: string, tile: Tile, rank: number }
+
 export type SoloRound = {
 	opened: boolean,
 	doubled: boolean,
@@ -571,6 +582,10 @@ export type SoloRound = {
 	p3_buckets: Loc?,
 	p3_route: { Tile },
 	p3_leg: number,
+	p3_plan: { ClearStop },
+	p3_planned: { [string]: boolean },
+	p3_progress: number,
+	p3_drop_batch: number,
 	p3_box: Box?,
 	p2_box: Box?,
 	island_boxes: { [string]: Box }?,
@@ -620,6 +635,10 @@ local function new_solo_round(): SoloRound
 		p3_humidify = false,
 		p3_route = {},
 		p3_leg = 1,
+		p3_plan = {},
+		p3_planned = {},
+		p3_progress = 1,
+		p3_drop_batch = 2,
 		p2_skip = {},
 		p5_route_at = 1,
 		p5_looked = {},
@@ -815,6 +834,7 @@ export type State =
 	| "P3_BUCKETS"
 	| "P3_ROUTE"
 	| "P3_DROP"
+	| "P3_PICKUP"
 	| "P5_WALK"
 	| "STEP_OFF"
 	| "MULTI_DOUSE"

@@ -64,6 +64,7 @@ type Needs = {
 	humidify: number,
 	step: number,
 	drop: Drop?,
+	pickup: number,
 	through_fire: boolean,
 	wait: State,
 	wait_tile: Tile,
@@ -237,6 +238,7 @@ function Island.blank_needs(): Needs
 		humidify = 0,
 		step = 0,
 		drop = nil,
+		pickup = 0,
 		through_fire = false,
 		wait = "CONTINUE",
 		wait_tile = Geo.to_tile(snap.me),
@@ -378,11 +380,27 @@ end
 function Island.part_three_needs(needs: Needs)
 	local r = S.solo
 	local need = CONST.ISLAND.need
+	if r.p3_stage == "route" or r.p3_stage == "clear" then
+		needs.pickup = math.max(0, CONST.SOLO.P3_MIN_BUCKETS - Solo.buckets_held())
+	end
 	if r.p3_stage == "route" then
 		needs.fire = need.fire
 		needs.fire_set = Solo.route_fires()
 		if Solo.p3_waypoint() ~= nil then
 			needs.route = need.route
+		end
+	elseif r.p3_stage == "clear" then
+		local set: { [number]: boolean } = {}
+		for _, fire in ipairs(Solo.p3_box_fires()) do
+			if r.p3_planned[`{fire.x},{fire.y}`] then
+				set[fire.index] = true
+			end
+		end
+		needs.fire = need.fire
+		needs.fire_set = set
+		local excess = Solo.clear_excess()
+		if excess > 0 and Solo.dropping_on_the_way() then
+			needs.drop = { count = math.min(excess, r.p3_drop_batch), water = true }
 		end
 	end
 end
@@ -849,6 +867,19 @@ function Island.humidify_item(needs: Needs, items: { Item })
 	if needs.humidify > 0 then
 		item.rank = (CONST.ISLAND.rank :: { [string]: number }).humidify
 	end
+	table.insert(items, item)
+end
+
+function Island.pickup_item(needs: Needs, items: { Item })
+	if needs.pickup <= 0 or snap.free == 0 then
+		return
+	end
+	local pile = Solo.nearest_dropped_bucket()
+	if pile == nil then
+		return
+	end
+	local item = urgent_item("pickup", { pile }, "pickup")
+	item.steps = Route.walk_steps(pile)
 	table.insert(items, item)
 end
 
@@ -1633,6 +1664,7 @@ function Island.evaluate(): { Item }
 	end
 	Island.humidify_item(needs, items)
 	Island.drop_item(needs, items)
+	Island.pickup_item(needs, items)
 	if needs.step > 0 then
 		local t = Solo.step_off_tile()
 		local step = new_item("step", 1, 1, needs.step, nil, nil, { t }, t)
@@ -1982,7 +2014,38 @@ function Island.draw(items: { Item })
 				end
 			end
 		end
+		Island.draw_waypoints()
 	end)
+end
+
+function Island.draw_waypoints()
+	local r = S.solo
+	if r.p3_stage ~= "route" and r.p3_stage ~= "clear" then
+		return
+	end
+	local tiles: { Tile } = {}
+	local labels: { string } = {}
+	local at: { [string]: number } = {}
+	for i, t in ipairs(r.p3_route) do
+		local key = `{t.x},{t.y}`
+		local known = at[key]
+		if known then
+			labels[known] ..= ` {i}`
+		else
+			table.insert(tiles, t)
+			table.insert(labels, tostring(i))
+			at[key] = #tiles
+		end
+	end
+	local quads = Projection.tiles(tiles)
+	local color = (CONST.ISLAND_DRAW.colors :: { [string]: Draw.Color }).route
+	Draw.lines(Island.outline(tiles, quads, 1), color, CONST.ISLAND_DRAW.outline_width)
+	for i, label in ipairs(labels) do
+		local center = Island.center(quads, i, i)
+		if center then
+			Island.text(label, center, color)
+		end
+	end
 end
 
 function Island.clear()

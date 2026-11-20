@@ -3773,7 +3773,11 @@ Handler.states = {
 	P3_ROUTE = Solo.walk_item,
 	P3_DROP = function()
 		Solo.drop_buckets(plan.drop or 0, plan.drop_water ~= false)
+		if S.solo.p3_stage == "clear" then
+			S.solo.p3_drop_batch = Solo.roll_drop_batch()
+		end
 	end,
+	P3_PICKUP = Solo.pick_up_bucket,
 	P5_WALK = Solo.walk_item,
 	STEP_OFF = Solo.step_to,
 	MULTI_DOUSE = Solo.multi_douse,

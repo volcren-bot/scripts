@@ -8,6 +8,7 @@ local time = Host.time
 local Biometrics = require("@lib/main/antiban/biometrics")
 local Camera = require("@lib/main/camera")
 local Core = require("./core")
+local GroundItems = require("@lib/main/entities/ground_items")
 local Inventory = require("@lib/main/interfaces/gametabs/inventory")
 local Log = require("@lib/utils/log")
 local Magic = require("@lib/main/interfaces/gametabs/magic")
@@ -26,6 +27,7 @@ type State = Core.State
 type Npc = Core.Npc
 type Loc = Core.Loc
 type Tile = Core.Tile
+type ClearStop = Core.ClearStop
 local CONST = Core.CONST
 local Items = Core.Items
 local HUD = Core.HUD
@@ -569,7 +571,8 @@ function Solo.wants_humidify(): boolean
 	if r.p2_clear ~= nil and r.p3_stage == nil and #Solo.side_fires() == 0 then
 		return false
 	end
-	if r.p3_stage == "buckets" or r.p3_stage == "humidify" or (r.p3_stage == "route" and r.p3_humidify) then
+	local walking_in = r.p3_stage == "route" or r.p3_stage == "clear"
+	if r.p3_stage == "buckets" or r.p3_stage == "humidify" or (walking_in and r.p3_humidify) then
 		return false
 	end
 	if r.p5_stage == "buckets" or r.p5_stage == "humidify" or r.p5_stage == "fish" or r.p5_stage == "load" then
@@ -1292,6 +1295,199 @@ function Solo.route_fires(): { [number]: boolean }
 	return set
 end
 
+function Solo.in_box(box: Box?, t: Tile): boolean
+	if box == nil then
+		return false
+	end
+	local b = box :: Box
+	return t.x >= b.min_x and t.x <= b.max_x and t.y >= b.min_y and t.y <= b.max_y
+end
+
+function Solo.p3_box_fires(): { Npc }
+	local r = S.solo
+	return Solo.area_fires(function(fire: Npc): boolean
+		return not r.p2_skip[`{fire.x},{fire.y}`] and Solo.fire_in(r.p3_box, fire)
+	end)
+end
+
+function Solo.sweep_rank(t: Tile): number
+	local best, rank = math.huge, 1
+	for i, waypoint in ipairs(S.solo.p3_route) do
+		local d = Geo.distance(t, waypoint)
+		if d < best then
+			best, rank = d, i
+		end
+	end
+	return rank
+end
+
+function Solo.step_cost(at: Tile, reached: number, stop: ClearStop): number
+	return Geo.distance(at, stop.tile) + CONST.SOLO.P3_SWEEP_BACK * math.max(0, reached - stop.rank)
+end
+
+function Solo.tour_cost(from: Tile, progress: number, tour: { ClearStop }): number
+	local cost, at, reached = 0, from, progress
+	for _, stop in ipairs(tour) do
+		cost += Solo.step_cost(at, reached, stop)
+		at, reached = stop.tile, math.max(reached, stop.rank)
+	end
+	return cost
+end
+
+function Solo.plan_clear(fires: { Npc })
+	local r = S.solo
+	local from = Geo.to_tile(snap.me)
+	local left: { ClearStop } = {}
+	r.p3_planned = {}
+	for _, fire in ipairs(fires) do
+		local tile = Geo.to_tile(fire)
+		local key = `{fire.x},{fire.y}`
+		r.p3_planned[key] = true
+		table.insert(left, { key = key, tile = tile, rank = Solo.sweep_rank(tile) })
+	end
+	local tour: { ClearStop } = {}
+	local at, reached = from, r.p3_progress
+	while #left > 0 do
+		local best, best_cost = 1, math.huge
+		for i, stop in ipairs(left) do
+			local cost = Solo.step_cost(at, reached, stop)
+			if cost < best_cost then
+				best, best_cost = i, cost
+			end
+		end
+		local stop = table.remove(left, best) :: ClearStop
+		table.insert(tour, stop)
+		at, reached = stop.tile, math.max(reached, stop.rank)
+	end
+	local cost = Solo.tour_cost(from, r.p3_progress, tour)
+	local improved = true
+	while improved do
+		improved = false
+		for i = 1, #tour - 1 do
+			for j = i + 1, #tour do
+				local swapped = table.clone(tour)
+				for k = 0, j - i do
+					swapped[i + k] = tour[j - k]
+				end
+				local swapped_cost = Solo.tour_cost(from, r.p3_progress, swapped)
+				if swapped_cost < cost then
+					tour, cost, improved = swapped, swapped_cost, true
+				end
+			end
+		end
+	end
+	r.p3_plan = tour
+	local stops: { string } = {}
+	for _, stop in ipairs(tour) do
+		table.insert(stops, `{stop.key}@{stop.rank}`)
+	end
+	Log.log(
+		"Tempoross",
+		`   Clearing {#tour} fires from {from.x},{from.y} past waypoint {r.p3_progress}: {table.concat(stops, " ")}`
+	)
+end
+
+function Solo.update_clear(): { Npc }
+	local r = S.solo
+	local fires = Solo.p3_box_fires()
+	local present: { [string]: boolean } = {}
+	local fresh = false
+	for _, fire in ipairs(fires) do
+		local key = `{fire.x},{fire.y}`
+		present[key] = true
+		if not r.p3_planned[key] then
+			fresh = true
+		end
+	end
+	local kept: { ClearStop } = {}
+	for _, stop in ipairs(r.p3_plan) do
+		if present[stop.key] then
+			table.insert(kept, stop)
+		else
+			r.p3_planned[stop.key] = nil
+			r.p3_progress = math.max(r.p3_progress, stop.rank)
+		end
+	end
+	r.p3_plan = kept
+	if fresh then
+		Solo.plan_clear(fires)
+	end
+	return fires
+end
+
+function Solo.roll_drop_batch(): number
+	local batch = CONST.SOLO.P3_DROP_BATCH :: { number }
+	return Random.int(batch[1], batch[2] + 1)
+end
+
+function Solo.buckets_held(): number
+	return Read.item_count(Items.WATER) + Read.item_count(Items.BUCKET)
+end
+
+function Solo.clear_excess(): number
+	local r = S.solo
+	if #r.p3_plan == 0 then
+		return 0
+	end
+	return Solo.buckets_held() - math.max(#r.p3_plan, CONST.SOLO.P3_MIN_BUCKETS)
+end
+
+function Solo.dropped_buckets(): { Host.GroundItem }
+	local found: { Host.GroundItem } = {}
+	local burning = Solo.burning_tiles()
+	for _, id in ipairs({ Items.BUCKET, Items.WATER }) do
+		for _, ground in ipairs(GroundItems.find(id) or {}) do
+			if burning[`{ground.x},{ground.y}`] == nil then
+				table.insert(found, ground)
+			end
+		end
+	end
+	return found
+end
+
+function Solo.nearest_dropped_bucket(): Tile?
+	local best: Tile?, best_distance = nil, math.huge
+	for _, ground in ipairs(Solo.dropped_buckets()) do
+		local distance = GroundItems.distance(ground, snap.me)
+		if distance < best_distance then
+			best, best_distance = { x = ground.x, y = ground.y }, distance
+		end
+	end
+	return best
+end
+
+function Solo.pick_up_bucket()
+	local tile = (plan.item :: Core.IslandItem).tiles[1]
+	local ground: Host.GroundItem? = nil
+	for _, candidate in ipairs(Solo.dropped_buckets()) do
+		if candidate.x == tile.x and candidate.y == tile.y then
+			ground = candidate
+			break
+		end
+	end
+	if ground == nil then
+		return
+	end
+	Read.sync_inventory()
+	local before = Solo.buckets_held()
+	Log.log("Tempoross", `   {before} buckets, picking one up at {tile.x},{tile.y}`)
+	if not GroundItems.interact(ground :: Host.GroundItem, "Take", false) then
+		Log.log("Tempoross", `   Couldn't take the bucket at {tile.x},{tile.y}`)
+		return
+	end
+	Route.sleep_watching(CONST.SOLO.P3_PICKUP_WAIT_MS, nil, function(): boolean
+		Read.sync_inventory()
+		return Solo.buckets_held() > before
+	end)
+end
+
+function Solo.dropping_on_the_way(): boolean
+	local dest = Player.destination()
+	return dest ~= nil
+		and Geo.distance(snap.me, dest :: Tile) >= CONST.SOLO.P3_DROP_WALK
+		and not Solo.humidify_settling()
+end
+
 function Solo.travel_goal(): Tile?
 	local r = S.solo
 	if r.p5_stage ~= nil then
@@ -1330,7 +1526,7 @@ function Solo.current_box(): (Box?, { Box })
 		end
 		return boxes[current], left
 	end
-	if r.p3_stage == "route" and r.p3_box ~= nil then
+	if (r.p3_stage == "route" or r.p3_stage == "clear") and r.p3_box ~= nil then
 		return r.p3_box, {}
 	end
 	local me = snap.me
@@ -1417,7 +1613,12 @@ function Solo.fire_values(fires: { Npc }, wanted: { [number]: boolean }?): { [nu
 	local base: { [number]: number } = {}
 	local steps_to: { [number]: number } = {}
 	local crossing: { [number]: boolean } = {}
-	local on_route = S.solo.p3_stage == "route"
+	local clearing = S.solo.p3_stage == "clear"
+	local order: { [string]: number } = {}
+	for i, stop in ipairs(S.solo.p3_plan) do
+		order[stop.key] = i
+	end
+	local on_route = S.solo.p3_stage == "route" or clearing
 	local close_first = on_route or Island.part() == 2 or (S.solo.p4_stage ~= nil and S.solo.p5_stage == nil)
 	local function base_of(fire: Npc): number
 		local known = base[fire.index]
@@ -1449,7 +1650,10 @@ function Solo.fire_values(fires: { Npc }, wanted: { [number]: boolean }?): { [nu
 		end
 		local own = base_of(fire)
 		local value: number
-		if close_first then
+		if clearing then
+			local at = order[`{fire.x},{fire.y}`]
+			value = if at then math.max(w.near_min, 1 - (at - 1) * w.tour_step) else 0
+		elseif close_first then
 			local near = math.clamp(1 - steps_to[fire.index] / w.near_steps, w.near_min, 1)
 			value = if on_route then near else near / (1 + w.cluster_size * ((size[fire.index] or 1) - 1))
 		else
@@ -1701,16 +1905,36 @@ function Solo.advance_three()
 	end
 	if r.p3_stage == "route" then
 		Solo.advance_route()
-		if Solo.p3_waypoint() ~= nil or next(Solo.route_fires()) ~= nil then
+		local inside = Solo.in_box(r.p3_box, snap.me)
+		if not inside and (Solo.p3_waypoint() ~= nil or next(Solo.route_fires()) ~= nil) then
 			return
 		end
-		r.p3_stage = "done"
-		r.p4_stage = "fish"
-		r.p4_load_base = r.loaded
+		r.p3_stage = "clear"
+		r.p3_plan = {}
+		r.p3_planned = {}
+		r.p3_progress = math.clamp(r.p3_leg - 1, 1, #r.p3_route)
+		r.p3_drop_batch = Solo.roll_drop_batch()
 		Log.log(
 			"Tempoross",
-			`Part 4: route done at {Read.hud_percent(HUD.INTENSITY) or "?"}% storm, fishing {CONST.SOLO.THIRD_BATCH} fish`
+			`   In the south beach at {snap.me.x},{snap.me.y} by waypoint {r.p3_leg}, clearing every fire in it`
 		)
+	end
+	if r.p3_stage == "clear" then
+		local fires = Solo.update_clear()
+		local intensity = Read.hud_percent(HUD.INTENSITY) or 0
+		local capped = intensity >= CONST.SOLO.P3_CLEAR_INTENSITY
+		if #fires > 0 and Solo.has_water() and not capped then
+			return
+		end
+		local reason = if #fires == 0
+			then "south beach clear"
+			elseif capped then `{#fires} fires left at the storm cap`
+			else `out of buckets with {#fires} fires left`
+		r.p3_stage = "done"
+		r.p3_plan = {}
+		r.p4_stage = "fish"
+		r.p4_load_base = r.loaded
+		Log.log("Tempoross", `Part 4: {reason} at {intensity}% storm, fishing {CONST.SOLO.THIRD_BATCH} fish`)
 	end
 	Solo.advance_four()
 end
@@ -2010,6 +2234,9 @@ function Solo.state_for(item: Core.IslandItem, index: number, skipped: { [State]
 		plan.drop = drop.count
 		plan.drop_water = drop.water
 		return "P3_DROP"
+	elseif kind == "pickup" then
+		plan.item = item
+		return "P3_PICKUP"
 	elseif kind == "fire" then
 		plan.fire = item.npc :: Npc
 		plan.after = Solo.next_fire(S.island or {}, index)
