@@ -9,6 +9,7 @@ type Tile = Host.Tile
 local Antiban = require("@lib/main/antiban/antiban")
 local AntibanTasks = require("@lib/main/antiban/antiban_tasks")
 local Biometrics = require("@lib/main/antiban/biometrics")
+local Camera = require("@lib/main/camera")
 local Chat = require("@lib/main/interfaces/chatbox/chat")
 local ChatOptions = require("@lib/main/interfaces/chatbox/chat_options")
 local GameState = require("@lib/main/game_state")
@@ -33,7 +34,7 @@ type PatchKind = "EMPTY" | "DRY" | "GROWING" | "GROWN" | "BLIGHTED"
 type Patch = { index: number, tile: Tile, loc: Loc?, kind: PatchKind }
 type Offset = { dx: number, dy: number }
 
-local function route(): { Offset }
+local function build_route(patches: number): { Offset }
 	local rows = { 11, 8, 5, 2, -4, -7, -10, -13 }
 	local out: { Offset } = {}
 	for i, dy in rows do
@@ -44,8 +45,10 @@ local function route(): { Offset }
 		table.insert(out, { dx = first, dy = dy })
 		table.insert(out, { dx = second, dy = dy })
 	end
-	for _, dy in { -13, -10, -7, -4 } do
-		table.insert(out, { dx = 15, dy = dy })
+	if patches > #out then
+		for _, dy in { -13, -10, -7, -4 } do
+			table.insert(out, { dx = 15, dy = dy })
+		end
 	end
 	return out
 end
@@ -57,7 +60,6 @@ local CONST = {
 		{ name = "Bologano", level = 54 },
 		{ name = "Golovanova", level = 34 },
 	} :: { Crop },
-	ROUTE = route(),
 	BARREL = { dx = 4, dy = -1 } :: Offset,
 	SACK = { dx = 4, dy = 1 } :: Offset,
 	FARMHOUSE = { x = 1803, y = 3501 } :: Tile,
@@ -88,9 +90,11 @@ local CONST = {
 	USE_RANGE = 8,
 	CROSSINGS = {
 		{ from = 8, patch = 9, stand = { dx = 9, dy = -2 } },
-		{ from = 20, patch = 1, stand = { dx = 13, dy = 13 } },
+		{ from = 20, patch = 1, stand = { dx = 9, dy = 12 } },
 	} :: { { from: number, patch: number, stand: Offset } },
 	CROSSING_MS = 6000,
+	CANCEL = { ALWAYS_FROM = 20, CHANCE = 0.1 },
+	CAN_ATTEMPTS = 3,
 	BESIDE_PATCH = 3,
 	SACK_BATCH = 100,
 	STEP_MS = 2600,
@@ -116,6 +120,7 @@ local CONFIG = {
 local stats = { deposited = 0, harvested = 0, planted = 0, points = 0 }
 
 type RunState = {
+	route: { Offset },
 	finished: boolean,
 	stopping: string?,
 	blocked: string?,
@@ -127,6 +132,7 @@ type RunState = {
 	crop: Crop?,
 	cursor: number,
 	at_boundary: boolean,
+	resetting: boolean,
 	cursor_since: number,
 	hovered: number,
 	seen_ids: { [number]: number },
@@ -142,6 +148,7 @@ type RunState = {
 }
 
 local S: RunState = {
+	route = {},
 	finished = false,
 	stopping = nil,
 	blocked = nil,
@@ -153,6 +160,7 @@ local S: RunState = {
 	crop = nil,
 	cursor = 0,
 	at_boundary = true,
+	resetting = false,
 	cursor_since = 0,
 	hovered = 0,
 	seen_ids = {},
@@ -174,6 +182,7 @@ type Carried = {
 	cans: number,
 	unfilled: number,
 	lowest_can: string?,
+	wet_can: string?,
 	gricoller: boolean,
 	dibber: boolean,
 	spade: boolean,
@@ -265,11 +274,14 @@ function Read.carried(): Carried
 		cans = 0,
 		unfilled = 0,
 		lowest_can = nil,
+		wet_can = nil,
 		gricoller = false,
 		dibber = false,
 		spade = false,
 	}
 	local lowest = math.huge
+	local wettest, wettest_can = 0, nil
+	local gricoller_wet = false
 	local gricoller_low = false
 	for _, item in Inventory.items() or {} do
 		local name: string = item.name or ""
@@ -293,18 +305,28 @@ function Read.carried(): Carried
 				lowest = doses
 				carried.lowest_can = name
 			end
+			if doses > wettest then
+				wettest = doses
+				wettest_can = name
+			end
 		elseif name == CONST.GRICOLLER.NAME then
 			local charges = Varbits.get(Varbits.GRICOLLER_CAN_CHARGES) or 0
 			carried.gricoller = true
 			carried.cans += 1
 			carried.doses += charges
 			gricoller_low = charges < CONST.GRICOLLER.REFILL_BELOW
+			gricoller_wet = charges > 0
 		end
 	end
 	if gricoller_low and not carried.lowest_can then
 		carried.lowest_can = CONST.GRICOLLER.NAME
 	end
+	carried.wet_can = if gricoller_wet then CONST.GRICOLLER.NAME else wettest_can
 	return carried
+end
+
+function Read.fruit_in_hand(): number
+	return stats.deposited + if snap then snap.carried.fruit else 0
 end
 
 function Read.held_crop(carried: Carried): Crop?
@@ -339,7 +361,7 @@ function Read.field(locs: { Loc }, door: Loc): { Patch }
 		end
 	end
 	local field: { Patch } = {}
-	for i, offset in CONST.ROUTE do
+	for i, offset in S.route do
 		local tile = Read.at(door, offset)
 		local loc = by_tile[`{tile.x},{tile.y}`]
 		local kind: PatchKind = if loc then Read.kind(loc) else "GROWING"
@@ -426,7 +448,7 @@ function Read.crossing_stand(): Tile?
 		return nil
 	end
 	for _, crossing in CONST.CROSSINGS do
-		local from = CONST.ROUTE[crossing.from]
+		local from = S.route[crossing.from]
 		if
 			crossing.patch == S.cursor
 			and from
@@ -537,7 +559,7 @@ end
 
 function Task.advance()
 	S.cursor += 1
-	if S.cursor > #CONST.ROUTE then
+	if S.cursor > #S.route then
 		S.cursor = 1
 		S.at_boundary = true
 	end
@@ -548,18 +570,43 @@ function Task.start_pass()
 	S.at_boundary = false
 end
 
-function Task.use_on(item: string, loc: Loc): boolean
+function Task.clear_selection(option: string): boolean
+	if Inventory.selected() and not Inventory.deselect() then
+		Log.log(NAME, `Couldn't clear the selected item before {option}`)
+		return false
+	end
+	return true
+end
+
+function Task.approach(loc: Loc, option: string): boolean
+	return Task.clear_selection(option) and Objects.approach(loc, option)
+end
+
+function Task.use_on(item: string, loc: Loc, early: boolean?): boolean
 	if Objects.distance(loc, snap.me) > CONST.USE_RANGE or not Objects.clickbox(loc) then
 		local stand = Read.nearest(Objects.stand_tiles(loc) or {}, snap.me)
 		if not stand or not Walker.walk(stand, { near = 1 }) then
 			return false
 		end
 	end
-	return Inventory.select(item) and Objects.interact(loc, "Use")
+	return Inventory.select(item) and Objects.interact(loc, "Use", if early then false else nil)
+end
+
+function Task.reveal(tile: Tile)
+	if not Walker.on_screen(tile) then
+		Camera.face(tile, true)
+	end
+	if not Walker.on_screen(tile) then
+		Camera.look_at(tile)
+	end
 end
 
 function Task.cross(loc: Loc, stand: Tile, option: string, item: string?): boolean
+	Task.reveal(stand)
 	if not Walker.click_tile(stand) then
+		local cam = Camera.state()
+		local view = if cam then `yaw {cam.yaw}, pitch {cam.pitch}, zoom {cam.zoom}` else "unknown"
+		Log.log(NAME, `Couldn't click the crossing tile from {snap.me.x},{snap.me.y} (camera {view})`)
 		return if item then Task.use_on(item, loc) else Objects.approach(loc, option)
 	end
 	if item and not Inventory.select(item) then
@@ -570,7 +617,7 @@ function Task.cross(loc: Loc, stand: Tile, option: string, item: string?): boole
 		local tile = Host.server_tile()
 		return tile ~= nil and tile.x == stand.x and tile.y == stand.y
 	end)
-	return Objects.interact(loc, if item then "Use" else option)
+	return Objects.interact(loc, if item then "Use" else option, false)
 end
 
 function Task.act(option: string, timeout_ms: number, item: string?, meanwhile: (() -> ())?): Patch?
@@ -580,11 +627,14 @@ function Task.act(option: string, timeout_ms: number, item: string?, meanwhile: 
 		return nil
 	end
 	Task.start_pass()
+	if not item and not Task.clear_selection(option) then
+		return nil
+	end
 	local stand = Read.crossing_stand()
 	local ok = if stand
 		then Task.cross(loc, stand, option, item)
-		elseif item then Task.use_on(item, loc)
-		else Objects.approach(loc, option)
+		elseif item then Task.use_on(item, loc, true)
+		else Objects.approach(loc, option, { arrive_ms = false })
 	if not ok then
 		Log.log(NAME, `{option} failed on patch {S.cursor}`)
 		return nil
@@ -597,7 +647,7 @@ function Task.act(option: string, timeout_ms: number, item: string?, meanwhile: 
 end
 
 function Task.next_index(): number
-	return S.cursor % #CONST.ROUTE + 1
+	return S.cursor % #S.route + 1
 end
 
 function Task.prehover(index: number)
@@ -608,10 +658,14 @@ function Task.prehover(index: number)
 	end
 	if index ~= S.cursor then
 		for _, crossing in CONST.CROSSINGS do
-			if crossing.patch == index then
+			if crossing.patch == index and S.route[crossing.from] then
+				if snap.door then
+					Task.reveal(Read.at(snap.door, crossing.stand))
+				end
 				return
 			end
 		end
+		Camera.face({ x = patch.tile.x + 1, y = patch.tile.y + 1 })
 		local crop = S.crop
 		if patch.kind == "EMPTY" and crop and not Inventory.select(`{crop.name} seed`) then
 			return
@@ -641,10 +695,19 @@ function Task.harvest(): boolean
 	return true
 end
 
+function Task.cancels_planting(): boolean
+	return #S.route >= CONST.CANCEL.ALWAYS_FROM or Biometrics.random_boolean(CONST.CANCEL.CHANCE)
+end
+
 function Task.plant(): boolean
 	local crop = S.crop
+	local can = snap.carried.wet_can
+	local cancel = Task.cancels_planting()
 	local after = crop
 		and Task.act("Plant", CONST.ACTION_MS, `{crop.name} seed`, function()
+			if can then
+				Inventory.select(can)
+			end
 			Task.prehover(S.cursor)
 		end)
 	if not after then
@@ -652,6 +715,41 @@ function Task.plant(): boolean
 	end
 	if after.kind ~= "EMPTY" then
 		stats.planted += 1
+	end
+	if not (can and after.kind == "DRY" and after.loc) then
+		return true
+	end
+	if not cancel then
+		Wait.until_true(CONST.ACTION_MS, function(): boolean
+			return not Player.is_animating()
+		end)
+	end
+	return Task.water_with(can, after.loc)
+end
+
+function Task.water_with(can: string, loc: Loc): boolean
+	local used = false
+	for _ = 1, CONST.CAN_ATTEMPTS do
+		if not Inventory.select(can) then
+			Log.log(NAME, `Water failed on patch {S.cursor}: couldn't select the {can}`)
+			return false
+		end
+		used = Objects.interact(loc, "Use", false)
+		if used then
+			break
+		end
+	end
+	if not used then
+		Log.log(NAME, `Water failed on patch {S.cursor}: the {can} never landed on it`)
+		return false
+	end
+	Task.prehover(Task.next_index())
+	local after = Wait.patch_change(S.cursor, loc.id, CONST.ACTION_MS)
+	if not after then
+		return false
+	end
+	if after.kind == "GROWING" then
+		Task.advance()
 	end
 	return true
 end
@@ -708,7 +806,7 @@ function Task.refill(): boolean
 	if not barrel or not Task.use_on(can, barrel) then
 		return false
 	end
-	local must = snap.carried.doses < #CONST.ROUTE
+	local must = snap.carried.doses < #S.route
 	local fill_all = Read.field_empty()
 	local doses = Read.carried().doses
 	local moved_at = time()
@@ -721,7 +819,7 @@ function Task.refill(): boolean
 			return true
 		end
 		local patch = Read.patch(S.cursor)
-		local needed = fill_all or (must and carried.doses < #CONST.ROUTE)
+		local needed = fill_all or (must and carried.doses < #S.route)
 		return not needed and patch ~= nil and patch.kind ~= "GROWING"
 	end)
 	return Read.carried().doses > snap.carried.doses
@@ -732,7 +830,7 @@ function Task.deposit(): boolean
 	local door = snap.door
 	local before = snap.carried.fruit
 	local sack = door and Read.loc_at(Read.at(door, CONST.SACK), "Sack")
-	if not sack or not Objects.approach(sack, "Deposit") then
+	if not sack or not Task.approach(sack, "Deposit") then
 		return false
 	end
 	if not Wait.until_true(CONST.ACTION_MS, function(): boolean
@@ -764,7 +862,7 @@ function Task.take_seeds(): boolean
 		return Chat.wait_query(CONST.SEED_QUERY, 2400)
 	end
 	local table_loc = Objects.nearest(CONST.SEED_TABLE, snap.me)
-	if not table_loc or not Objects.approach(table_loc, "Search") then
+	if not table_loc or not Task.approach(table_loc, "Search") then
 		return false
 	end
 	return ChatOptions.wait_option(option, false, 3000)
@@ -773,7 +871,7 @@ end
 function Task.use_door(): boolean
 	S.hovered = 0
 	local door = snap.door
-	if not door or not Objects.approach(door, "Open") then
+	if not door or not Task.approach(door, "Open") then
 		return false
 	end
 	local was_inside = snap.inside
@@ -977,8 +1075,8 @@ function Loop.check_stops()
 	end
 	if Handoff.finishing() then
 		S.stopping = "the queue asked to wrap up"
-	elseif CONFIG.max_fruit > 0 and stats.deposited >= CONFIG.max_fruit then
-		S.stopping = `deposited {stats.deposited} fruit`
+	elseif CONFIG.max_fruit > 0 and Read.fruit_in_hand() >= CONFIG.max_fruit then
+		S.stopping = `{Read.fruit_in_hand()} fruit harvested`
 	elseif CONFIG.max_seeds > 0 and stats.planted >= CONFIG.max_seeds then
 		S.stopping = `planted {stats.planted} seeds`
 	elseif CONFIG.stop_level > 0 and (Stats.real_level("Farming") or 0) >= CONFIG.stop_level then
@@ -1035,7 +1133,7 @@ function Loop.upgrading(): boolean
 end
 
 function Loop.draining(): boolean
-	return S.stopping ~= nil or Loop.break_due() or Read.seeds() == 0 or Loop.upgrading()
+	return S.resetting or S.stopping ~= nil or Loop.break_due() or Read.seeds() == 0 or Loop.upgrading()
 end
 
 function Loop.first_cursor(): number
@@ -1068,12 +1166,47 @@ function Loop.outside_state(): State
 	return "ENTER"
 end
 
+function Loop.reset_state(): State
+	if Read.field_empty() then
+		S.resetting = false
+		S.cursor = 0
+		S.at_boundary = true
+		Log.log(NAME, "Every patch is empty, starting over")
+		return Loop.field_state()
+	end
+	for _ = 1, #S.route do
+		local kind = snap.field[S.cursor].kind
+		if kind == "GROWN" then
+			return "HARVEST"
+		elseif kind == "BLIGHTED" then
+			return "CLEAR"
+		end
+		Task.advance()
+	end
+	return "WAIT"
+end
+
 function Loop.field_state(): State
-	local draining = Loop.draining()
 	if S.cursor == 0 then
 		S.cursor = Loop.first_cursor()
 		S.cursor_since = time()
 	end
+	if not S.resetting then
+		for _, patch in snap.field do
+			if patch.kind == "BLIGHTED" then
+				S.resetting = true
+				Log.log(
+					NAME,
+					`A plant died on patch {patch.index}: harvesting without replanting until every patch is empty`
+				)
+				break
+			end
+		end
+	end
+	if S.resetting then
+		return Loop.reset_state()
+	end
+	local draining = Loop.draining()
 
 	if Read.field_empty() then
 		if snap.carried.fruit > 0 then
@@ -1096,14 +1229,14 @@ function Loop.field_state(): State
 		if carried.fruit > 0 and idle > CONST.DEPOSIT_MS then
 			return "DEPOSIT"
 		end
-		local must = carried.doses < #CONST.ROUTE
+		local must = carried.doses < #S.route
 		local want = not draining and idle > CONST.BARREL_WALK_MS + CONST.FILL_MS_PER_CAN
 		if carried.lowest_can and (must or want) then
 			return "REFILL"
 		end
 	end
 
-	for _ = 1, #CONST.ROUTE do
+	for _ = 1, #S.route do
 		local patch = snap.field[S.cursor]
 		if not (draining and patch.kind == "EMPTY") then
 			break
@@ -1218,7 +1351,7 @@ function Loop.leave_farm()
 	end
 	local me = Walker.position()
 	local door = me and Read.door(Host.locs() or {}, me)
-	if door and Objects.approach(door, "Open") then
+	if door and Task.approach(door, "Open") then
 		Wait.until_true(CONST.DOOR_MS, function(): boolean
 			return not Player.in_instance()
 		end)
@@ -1239,7 +1372,9 @@ function Loop.wrap_up()
 end
 
 function Loop.run()
-	Game.apply_settings(Host.settings())
+	local values = Host.settings()
+	Game.apply_settings(values)
+	S.route = build_route(tonumber(values.patches) or 20)
 	Log.log(NAME, `{NAME} started`)
 	Game.setup()
 	S.last_progress_at, S.failures_in_row = time(), 0
