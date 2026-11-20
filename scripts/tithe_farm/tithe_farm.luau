@@ -33,6 +33,7 @@ type Crop = { name: string, level: number }
 type PatchKind = "EMPTY" | "DRY" | "GROWING" | "GROWN" | "BLIGHTED"
 type Patch = { index: number, tile: Tile, loc: Loc?, kind: PatchKind }
 type Offset = { dx: number, dy: number }
+type Area = { x1: number, y1: number, x2: number, y2: number }
 
 local function build_route(patches: number): { Offset }
 	local rows = { 11, 8, 5, 2, -4, -7, -10, -13 }
@@ -89,9 +90,9 @@ local CONST = {
 	DIALOGUE_STEPS = 5,
 	USE_RANGE = 8,
 	CROSSINGS = {
-		{ from = 8, patch = 9, stand = { dx = 9, dy = -2 } },
-		{ from = 20, patch = 1, stand = { dx = 9, dy = 12 } },
-	} :: { { from: number, patch: number, stand: Offset } },
+		{ from = 8, patch = 9, lane = { x1 = 8, y1 = -6, x2 = 9, y2 = -2 } },
+		{ from = 20, patch = 1, lane = { x1 = 8, y1 = 2, x2 = 9, y2 = 12 } },
+	} :: { { from: number, patch: number, lane: Area } },
 	CROSSING_MS = 6000,
 	CANCEL = { ALWAYS_FROM = 20, CHANCE = 0.1 },
 	CAN_ATTEMPTS = 3,
@@ -442,7 +443,24 @@ function Read.nearest(tiles: { Tile }, from: Tile): Tile?
 	return best
 end
 
-function Read.crossing_stand(): Tile?
+function Read.area(anchor: Loc, offsets: Area): Area
+	return {
+		x1 = anchor.x + offsets.x1,
+		y1 = anchor.y + offsets.y1,
+		x2 = anchor.x + offsets.x2,
+		y2 = anchor.y + offsets.y2,
+	}
+end
+
+function Read.inside(area: Area, tile: Tile): boolean
+	return tile.x >= area.x1 and tile.x <= area.x2 and tile.y >= area.y1 and tile.y <= area.y2
+end
+
+function Read.middle(area: Area): Tile
+	return { x = (area.x1 + area.x2) // 2, y = (area.y1 + area.y2) // 2 }
+end
+
+function Read.crossing_lane(): Area?
 	local door = snap.door
 	if not door then
 		return nil
@@ -454,8 +472,8 @@ function Read.crossing_stand(): Tile?
 			and from
 			and Walker.distance(snap.me, Read.at(door, from)) <= CONST.BESIDE_PATCH
 		then
-			local stand = Read.at(door, crossing.stand)
-			return if Walker.distance(snap.me, stand) > 0 then stand else nil
+			local lane = Read.area(door, crossing.lane)
+			return if Read.inside(lane, snap.me) then nil else lane
 		end
 	end
 	return nil
@@ -601,7 +619,8 @@ function Task.reveal(tile: Tile)
 	end
 end
 
-function Task.cross(loc: Loc, stand: Tile, option: string, item: string?): boolean
+function Task.cross(loc: Loc, lane: Area, option: string, item: string?): boolean
+	local stand = { x = Random.int(lane.x1, lane.x2), y = Random.int(lane.y1, lane.y2) }
 	Task.reveal(stand)
 	if not Walker.click_tile(stand) then
 		local cam = Camera.state()
@@ -613,11 +632,22 @@ function Task.cross(loc: Loc, stand: Tile, option: string, item: string?): boole
 		return false
 	end
 	Objects.hover_async(loc, stand)
-	Wait.until_true(CONST.CROSSING_MS, function(): boolean
-		local tile = Host.server_tile()
-		return tile ~= nil and tile.x == stand.x and tile.y == stand.y
+	local clicked_at = time()
+	local in_lane = Wait.until_true(CONST.CROSSING_MS, function(): boolean
+		local here = Host.server_tile()
+		return here ~= nil and Read.inside(lane, here)
 	end)
-	return Objects.interact(loc, if item then "Use" else option, false)
+	local reached_ms = time() - clicked_at
+	if Objects.interact(loc, if item then "Use" else option, false) then
+		return true
+	end
+	local here = Host.server_tile()
+	local spot = if here then `{here.x},{here.y}` else "unknown"
+	Log.log(
+		NAME,
+		`{option} on patch {S.cursor} after crossing didn't land (lane reached {in_lane} after {reached_ms} ms, now at {spot}, aimed at {stand.x},{stand.y})`
+	)
+	return false
 end
 
 function Task.act(option: string, timeout_ms: number, item: string?, meanwhile: (() -> ())?): Patch?
@@ -630,9 +660,9 @@ function Task.act(option: string, timeout_ms: number, item: string?, meanwhile: 
 	if not item and not Task.clear_selection(option) then
 		return nil
 	end
-	local stand = Read.crossing_stand()
-	local ok = if stand
-		then Task.cross(loc, stand, option, item)
+	local lane = Read.crossing_lane()
+	local ok = if lane
+		then Task.cross(loc, lane, option, item)
 		elseif item then Task.use_on(item, loc, true)
 		else Objects.approach(loc, option, { arrive_ms = false })
 	if not ok then
@@ -643,7 +673,7 @@ function Task.act(option: string, timeout_ms: number, item: string?, meanwhile: 
 	if meanwhile then
 		meanwhile()
 	end
-	return Wait.patch_change(S.cursor, loc.id, timeout_ms)
+	return Wait.patch_change(S.cursor, loc.id, if lane then timeout_ms + CONST.CROSSING_MS else timeout_ms)
 end
 
 function Task.next_index(): number
@@ -660,7 +690,7 @@ function Task.prehover(index: number)
 		for _, crossing in CONST.CROSSINGS do
 			if crossing.patch == index and S.route[crossing.from] then
 				if snap.door then
-					Task.reveal(Read.at(snap.door, crossing.stand))
+					Task.reveal(Read.middle(Read.area(snap.door, crossing.lane)))
 				end
 				return
 			end
