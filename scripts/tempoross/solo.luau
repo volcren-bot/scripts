@@ -1244,17 +1244,35 @@ function Solo.advance_route()
 			Log.log("Tempoross", `   Can't reach waypoint {r.p3_leg} at {t.x},{t.y}, skipping it`)
 		else
 			local stand = tiles[#tiles] or t
-			if Geo.distance(snap.me, stand) > CONST.SOLO.P3_WAYPOINT_NEAR then
+			if Geo.distance(snap.me, stand) <= CONST.SOLO.P3_WAYPOINT_NEAR then
+				Log.log(
+					"Tempoross",
+					`   Waypoint {r.p3_leg} of {#r.p3_route} at {t.x},{t.y} reached at {Read.hud_percent(HUD.INTENSITY) or "?"}% storm`
+				)
+			elseif Solo.leg_clear(tiles) then
+				Log.log("Tempoross", `   No fires on the way to waypoint {r.p3_leg} at {t.x},{t.y}, skipping it`)
+			else
 				return
 			end
-			Log.log(
-				"Tempoross",
-				`   Waypoint {r.p3_leg} of {#r.p3_route} at {t.x},{t.y} reached at {Read.hud_percent(HUD.INTENSITY) or "?"}% storm`
-			)
 		end
 		r.p3_leg += 1
 		target = Solo.p3_waypoint()
 	end
+end
+
+function Solo.leg_clear(tiles: { Tile }): boolean
+	for _, t in ipairs(tiles) do
+		if Geo.distance(snap.me, t) > CONST.SOLO.P3_SEE_RANGE then
+			return false
+		end
+	end
+	local box = S.solo.p3_box
+	for _, fire in ipairs(Hazard.fire_npcs()) do
+		if Solo.covers(fire, tiles, CONST.SOLO.P3_FIRE_RANGE) and (box == nil or Solo.fire_in(box :: Box, fire)) then
+			return false
+		end
+	end
+	return true
 end
 
 function Solo.route_fires(): { [number]: boolean }
@@ -1262,12 +1280,17 @@ function Solo.route_fires(): { [number]: boolean }
 	if Read.item_count(Items.WATER) == 0 and Read.item_count(Items.BUCKET) == 0 then
 		return set
 	end
+	local box = S.solo.p3_box
+	if box == nil then
+		return set
+	end
 	local range = CONST.SOLO.P3_FIRE_RANGE
 	local here = { Geo.to_tile(snap.me) }
 	local target = Solo.p3_waypoint()
 	local leg = if target then Route.route_to(target) or {} else {}
 	for _, fire in ipairs(Hazard.fire_npcs()) do
-		if Solo.covers(fire, here, range) or Solo.covers(fire, leg, range) then
+		local near = Solo.covers(fire, here, range) or Solo.covers(fire, leg, range)
+		if near and Solo.fire_in(box :: Box, fire) then
 			set[fire.index] = true
 		end
 	end
@@ -1789,7 +1812,10 @@ function Solo.advance_four()
 	local intensity = Read.hud_percent(HUD.INTENSITY) or 0
 	if r.p4_stage == "fish" and intensity >= CONST.SOLO.LEAVE_INTENSITY then
 		local count = Read.fish_count()
-		if count >= Solo.p4_target() then
+		local raw = Read.item_count(Items.RAW_FISH)
+		if count >= Solo.p4_target() and raw > 0 then
+			return
+		elseif count >= Solo.p4_target() then
 			r.p4_stage = "rush"
 			r.p2_box = Solo.home_box(S.side :: Side)
 			r.p2_skip = {}

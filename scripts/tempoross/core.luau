@@ -215,6 +215,7 @@ local CONST = {
 	},
 	ISLAND_DRAW = {
 		text_size = 16,
+		tag_size = 9,
 		text_width = 3,
 		shadow_offset = 2,
 		shadow_color = Draw.color(0, 0, 0),
@@ -298,6 +299,7 @@ local CONST = {
 		},
 		P3_FIRE_RANGE = 3,
 		P3_WAYPOINT_NEAR = 2,
+		P3_SEE_RANGE = 12,
 		P4_LOAD_INTENSITY = 95,
 		LEAVE_INTENSITY = 90,
 		P4_LOAD_RAMP_FROM = 80,
@@ -338,6 +340,7 @@ local CONST = {
 		},
 		BOX_MARGIN = 2,
 		HUB_DETOUR = 2,
+		SHRINE_GUARD = 2,
 		CLUSTER_GAP = 3,
 		FIRE_VALUE = {
 			near = 0.35,
