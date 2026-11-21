@@ -115,7 +115,6 @@ local CONFIG = {
 	stop_level = 0,
 	stop_points = 0,
 	timeouts = { idle_minutes = 10, max_failures = 6 },
-	antiban = true,
 }
 
 local stats = { deposited = 0, harvested = 0, planted = 0, points = 0 }
@@ -814,7 +813,7 @@ function Task.wait(): boolean
 		S.hovered = S.cursor
 		Objects.hover(loc)
 	end
-	if CONFIG.antiban and S.antiban_ready and Read.slack() > CONST.ANTIBAN_SLACK_MS then
+	if S.antiban_ready and Read.slack() > CONST.ANTIBAN_SLACK_MS then
 		if Antiban.do_antiban(true, false, false) then
 			S.hovered = 0
 			return true
@@ -964,8 +963,6 @@ function Game.apply_settings(values: { [string]: any })
 	CONFIG.max_seeds = values.max_seeds or CONFIG.max_seeds
 	CONFIG.stop_level = values.stop_level or CONFIG.stop_level
 	CONFIG.stop_points = values.stop_points or CONFIG.stop_points
-	CONFIG.timeouts.idle_minutes = values.idle_minutes or CONFIG.timeouts.idle_minutes
-	CONFIG.antiban = values.antiban ~= false
 end
 
 function Game.poll_settings()
@@ -1047,7 +1044,7 @@ function Game.setup()
 	S.crop = Read.held_crop(snap.carried) or Read.best_crop()
 	Log.log(NAME, `Growing {(S.crop :: Crop).name}`)
 
-	if CONFIG.antiban and not S.antiban_ready then
+	if not S.antiban_ready then
 		Game.setup_antiban()
 	end
 end
@@ -1137,7 +1134,7 @@ function Loop.hook_antiban()
 end
 
 function Loop.break_due(): boolean
-	return CONFIG.antiban and S.antiban_ready and Antiban.break_due()
+	return S.antiban_ready and Antiban.break_due()
 end
 
 function Loop.upgrade_due(): boolean

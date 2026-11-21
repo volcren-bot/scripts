@@ -1,99 +1,77 @@
 {
-	"goals": [
-		{
-			"id": "planted",
-			"label": "Seeds planted"
-		},
-		{
-			"id": "fruit",
-			"label": "Fruit deposited"
-		},
-		{
-			"id": "points",
-			"label": "Points"
-		}
-	],
-	"finish_grace_minutes": 6,
-	"settings": {
-		"fields": [
-			{
-				"kind": "label",
-				"text": "Bring a seed dibber, a spade and watering cans (8 recommended) or a Gricoller's can. The script teleports to the farm when started elsewhere.",
-				"heading": 2
-			},
-			{
-				"id": "patches",
-				"kind": "choice",
-				"label": "Patches (fixed once started)",
-				"options": ["20", "16"],
-				"default": "20"
-			},
-			{
-				"kind": "label",
-				"text": "Stop conditions",
-				"heading": 2
-			},
-			{
-				"id": "max_seeds",
-				"kind": "number",
-				"label": "Stop after planting this many seeds (0 for no limit)",
-				"default": 0,
-				"min": 0,
-				"max": 1000000,
-				"integer": true,
-				"box_first": true
-			},
-			{
-				"id": "max_fruit",
-				"kind": "number",
-				"label": "Stop after depositing this much fruit (0 for no limit)",
-				"default": 0,
-				"min": 0,
-				"max": 1000000,
-				"integer": true,
-				"box_first": true
-			},
-			{
-				"id": "stop_level",
-				"kind": "number",
-				"label": "Stop at Farming level (0 for never)",
-				"default": 0,
-				"min": 0,
-				"max": 99,
-				"integer": true,
-				"box_first": true
-			},
-			{
-				"id": "stop_points",
-				"kind": "number",
-				"label": "Stop at this many reward points (0 for never)",
-				"default": 0,
-				"min": 0,
-				"max": 1000000,
-				"integer": true,
-				"box_first": true
-			},
-			{
-				"id": "idle_minutes",
-				"kind": "number",
-				"label": "Stop after this many minutes without xp",
-				"default": 10,
-				"min": 5,
-				"max": 60,
-				"integer": true,
-				"box_first": true
-			},
-			{
-				"kind": "label",
-				"text": "Behaviour",
-				"heading": 2
-			},
-			{
-				"id": "antiban",
-				"kind": "check",
-				"label": "Antiban",
-				"default": true
-			}
-		]
-	}
+  "goals": [
+    {
+      "id": "planted",
+      "label": "Seeds planted"
+    },
+    {
+      "id": "fruit",
+      "label": "Fruit deposited"
+    },
+    {
+      "id": "points",
+      "label": "Points"
+    }
+  ],
+  "finish_grace_minutes": 6,
+  "settings": {
+    "fields": [
+      {
+        "id": "patches",
+        "kind": "choice",
+        "label": "Patches",
+        "options": ["20", "16"],
+        "default": "20"
+      },
+      {
+        "kind": "label",
+        "text": "Stop conditions",
+        "heading": 2
+      },
+      {
+        "kind": "label",
+        "text": "0 means no limit, any limit below reached will stop the script"
+      },
+      {
+        "id": "max_seeds",
+        "kind": "number",
+        "label": "Seeds planted",
+        "default": 0,
+        "min": 0,
+        "max": 1000000,
+        "integer": true,
+        "box_first": true
+      },
+      {
+        "id": "max_fruit",
+        "kind": "number",
+        "label": "Fruits deposited",
+        "default": 0,
+        "min": 0,
+        "max": 1000000,
+        "integer": true,
+        "box_first": true
+      },
+      {
+        "id": "stop_level",
+        "kind": "number",
+        "label": "Farming level",
+        "default": 0,
+        "min": 0,
+        "max": 99,
+        "integer": true,
+        "box_first": true
+      },
+      {
+        "id": "stop_points",
+        "kind": "number",
+        "label": "Reward points",
+        "default": 0,
+        "min": 0,
+        "max": 1000000,
+        "integer": true,
+        "box_first": true
+      }
+    ]
+  }
 }
