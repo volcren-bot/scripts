@@ -463,6 +463,16 @@ function Solo.move_safely(target: Tile, act: () -> ())
 		end
 		r.waypoint = nil
 	end
+	local tiles = Route.route_to(target)
+	local landing = tiles and Route.landing_ahead(tiles)
+	if landing then
+		Log.log(
+			"Tempoross",
+			`   Fire landing at {landing.x},{landing.y} on the way to {target.x},{target.y}, holding the click`
+		)
+		Route.sleep_watching(CONST.POLL_MS)
+		return
+	end
 	if not Solo.go_around_fires(target) then
 		act()
 	end
@@ -1118,8 +1128,9 @@ function Solo.drop_buckets(count: number, allow_water: boolean)
 	for from = 1, #ordered, size do
 		local batch = table.move(ordered, from, math.min(from + size - 1, #ordered), 1, {})
 		Hazard.watching_projectiles(function()
-			Inventory.shift_drop_slots(batch)
+			Inventory.shift_drop_slots(batch, CONST.SOLO.DROP_PACE :: Inventory.DropOptions)
 		end)
+		S.solo.dropped_at = time()
 		Read.set_me(game_state().position)
 		if from + size <= #ordered and (Hazard.incoming_at(snap.me, 0) or Island.watch()) then
 			Log.log("Tempoross", "   Stopping the drop to deal with the new top score")

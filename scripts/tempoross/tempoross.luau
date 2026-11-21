@@ -1524,21 +1524,76 @@ function Route.should_interrupt_walk(for_wave: boolean, known: { [number]: boole
 	return false
 end
 
+type WalkTrace = {
+	started: number,
+	logged_at: number,
+	logged_tile: Tile?,
+	tries: number,
+	last_try: Tile?,
+	last_try_at: number,
+	watch_ms: number,
+}
+
+function Route.new_walk_trace(): WalkTrace
+	local now = time()
+	return {
+		started = now,
+		logged_at = now,
+		logged_tile = nil,
+		tries = 0,
+		last_try = nil,
+		last_try_at = 0,
+		watch_ms = 0,
+	}
+end
+
+function Route.trace_walk(trace: WalkTrace, here: Tile)
+	local now = time()
+	local from = trace.logged_tile or here
+	trace.logged_tile = from
+	if now - trace.started < CONST.WALK_TRACE_AFTER_MS or now - trace.logged_at < CONST.WALK_TRACE_EVERY_MS then
+		return
+	end
+	local elapsed = math.floor(now - trace.started)
+	local since = math.floor(now - trace.logged_at)
+	local moved = Geo.distance(from, here)
+	trace.logged_at, trace.logged_tile = now, here
+	local dest = Player.destination()
+	local flag = if dest then `{dest.x},{dest.y}` else "none"
+	local tried = trace.last_try
+	local last = if tried then `, last to {tried.x},{tried.y} {math.floor(now - trace.last_try_at)} ms ago` else ""
+	local animation = Player.animation() or -1
+	local gait = if Player.is_running() then "running" else "walking"
+	local energy = math.floor(Player.run_energy() or -1)
+	local camera = game_state().camera
+	local view = if camera then `yaw {camera.yaw} pitch {camera.pitch}` else "unknown"
+	local watch = math.floor(trace.watch_ms)
+	Log.log(
+		"Tempoross",
+		`   Walk {elapsed} ms in at {here.x},{here.y}, {moved} tiles in {since} ms: flag {flag}, {trace.tries} click tries{last}, animation {animation}, {gait} at {energy}% energy, camera {view}, {watch} ms in watch`
+	)
+end
+
 function Route.walk_checks(for_wave: boolean, ignore: Npc?, step: (() -> boolean)?): Walker.WalkOptions
 	snap.npcs = Read.read_npcs() or snap.npcs
 	local known: { [number]: boolean } = {}
 	for _, fire in ipairs(Hazard.fire_npcs()) do
 		known[fire.index] = true
 	end
+	local trace = Route.new_walk_trace()
 	return {
-		on_step = function()
+		on_step = function(here: Tile)
+			Route.trace_walk(trace, here)
 			if CONFIG.antiban and not S.in_game then
 				Antiban.do_walking_antiban()
 			end
 			if Island.scoring() then
+				local began = time()
 				Read.refresh_moving()
 				Hazard.watch_projectiles()
-				if Island.watch() or (events.game_result and S.in_game) then
+				local changed = Island.watch()
+				trace.watch_ms += time() - began
+				if changed or (events.game_result and S.in_game) then
 					return false
 				end
 			elseif Route.should_interrupt_walk(for_wave, known, ignore) then
@@ -1547,6 +1602,8 @@ function Route.walk_checks(for_wave: boolean, ignore: Npc?, step: (() -> boolean
 			return step == nil or step()
 		end,
 		before_click = function(target: Tile, here: Tile): boolean?
+			trace.tries += 1
+			trace.last_try, trace.last_try_at = target, time()
 			if for_wave or Read.item_count(Items.WATER) == 0 or Island.scoring() then
 				return true
 			end
@@ -3772,7 +3829,13 @@ Handler.states = {
 	P3_BUCKETS = Solo.take_buckets,
 	P3_ROUTE = Solo.walk_item,
 	P3_DROP = function()
+		local a = S.activity
+		local pending = a ~= nil and (a.npc ~= nil or a.loc ~= nil) and Doing.player_is_working(a.kind) == false
 		Solo.drop_buckets(plan.drop or 0, plan.drop_water ~= false)
+		if pending and S.activity == a and Doing.player_is_working((a :: Activity).kind) == false then
+			Log.log("Tempoross", `   The drop cancelled the {(a :: Activity).kind} click, clicking again`)
+			Doing.clear_activity()
+		end
 		if S.solo.p3_stage == "clear" then
 			S.solo.p3_drop_batch = Solo.roll_drop_batch()
 		end

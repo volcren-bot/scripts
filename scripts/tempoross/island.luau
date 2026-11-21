@@ -888,6 +888,10 @@ function Island.drop_item(needs: Needs, items: { Item })
 	if drop == nil or drop.count <= 0 then
 		return
 	end
+	local dropped = S.solo.dropped_at
+	if dropped and time() - dropped < CONST.SOLO.DROP_SETTLE_MS then
+		return
+	end
 	local slots = Island.slots_of(if drop.water then { Items.BUCKET, Items.WATER } else { Items.BUCKET })
 	if #slots == 0 then
 		return
