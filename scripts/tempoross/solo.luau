@@ -598,11 +598,11 @@ function Solo.wants_humidify(): boolean
 	return Read.item_count(Items.WATER) <= at_water and Read.item_count(Items.BUCKET) > 0
 end
 
-function Solo.cast_humidify(): boolean
+function Solo.cast_humidify(walking: boolean): boolean
 	Read.sync_inventory()
 	local water = Read.item_count(Items.WATER)
 	if Magic.cast("Humidify") then
-		S.solo.humidify_cast = { at = time(), water = water }
+		S.solo.humidify_cast = { at = time(), water = water, walking = walking }
 		return true
 	end
 	S.solo.humidify_at = time() + CONST.SOLO.HUMIDIFY_RETRY_MS
@@ -613,23 +613,30 @@ end
 function Solo.humidify()
 	if Player.destination() ~= nil and S.solo.p3_humidify then
 		Log.log("Tempoross", `   Casting Humidify while walking ({Read.item_count(Items.WATER)} buckets of water)`)
-		Solo.cast_humidify()
+		Solo.cast_humidify(true)
 		return
 	end
-	local before = Read.item_count(Items.WATER)
-	Log.log("Tempoross", `   {before} buckets of water left, casting Humidify`)
-	if not Solo.cast_humidify() then
-		return
+	if not Solo.humidify_holding() then
+		Log.log("Tempoross", `   {Read.item_count(Items.WATER)} buckets of water left, casting Humidify`)
+		if not Solo.cast_humidify(false) then
+			return
+		end
 	end
-	local filled = Route.sleep_watching(3000, nil, function(): boolean
-		Read.sync_inventory()
-		return Read.item_count(Items.WATER) > before
+	local cast = S.solo.humidify_cast :: { at: number, water: number, walking: boolean, filled_at: number? }
+	Route.sleep_watching(CONST.SOLO.HUMIDIFY_SETTLE_MS, nil, function(): boolean
+		return not Solo.humidify_settling()
 	end)
-	if not filled then
+	if Solo.humidify_settling() then
+		return
+	end
+	if Read.item_count(Items.WATER) <= cast.water then
 		S.solo.humidify_at = time() + CONST.SOLO.HUMIDIFY_RETRY_MS
 	end
 	Inventory.open()
-	Log.log("Tempoross", `   {Read.item_count(Items.WATER)} buckets of water after Humidify`)
+	Log.log(
+		"Tempoross",
+		`   {Read.item_count(Items.WATER)} buckets of water {math.floor(time() - cast.at)} ms after casting Humidify`
+	)
 end
 
 function Solo.nearest_double(): Npc?
@@ -1092,11 +1099,20 @@ function Solo.humidify_settling(): boolean
 		return false
 	end
 	Read.sync_inventory()
-	if Read.item_count(Items.WATER) > cast.water or time() - cast.at > CONST.SOLO.HUMIDIFY_SETTLE_MS then
+	if cast.filled_at == nil and Read.item_count(Items.WATER) > cast.water then
+		cast.filled_at = time()
+	end
+	local filled = cast.filled_at
+	if (filled ~= nil and time() - filled >= Ticks.MS) or time() - cast.at > CONST.SOLO.HUMIDIFY_SETTLE_MS then
 		r.humidify_cast = nil
 		return false
 	end
 	return true
+end
+
+function Solo.humidify_holding(): boolean
+	local cast = S.solo.humidify_cast
+	return cast ~= nil and not cast.walking and Solo.humidify_settling()
 end
 
 function Solo.drop_buckets(count: number, allow_water: boolean)

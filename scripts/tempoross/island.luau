@@ -607,7 +607,7 @@ function Island.needs(): Needs
 	if r.p3_stage == "buckets" or r.p5_stage == "buckets" then
 		needs.tools.buckets = need.tool
 	end
-	if Solo.wants_humidify() or Island.midwalk_humidify() then
+	if Solo.wants_humidify() or Island.midwalk_humidify() or Solo.humidify_holding() then
 		needs.humidify = need.humidify
 	end
 	return needs
@@ -858,14 +858,16 @@ function Island.slots_of(ids: { number }): { number }
 end
 
 function Island.humidify_item(needs: Needs, items: { Item })
+	local holding = Solo.humidify_holding()
 	local slots = Island.slots_of({ Items.BUCKET })
-	if #slots == 0 then
+	if #slots == 0 and not holding then
 		return
 	end
 	local item = new_item("humidify", 0, 1, needs.humidify, nil, nil, {})
 	item.slots = slots
 	if needs.humidify > 0 then
-		item.rank = (CONST.ISLAND.rank :: { [string]: number }).humidify
+		local ranks = CONST.ISLAND.rank :: { [string]: number }
+		item.rank = if holding then ranks.humidify_hold else ranks.humidify
 	end
 	table.insert(items, item)
 end
