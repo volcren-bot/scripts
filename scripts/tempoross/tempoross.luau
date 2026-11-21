@@ -161,6 +161,16 @@ function Read.read_npcs(): { Npc }?
 			end
 		end
 	end
+	local me = snap.me
+	for _, fire in ipairs(Read.fire_locs()) do
+		local key = `{fire.x},{fire.y}`
+		local beyond = me == nil or Geo.distance(fire, me) >= CONST.NPC_RANGE
+		if beyond and not present[key] and not S.doused[key] then
+			present[key] = true
+			S.fire_seen[key] = { npc = fire, at = now }
+			table.insert(list, fire)
+		end
+	end
 	for key, seen in pairs(S.fire_seen) do
 		if not present[key] then
 			if now - seen.at <= CONST.FIRE_GHOST_MS and not S.doused[key] then
@@ -171,6 +181,38 @@ function Read.read_npcs(): { Npc }?
 		end
 	end
 	return list
+end
+
+function Read.fire_locs(): { Npc }
+	local now = time()
+	if now - S.fire_locs_at < CONST.FIRE_LOCS_MS then
+		return S.fire_locs
+	end
+	local found: { Npc } = {}
+	for _, l in ipairs(locs() or {}) do
+		if l.id == CONST.FIRE_LOC then
+			local half = l.size_x // 2
+			S.fire_size = S.fire_size or l.size_x
+			table.insert(
+				found,
+				{
+					index = -(2 + l.scene_x * 256 + l.scene_y),
+					id = CONST.FIRE,
+					name = "Fire",
+					x = l.x + half,
+					y = l.y + half,
+					local_x = l.scene_x * 128 + l.size_x * 64,
+					local_y = l.scene_y * 128 + l.size_y * 64,
+					animation = -1,
+					interacting_npc = -1,
+					interacting_player = -1,
+					head_icons = {},
+				} :: Npc
+			)
+		end
+	end
+	S.fire_locs, S.fire_locs_at = found, now
+	return found
 end
 
 function Read.track_doubles(list: { Npc }, me: Tile, now: number)
@@ -439,7 +481,7 @@ function Chat.lost_items(text: string)
 	end
 	if CONFIG.solo and Island.part() >= 2 and not Chat.contains(text, "fish") then
 		Log.log("Tempoross", `   Burned in part {Island.part()} without losing fish, carrying on`)
-	elseif CONFIG.solo and S.solo.p4_stage ~= nil and S.solo.p5_stage == nil then
+	elseif CONFIG.solo and S.solo.p4_stage ~= nil then
 		events.burn_check = { at = time(), before = Solo.recent_fish() }
 	else
 		events.burned = true
@@ -519,7 +561,7 @@ function Hazard.fire_npcs(): { Npc }
 end
 
 function Hazard.fire_size(fire: Npc): number
-	if S.fire_size == nil then
+	if S.fire_size == nil and fire.index >= 0 then
 		local sizes = Host.npc_sizes({ fire.index })
 		S.fire_size = sizes and sizes[fire.index]
 		if S.fire_size then
@@ -590,7 +632,6 @@ function Hazard.show_fires(force: boolean?)
 	local layers: { { tiles: { Tile }, color: Draw.Color } } = {}
 	local keys: { string } = {}
 	if DebugDraw.on() then
-		local in_p5 = CONFIG.solo and S.solo.p5_stage ~= nil
 		local clusters = Hazard.fire_clusters(Hazard.fire_npcs())
 		table.sort(clusters, function(a: { Npc }, b: { Npc }): boolean
 			return a[1].x * 100000 + a[1].y < b[1].x * 100000 + b[1].y
@@ -603,13 +644,10 @@ function Hazard.show_fires(force: boolean?)
 					table.insert(keys, `{t.x},{t.y}`)
 				end
 			end
-			local ignored = in_p5 and #cluster > CONST.SOLO.P5_MAX_CLUSTER
 			local palette = CONST.CLUSTER_COLORS
-			local color = if ignored then CONST.IGNORED_CLUSTER_COLOR else palette[(i - 1) % #palette + 1]
-			table.insert(layers, { tiles = tiles, color = color })
+			table.insert(layers, { tiles = tiles, color = palette[(i - 1) % #palette + 1] })
 		end
 		table.sort(keys)
-		table.insert(keys, if in_p5 then "p5" else "")
 	end
 	local shown = table.concat(keys, ";")
 	if shown == S.fires_shown and not force then
@@ -714,6 +752,7 @@ function Hazard.log_burn(dest: Tile?)
 	Log.log("Tempoross", `   Fires within 3: {table.concat(fires, "; ")}`)
 	Log.log("Tempoross", `   Landings: {table.concat(landings, "; ")}`)
 	Log.log("Tempoross", `   Walked: {table.concat(S.trail, " ")}`)
+	Log.log("Tempoross", `   Last planned route: {S.planned_route}`)
 end
 
 function Hazard.fire_near(tile: Tile, range: number): Npc?
@@ -1804,17 +1843,53 @@ function Hazard.burning_at(fire: Npc): boolean
 	return false
 end
 
+function Hazard.live_fire(fire: Npc): Npc?
+	for _, n in ipairs(npcs() or {}) do
+		if n.id == CONST.FIRE and n.x == fire.x and n.y == fire.y then
+			return n
+		end
+	end
+	return nil
+end
+
+function Hazard.approach_fire(fire: Npc): boolean
+	local route = Hazard.douse_route(fire)
+	local stand = route and route[#route]
+	if stand == nil then
+		Log.log("Tempoross", `   Can't reach the fire at {fire.x},{fire.y}`)
+		return false
+	end
+	local target = stand :: Tile
+	Log.log("Tempoross", `   The fire at {fire.x},{fire.y} is out of NPC range, walking toward {target.x},{target.y}`)
+	local function walk()
+		Route.walk(target, 0, CONST.FIRE_APPROACH_MS, function(): boolean
+			return Hazard.live_fire(fire) == nil
+		end)
+	end
+	if CONFIG.solo then
+		Solo.move_safely(target, walk)
+	else
+		walk()
+	end
+	return false
+end
+
 function Hazard.douse(fire: Npc, toward: Tile?): boolean
 	Read.sync_inventory()
 	local before = Read.item_count(Items.WATER)
 	if before == 0 then
 		return false
 	end
-	local current = Npcs.refresh(fire)
-	if current == nil or current.id ~= CONST.FIRE then
-		return false
+	local current = Hazard.live_fire(fire)
+	if current == nil then
+		return Hazard.approach_fire(fire)
 	end
-	fire = Hazard.douse_target(current)
+	local target = Hazard.douse_target(current)
+	local live = Hazard.live_fire(target)
+	if live == nil then
+		return Hazard.approach_fire(target)
+	end
+	fire = live :: Npc
 	if Island.scoring() and string.sub(S.solo.acting :: string, 1, 5) == "fire:" then
 		S.solo.acting = Island.fire_key(fire)
 	end
@@ -2156,7 +2231,7 @@ function Hazard.tempoross_vulnerable(): boolean
 		or (energy ~= nil and energy <= 0)
 	then
 		S.vulnerable = true
-	elseif energy ~= nil and energy >= 100 then
+	elseif (Read.hud_percent(HUD.INTENSITY) or 0) > 0 then
 		S.vulnerable = false
 	end
 	return S.vulnerable
@@ -2554,7 +2629,7 @@ function Task.double_worth(double: Npc): boolean
 	return true
 end
 
-function Task.best_spot(double_only: boolean, except: Npc?, avoid_fires: boolean?): Npc?
+function Task.best_spot(double_only: boolean, except: Npc?): Npc?
 	type Scored = { spot: Npc, score: number }
 	local function by_score(a: Scored, b: Scored): boolean
 		return a.score < b.score
@@ -2585,10 +2660,7 @@ function Task.best_spot(double_only: boolean, except: Npc?, avoid_fires: boolean
 		local tiles = Route.route_to(spot)
 		if
 			tiles == nil
-			or (
-				Hazard.hazard_at(tiles[#tiles]) == nil
-				and Route.safe_route(tiles, avoid_fires == true or Read.item_count(Items.WATER) == 0)
-			)
+			or (Hazard.hazard_at(tiles[#tiles]) == nil and Route.safe_route(tiles, Read.item_count(Items.WATER) == 0))
 		then
 			return spot
 		end
@@ -3113,7 +3185,7 @@ function Loop.common_game_state(): State?
 	end
 	if snap.walking and Read.item_count(Items.WATER) > 0 then
 		local ahead = Route.fire_ahead(Player.destination())
-		local live = ahead and Npcs.refresh(ahead)
+		local live = ahead and Hazard.live_fire(ahead)
 		if live and live.id == CONST.FIRE then
 			Log.log("Tempoross", `   Fire at {live.x},{live.y} on the way, putting it out`)
 			plan.fire = live
@@ -3121,7 +3193,7 @@ function Loop.common_game_state(): State?
 		end
 	end
 	if events.fire_in_way then
-		local fire = Npcs.refresh(events.fire_in_way :: Npc)
+		local fire = Hazard.live_fire(events.fire_in_way :: Npc)
 		events.fire_in_way = nil
 		if fire and fire.id == CONST.FIRE and Read.item_count(Items.WATER) > 0 then
 			plan.fire = fire
@@ -3136,7 +3208,7 @@ function Loop.common_game_state(): State?
 	if
 		Hazard.tempoross_vulnerable()
 		and not (CONFIG.solo and Solo.loading_first())
-		and not (CONFIG.solo and Solo.ship_fires_left())
+		and not (CONFIG.solo and Solo.attack_waits())
 	then
 		return "ATTACK"
 	end
@@ -3162,7 +3234,7 @@ function Route.fire_free(tiles: { Tile }): boolean
 	return Route.first_fire(tiles) == nil
 end
 
-function Route.waypoint_around_fires(target: Tile): Tile?
+function Route.waypoint_around_fires(target: Tile): (Tile?, number)
 	local me = snap.me
 	local mid = { x = (me.x + target.x) // 2, y = (me.y + target.y) // 2 }
 	local radius = CONST.SOLO.WAYPOINT_RADIUS
@@ -3184,11 +3256,11 @@ function Route.waypoint_around_fires(target: Tile): Tile?
 		if first and Route.fire_free(first) then
 			local second = Route.route_to(target, t)
 			if second and Route.fire_free(second) then
-				return t
+				return t, #first + #second - 2
 			end
 		end
 	end
-	return nil
+	return nil, math.huge
 end
 
 function Ship.other_side(): Side?
@@ -3819,6 +3891,7 @@ Handler.states = {
 	LOAD_EXACT = function()
 		Solo.load_exact(CONST.SOLO.FIRST_BATCH)
 	end,
+	P2_LOAD = Solo.p2_load,
 	LOAD_TO_TOTAL = function()
 		Solo.load_exact(Solo.part_two_cooked())
 	end,

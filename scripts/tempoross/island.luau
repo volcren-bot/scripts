@@ -296,21 +296,19 @@ function Island.part_one_needs(needs: Needs)
 	local count = Read.fish_count()
 	local raw = Read.item_count(Items.RAW_FISH)
 	local energy = Read.hud_percent(HUD.ENERGY) or 0
-	needs.fire = need.fire_idle
 	needs.fishing_target = target
 	needs.fishing_cook = true
 	Island.part_one_wait(needs)
 	if r.loading then
 		needs.loading = true
 		local p = math.clamp(r.loaded / target, 0, 1)
-		needs.step = if r.loaded >= target and Doing.player_is_working("load") == true
-			then need.urgent
+		needs.step = if not Solo.at_crate()
+			then 0
+			elseif r.loaded >= target and Doing.player_is_working("load") == true then need.urgent
 			else need.step * p
-		if #Island.home_fires() == 0 or Read.item_count(Items.WATER) == 0 then
-			needs.double = need.double * p
-			needs.single = need.single * p
-			needs.fishing_target = Solo.part_two_left()
-		end
+		needs.double = need.double * p
+		needs.single = need.single * p
+		needs.fishing_target = Solo.part_two_left()
 		return
 	end
 	if not r.opened and energy < CONST.SOLO.OPENING_ENERGY and count < CONST.SOLO.OPENING_FISH and count < target then
@@ -344,10 +342,14 @@ function Island.part_two_needs(needs: Needs)
 	if r.p2_loading then
 		local total = Solo.part_two_cooked()
 		local progress = math.clamp((r.loaded - CONST.SOLO.FIRST_BATCH) / CONST.SOLO.SECOND_BATCH, 0, 1)
-		needs.step = if r.loaded >= total and Doing.player_is_working("load") == true
-			then need.urgent
+		needs.step = if not Solo.at_crate()
+			then 0
+			elseif r.loaded >= total and Doing.player_is_working("load") == true then need.urgent
 			else need.step * progress
-		if Read.fish_count() > 0 and r.loaded < total then
+		if Solo.clearing() and Solo.clear_waits() then
+			needs.fire = need.fire
+			needs.fire_set = Solo.clear_set()
+		elseif Read.fish_count() > 0 and r.loaded < total then
 			needs.loading = true
 		else
 			needs.pier = need.pier
@@ -357,12 +359,8 @@ function Island.part_two_needs(needs: Needs)
 	if Read.fish_count() > 0 and Solo.at_crate() and Doing.player_is_working("load") == true then
 		needs.step = need.urgent
 	end
-	if r.p2_clear ~= "done" then
-		needs.fire = need.fire
-		needs.fire_box = Solo.home_box(S.side :: Side)
-		return
-	end
 	Island.fishing_needs(needs, Solo.part_two_left(), true)
+	needs.through_fire = true
 end
 
 function Island.midwalk_humidify(): boolean
@@ -390,14 +388,8 @@ function Island.part_three_needs(needs: Needs)
 			needs.route = need.route
 		end
 	elseif r.p3_stage == "clear" then
-		local set: { [number]: boolean } = {}
-		for _, fire in ipairs(Solo.p3_box_fires()) do
-			if r.p3_planned[`{fire.x},{fire.y}`] then
-				set[fire.index] = true
-			end
-		end
 		needs.fire = need.fire
-		needs.fire_set = set
+		needs.fire_set = Solo.clear_set()
 		local excess = Solo.clear_excess()
 		if excess > 0 and Solo.dropping_on_the_way() then
 			needs.drop = { count = math.min(excess, r.p3_drop_batch), water = true }
@@ -509,13 +501,13 @@ end
 
 function Island.part_five_route(needs: Needs)
 	local need = CONST.ISLAND.need
-	if Solo.p5_rush_north() then
+	if not Solo.p5_clearing_route() then
 		needs.north = need.north
 		return
 	end
 	needs.fire = need.fire
 	needs.look = need.look
-	needs.north = if Solo.p5_route_box() ~= nil then need.north_later else need.north
+	needs.north = need.north_later
 end
 
 function Island.part_five_needs(needs: Needs)
@@ -526,19 +518,16 @@ function Island.part_five_needs(needs: Needs)
 	elseif r.p5_stage == "north" then
 		Island.part_five_route(needs)
 	elseif r.p5_stage == "fish" then
-		Island.fishing_needs(needs, CONST.SOLO.P5_FISH, false)
+		local target = Solo.p5_fish_target()
+		Island.fishing_needs(needs, target, false)
 		needs.through_fire = true
-		local short = CONST.SOLO.P5_FISH - Read.fish_count() - snap.free
-		if Read.fish_count() < CONST.SOLO.P5_FISH and short > 0 and not Solo.humidify_settling() then
+		local short = target - Read.fish_count() - snap.free
+		if Read.fish_count() < target and short > 0 and not Solo.humidify_settling() then
 			needs.drop = { count = short, water = true }
 		end
 	elseif r.p5_stage == "sweep" then
 		needs.fire = need.fire
-		local set: { [number]: boolean } = {}
-		for _, fire in ipairs(Solo.p5_fires()) do
-			set[fire.index] = true
-		end
-		needs.fire_set = set
+		needs.look = need.look
 	elseif r.p5_stage == "load" then
 		needs.loading = Read.fish_count() > 0
 	elseif r.p5_stage == "pool" then
@@ -598,7 +587,7 @@ function Island.needs(): Needs
 	end
 	local r = S.solo
 	local loading_first = Solo.loading_first()
-	if Hazard.tempoross_vulnerable() and not loading_first and not Solo.ship_fires_left() then
+	if Hazard.tempoross_vulnerable() and not loading_first and not Solo.attack_waits() then
 		needs.attack = need.attack
 	end
 	if Island.forfeit_reason() ~= nil then
@@ -667,18 +656,26 @@ function Island.crate_plan(needs: Needs, fires: { Npc }): CratePlan
 	end
 	local crates = Island.known_crates()
 	local first = crates[1]
+	if Island.part() <= 2 then
+		plan.crate_need = need.crate
+		if first == nil or Read.item_count(Items.WATER) == 0 then
+			return plan
+		end
+		for _, fire in ipairs(fires) do
+			if Hazard.fire_distance(fire, first.stand) <= 1 then
+				plan.fire_need[fire.index] = need.fire_path
+				plan.path_blocked = true
+			end
+		end
+		if plan.path_blocked then
+			plan.crate_need = need.crate_waiting
+		end
+		return plan
+	end
 	local home = Island.home_fires()
 	local home_set: { [number]: boolean } = {}
 	for _, fire in ipairs(home) do
 		home_set[fire.index] = true
-	end
-	if Island.part() == 1 then
-		plan.crate_need = need.crate
-		local p = math.clamp(S.solo.loaded / CONST.SOLO.FIRST_BATCH, 0, 1)
-		for _, fire in ipairs(home) do
-			plan.fire_need[fire.index] = math.max(need.fire_idle, need.fire * p)
-		end
-		return plan
 	end
 	local ramp = needs.load_ramp
 	local early = ramp < 1
@@ -743,9 +740,14 @@ function Island.fires_on_way(to: Tile, covered: { [string]: { Npc } }): number
 end
 
 function Island.spot_items(needs: Needs, items: { Item }, covered: { [string]: { Npc } })
-	local single_need = CONST.ISLAND.need.single
+	local w = CONST.ISLAND
+	local single_need = w.need.single
 	local a = S.activity
 	local water = Read.item_count(Items.WATER) > 0
+	local part = Island.part()
+	local favour_doubles = part == 2 or part == 4
+	local singles: { Item } = {}
+	local double_near = false
 	for _, n in ipairs(snap.npcs) do
 		if Task.is_spot(n) then
 			local double = n.id == CONST.DOUBLE_SPOT
@@ -760,28 +762,50 @@ function Island.spot_items(needs: Needs, items: { Item }, covered: { [string]: {
 			if needs.fishing_target <= 0 or Read.fish_count() >= needs.fishing_target or snap.free == 0 then
 				allowed = false
 			end
+			local favoured = double and favour_doubles
 			local spot_need = if allowed then single_need else 0
 			local hazard = Hazard.hazard_at(stand)
 			if hazard and allowed then
 				if needs.through_fire and hazard.id == CONST.FIRE and water then
-					spot_need *= CONST.ISLAND.need.through_fire
+					spot_need *= if favoured then w.need.double_through_fire else w.need.through_fire
 				else
 					spot_need = 0
 				end
 			end
 			local item = new_item(if double then "double" else "single", steps, fit, spot_need, n, nil, nil, stand)
-			if double then
-				item.score = math.min(1, item.score * CONST.ISLAND.double_factor)
+			if double and part ~= 5 then
+				item.score = math.min(1, item.score * w.double_factor)
 			end
 			if item.score > 0 and not current then
-				item.score *= CONST.ISLAND.spot_fire_factor ^ Island.fires_on_way(stand, covered)
+				local fires = Island.fires_on_way(stand, covered)
+				if double and part == 2 then
+					fires = math.max(0, fires - w.p2_double_free_fires)
+				end
+				item.score *= (if favoured then w.double_fire_factor else w.spot_fire_factor) ^ fires
+			end
+			if favoured and item.score > 0 and steps <= w.double_near_steps then
+				double_near = true
+			end
+			if not double then
+				table.insert(singles, item)
 			end
 			table.insert(items, item)
+		end
+	end
+	if double_near then
+		for _, item in ipairs(singles) do
+			item.score *= w.single_near_double
 		end
 	end
 end
 
 function Island.crate_items(plan: CratePlan, items: { Item })
+	if Solo.p2_crate_loading() then
+		local goal = Solo.p2_crate_goal()
+		local steps = Route.walk_steps(goal)
+		table.insert(items, new_item("crate", steps, 1, plan.crate_need, Solo.south_crate(), nil, { goal }, goal))
+		return
+	end
 	local crates = Island.known_crates()
 	local far: Npc? = nil
 	local far_steps = -1
@@ -951,7 +975,7 @@ function Island.urgent_items(needs: Needs, items: { Item }): Npc?
 		table.insert(items, urgent_item("surge", { me }))
 	end
 	local hazard = Hazard.hazard_at(snap.me)
-	if hazard and Route.walking_out_of(hazard) then
+	if hazard and (Route.walking_out_of(hazard) or (hazard.id == CONST.FIRE and Solo.loading_through_fires())) then
 		hazard = nil
 	end
 	if hazard == nil then
@@ -1045,7 +1069,8 @@ end
 
 function Island.north_items(needs: Needs, items: { Item })
 	local r = S.solo
-	if (r.p5_stage ~= "north" and r.p5_stage ~= "humidify") or r.p5_north == nil then
+	local routing = r.p5_stage == "north" or r.p5_stage == "humidify" or r.p5_stage == "sweep"
+	if not routing or r.p5_north == nil then
 		return
 	end
 	Island.tile_item("north", Solo.p5_north_target(), needs.north, items)
@@ -1128,14 +1153,29 @@ function Island.path_fires(target: Item, fires: { Npc }): { Npc }
 		end
 		return found
 	end
-	local around_first = Island.part() >= 2
-		and S.solo.p4_stage ~= "fish"
-		and target.kind ~= "look"
-		and target.kind ~= "north"
-	if #found > 0 and around_first and Route.waypoint_around_fires(stand) ~= nil then
+	if #found == 0 or Island.part() == 1 then
+		return found
+	end
+	if Island.part() == 2 then
+		if target.kind == "double" or target.kind == "crate" then
+			return found
+		end
+		local around, steps = Route.waypoint_around_fires(stand)
+		if around ~= nil and steps <= #tiles - 1 + CONST.SOLO.GOAL_DETOUR then
+			return {}
+		end
+		return found
+	end
+	local around_first = S.solo.p4_stage ~= "fish" and target.kind ~= "look" and target.kind ~= "north"
+	if around_first and Route.waypoint_around_fires(stand) ~= nil then
 		return {}
 	end
 	return found
+end
+
+function Island.held(item: Item): boolean
+	local key = Island.key(item)
+	return key == S.solo.acting or key == S.solo.island_top
 end
 
 function Island.better(a: Item, b: Item): boolean
@@ -1144,6 +1184,10 @@ function Island.better(a: Item, b: Item): boolean
 	end
 	if a.rank ~= b.rank then
 		return a.rank > b.rank
+	end
+	local held_a, held_b = Island.held(a), Island.held(b)
+	if held_a ~= held_b then
+		return held_a
 	end
 	return a.steps < b.steps
 end
@@ -1554,13 +1598,16 @@ function Island.evaluate(): { Item }
 	S.solo.fishing_target = needs.fishing_target
 	S.solo.fishing_cook = needs.fishing_cook
 	lap("needs")
-	local all_fires = Hazard.fire_npcs()
+	local all_fires = if Solo.loading_through_fires() then {} else Hazard.fire_npcs()
 	local items: { Item } = {}
 	local under = Island.urgent_items(needs, items)
 	lap("urgent")
 	local plan = Island.crate_plan(needs, all_fires)
 	lap("crates")
 	local hub = Island.hub_fires(all_fires)
+	for _, fire in ipairs(if #all_fires > 0 then Solo.pool_fires() else {}) do
+		hub[fire.index] = true
+	end
 	lap("hub")
 	local fires = Island.box_fires(all_fires, needs, plan, hub, under)
 	lap("boxes")
