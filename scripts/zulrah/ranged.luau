@@ -1,7 +1,7 @@
 --!strict
-local Host = require("@lib/host")
-local Log = require("@lib/utils/log")
-local Random = require("@lib/utils/math/random")
+local Host = require("@volcren/host")
+local Log = require("@volcren/log")
+local Random = require("@volcren/random")
 
 type Tile = Host.Tile
 type Aims = { { number } }

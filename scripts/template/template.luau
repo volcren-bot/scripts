@@ -1,20 +1,20 @@
 --!strict
-local Host = require("@lib/host")
+local Host = require("@volcren/host")
 local game_state = Host.game_state
 local sleep = Host.sleep
 local time = Host.time
 type ClientState = Host.ClientState
-local Antiban = require("@lib/main/antiban/antiban")
-local AntibanTasks = require("@lib/main/antiban/antiban_tasks")
-local Biometrics = require("@lib/main/antiban/biometrics")
-local GameState = require("@lib/main/game_state")
-local Handoff = require("@lib/main/handoff")
-local Log = require("@lib/utils/log")
-local Login = require("@lib/main/interfaces/login/login")
-local Random = require("@lib/utils/math/random")
-local Stats = require("@lib/main/interfaces/gametabs/stats")
-local StatsReport = require("@lib/utils/stats_report")
-local Toplevel = require("@lib/main/interfaces/mainscreen/toplevel")
+local Antiban = require("@volcren/antiban")
+local AntibanTasks = require("@volcren/antiban_tasks")
+local Biometrics = require("@volcren/biometrics")
+local GameState = require("@volcren/game_state")
+local Handoff = require("@volcren/handoff")
+local Log = require("@volcren/log")
+local Login = require("@volcren/login")
+local Random = require("@volcren/random")
+local Stats = require("@volcren/stats")
+local StatsReport = require("@volcren/stats_report")
+local Toplevel = require("@volcren/toplevel")
 
 local NAME = "Template"
 

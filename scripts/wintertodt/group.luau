@@ -1,10 +1,10 @@
 --!strict
-local Biometrics = require("@lib/main/antiban/biometrics")
+local Biometrics = require("@volcren/biometrics")
 local Core = require("./core")
-local Inventory = require("@lib/main/interfaces/gametabs/inventory")
-local Log = require("@lib/utils/log")
-local SpecialAttack = require("@lib/main/interfaces/special_attack")
-local WorldSwitcher = require("@lib/main/interfaces/gametabs/worldswitcher")
+local Inventory = require("@volcren/inventory")
+local Log = require("@volcren/log")
+local SpecialAttack = require("@volcren/special_attack")
+local WorldSwitcher = require("@volcren/worldswitcher")
 type State = Core.State
 local NAME = Core.NAME
 local CONST = Core.CONST

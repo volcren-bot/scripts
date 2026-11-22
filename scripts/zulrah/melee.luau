@@ -1,12 +1,12 @@
 --!strict
-local Biometrics = require("@lib/main/antiban/biometrics")
-local CombatSafeSpot = require("@lib/main/combat_safespot")
-local Host = require("@lib/host")
-local Log = require("@lib/utils/log")
-local Player = require("@lib/main/player")
-local Random = require("@lib/utils/math/random")
-local SafeSpot = require("@lib/main/safespot")
-local Walker = require("@lib/main/walker")
+local Biometrics = require("@volcren/biometrics")
+local CombatSafeSpot = require("@volcren/combat_safespot")
+local Host = require("@volcren/host")
+local Log = require("@volcren/log")
+local Player = require("@volcren/player")
+local Random = require("@volcren/random")
+local SafeSpot = require("@volcren/safespot")
+local Walker = require("@volcren/walker")
 local time = Host.time
 
 type Tile = Host.Tile

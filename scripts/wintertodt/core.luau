@@ -1,13 +1,13 @@
 --!strict
-local Host = require("@lib/host")
+local Host = require("@volcren/host")
 export type ClientState = Host.ClientState
 export type Tile = Host.Tile
 export type Loc = Host.Loc
 export type Npc = Host.Npc
-local Item = require("@lib/utils/item")
-local Random = require("@lib/utils/math/random")
-local StatsReport = require("@lib/utils/stats_report")
-local Ticks = require("@lib/utils/ticks")
+local Item = require("@volcren/item")
+local Random = require("@volcren/random")
+local StatsReport = require("@volcren/stats_report")
+local Ticks = require("@volcren/ticks")
 
 local NAME = "Wintertodt"
 local TICK = Ticks.MS

@@ -1,6 +1,6 @@
 --!strict
 local Core = require("./core")
-local Log = require("@lib/utils/log")
+local Log = require("@volcren/log")
 type Activity = Core.Activity
 type State = Core.State
 type Npc = Core.Npc

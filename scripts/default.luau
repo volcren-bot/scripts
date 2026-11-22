@@ -1,8 +1,8 @@
 --!strict
-local Host = require("@lib/host")
+local Host = require("@volcren/host")
 local game_state = Host.game_state
-local Login = require("@lib/main/interfaces/login/login")
-local Stats = require("@lib/main/interfaces/gametabs/stats")
+local Login = require("@volcren/login")
+local Stats = require("@volcren/stats")
 
 local ok = Login.sign_in()
 assert(ok, "couldn't sign in")

@@ -1,0 +1,15 @@
+{
+  "lsp": {
+    "luau-lsp": {
+      "settings": {
+        "luau-lsp": {
+          "platform": { "type": "standard" },
+          "sourcemap": { "enabled": false }
+        },
+        "ext": {
+          "roblox": { "enabled": false }
+        }
+      }
+    }
+  }
+}

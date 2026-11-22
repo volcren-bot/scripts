@@ -23,10 +23,23 @@ jobs:
         with:
           path: scripts
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: volcren-bot/lib
-          path: lib
+      - name: Download the published SDK
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+        run: |
+          if [ -z "$SUPABASE_URL" ]; then
+            echo "Set the SUPABASE_URL repository variable." >&2
+            exit 1
+          fi
+          public="$(printf %s "$SUPABASE_URL" | tr -d '[:space:]')/storage/v1/object/public/client"
+          curl -sSf "$public/latest.json" -o latest.json
+          path=$(jq -er '.sdk.path' latest.json)
+          sum=$(jq -er '.sdk.sha256' latest.json)
+          case "$path" in *..*) echo "Refusing SDK path $path" >&2; exit 1 ;; esac
+          curl -sSf "$public/$path" -o sdk.zip
+          echo "$sum  sdk.zip" | sha256sum -c -
+          mkdir -p client/sdk/luau
+          unzip -q sdk.zip -d client/sdk/luau
 
       - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac
         with:

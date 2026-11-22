@@ -1,15 +1,15 @@
 --!strict
-local Host = require("@lib/host")
+local Host = require("@volcren/host")
 local time = Host.time
 export type Npc = Host.Npc
 export type Loc = Host.Loc
 export type Tile = Host.Tile
 export type ClientState = Host.ClientState
-local Draw = require("@lib/utils/draw")
-local Position = require("@lib/main/position")
-local SafeSpot = require("@lib/main/safespot")
-local StatsReport = require("@lib/utils/stats_report")
-local Ticks = require("@lib/utils/ticks")
+local Draw = require("@volcren/draw")
+local Position = require("@volcren/position")
+local SafeSpot = require("@volcren/safespot")
+local StatsReport = require("@volcren/stats_report")
+local Ticks = require("@volcren/ticks")
 
 local CONST = {
 	SINGLE_SPOTS = { [10565] = true, [10568] = true },
