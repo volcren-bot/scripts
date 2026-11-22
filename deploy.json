@@ -35,6 +35,10 @@
     "id": "d9111d04-b155-40b0-acc1-95c0fdcab6d5",
     "entry": "tithe_farm.luau"
   },
+  "varlamore_thieving": {
+    "id": "2d64cf96-74b5-4d64-aae7-937a442c0b2e",
+    "entry": "varlamore_thieving.luau"
+  },
   "volcanic_ash": {
     "id": "37ec9a32-9ba4-401a-86f8-0d858e38b5e9",
     "entry": "volcanic_ash.luau"

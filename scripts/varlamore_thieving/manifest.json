@@ -1,0 +1,185 @@
+{
+  "queueable": true,
+  "goals": [
+    {
+      "id": "runs",
+      "label": "Runs"
+    }
+  ],
+  "finish_grace_minutes": 2,
+  "settings": {
+    "fields": [
+      {
+        "kind": "label",
+        "text": "Mode",
+        "heading": 2
+      },
+      {
+        "id": "mode",
+        "kind": "choice",
+        "label": "Activity",
+        "options": ["Pickpocket", "Houses", "Pickpocket + Houses"],
+        "default": "Pickpocket"
+      },
+      {
+        "id": "keys_min",
+        "kind": "number",
+        "label": "Minimum house keys",
+        "default": 30,
+        "min": 10,
+        "max": 80,
+        "integer": true,
+        "visible_when": {
+          "id": "mode",
+          "equals": "Pickpocket + Houses"
+        }
+      },
+      {
+        "id": "keys_max",
+        "kind": "number",
+        "label": "Maximum house keys",
+        "default": 50,
+        "min": 11,
+        "max": 100,
+        "integer": true,
+        "above": {
+          "id": "keys_min",
+          "percent": 10
+        },
+        "visible_when": {
+          "id": "mode",
+          "equals": "Pickpocket + Houses"
+        }
+      },
+      {
+        "kind": "label",
+        "text": "Gear",
+        "heading": 2
+      },
+      {
+        "kind": "label",
+        "text": "If you want to use rogues outfit and/or use high alchemy add a equipment and inventory layout with everything you need, runes, chisel, etc."
+      },
+      {
+        "id": "inventory",
+        "kind": "inventory",
+        "label": "Inventory",
+        "row": "layouts"
+      },
+      {
+        "id": "equipment",
+        "kind": "equipment",
+        "label": "Equipment",
+        "row": "layouts"
+      },
+      {
+        "kind": "label",
+        "text": "Stop conditions",
+        "heading": 2
+      },
+      {
+        "id": "max_runs",
+        "kind": "number",
+        "label": "Max runs (0 is unlimited)",
+        "default": 0,
+        "min": 0,
+        "max": 100000,
+        "integer": true
+      },
+      {
+        "id": "jewellery",
+        "kind": "grid",
+        "label": "Jewellery",
+        "search": "Search jewellery",
+        "default": "bank",
+        "note": "Alch only when High Alchemy can be cast and the item is worth more than a nature rune; otherwise it is banked",
+        "columns": [
+          {
+            "id": "alch",
+            "label": "Alch",
+            "summary": "alched",
+            "color": "#43a047"
+          },
+          {
+            "id": "bank",
+            "label": "Bank",
+            "summary": "banked",
+            "color": "#fdd835"
+          },
+          {
+            "id": "drop",
+            "label": "Drop",
+            "summary": "dropped",
+            "color": "#e53935"
+          }
+        ],
+        "items": [
+          {
+            "id": "Gold necklace",
+            "default": "drop"
+          },
+          {
+            "id": "Gold amulet",
+            "default": "drop"
+          },
+          {
+            "id": "Gold ring",
+            "default": "drop"
+          },
+          {
+            "id": "Sapphire amulet",
+            "default": "alch"
+          },
+          {
+            "id": "Sapphire necklace",
+            "default": "bank"
+          },
+          {
+            "id": "Sapphire ring",
+            "default": "bank"
+          },
+          {
+            "id": "Emerald amulet",
+            "default": "alch"
+          },
+          {
+            "id": "Emerald necklace",
+            "default": "alch"
+          },
+          {
+            "id": "Emerald ring",
+            "default": "bank"
+          },
+          {
+            "id": "Ruby amulet",
+            "default": "alch"
+          },
+          {
+            "id": "Ruby necklace",
+            "default": "bank"
+          },
+          {
+            "id": "Ruby ring",
+            "default": "alch"
+          },
+          {
+            "id": "Diamond amulet",
+            "default": "alch"
+          },
+          {
+            "id": "Diamond necklace",
+            "default": "alch"
+          },
+          {
+            "id": "Diamond ring",
+            "default": "alch"
+          }
+        ],
+        "visible_when": {
+          "id": "mode",
+          "equals": ["Pickpocket + Houses", "Houses"]
+        }
+      }
+    ]
+  }
+}
