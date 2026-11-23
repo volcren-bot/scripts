@@ -7,6 +7,10 @@
     "id": "84859a4c-3701-4584-a4ef-1dbea247b411",
     "entry": "blast_furnace.luau"
   },
+  "blessed_bone_shards": {
+    "id": "2f32405a-827f-462d-b893-b33236617679",
+    "entry": "blessed_bone_shards.luau"
+  },
   "collector": {
     "id": "4837b3fd-7bd5-483b-8004-e006ac975394",
     "entry": "collector.luau"
