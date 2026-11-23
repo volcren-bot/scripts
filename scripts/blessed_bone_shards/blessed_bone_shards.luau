@@ -68,7 +68,6 @@ local CONST = {
 	SHRINE_NEAR = 3,
 	RESTORE_TIMEOUT_MS = 15000,
 	MIN_PRAYER = 2,
-	MIN_SAVING_TICKS = 5,
 	MAX_IDLE_USES = 6,
 	EMPTY_JUG = "Jug",
 	AFK = { chance = 0.1, after = { 1, 4 }, ms = { 5000, 40000 } },
@@ -405,7 +404,6 @@ function Game.walk_to(
 	local options: Walker.WalkOptions = {
 		near = 1,
 		plane = goal.plane,
-		transports = { min_saving_ticks = CONST.MIN_SAVING_TICKS },
 		on_step = function()
 			if while_walking then
 				while_walking()
