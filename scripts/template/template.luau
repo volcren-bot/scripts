@@ -27,7 +27,6 @@ local Read, Game, Loop, Handler = {}, {}, {}, {}
 local CONFIG = {
 	max_runs = 0,
 	timeouts = { idle_minutes = 5, max_failures = 4 },
-	antiban = true,
 }
 
 local stats = { runs = 0, failures = 0 }
@@ -35,7 +34,6 @@ local stats = { runs = 0, failures = 0 }
 type RunState = {
 	finished: boolean,
 	blocked: string?,
-	antiban_ready: boolean,
 	antiban_began_at: number,
 	last_progress_at: number,
 	last_xp: number,
@@ -45,8 +43,6 @@ type RunState = {
 
 function Game.apply_settings(values: { [string]: any })
 	CONFIG.max_runs = values.max_runs or CONFIG.max_runs
-	CONFIG.timeouts.idle_minutes = values.idle_minutes or CONFIG.timeouts.idle_minutes
-	CONFIG.antiban = values.antiban ~= false
 end
 
 function Game.poll_settings()
@@ -60,7 +56,6 @@ end
 local S: RunState = {
 	finished = false,
 	blocked = nil,
-	antiban_ready = false,
 	antiban_began_at = 0,
 	last_progress_at = 0,
 	last_xp = 0,
@@ -166,7 +161,6 @@ function Game.setup_antiban()
 	Antiban.add_async_task(AntibanTasks.hover_random_ground_item, 120 * SECOND, 0.4, "outside")
 
 	Antiban.sync_config()
-	S.antiban_ready = true
 	Log.log(NAME, "Antiban set up")
 end
 
@@ -179,9 +173,7 @@ function Game.setup()
 		sleep(100)
 	end
 
-	if CONFIG.antiban and not S.antiban_ready then
-		Game.setup_antiban()
-	end
+	Game.setup_antiban()
 end
 
 function Loop.watch_progress(s: ClientState)
@@ -270,10 +262,8 @@ Handler.states = {
 	end,
 	IDLE = function()
 		Log.log(NAME, `Tick {plan.target}`)
-		if CONFIG.antiban and S.antiban_ready then
-			if not Antiban.do_antiban() then
-				S.skip["IDLE"] = true
-			end
+		if not Antiban.do_antiban() then
+			S.skip["IDLE"] = true
 		end
 	end,
 }
@@ -320,9 +310,7 @@ function Loop.run()
 		close_stray()
 		Handler.states[state]()
 
-		if CONFIG.antiban and S.antiban_ready then
-			Antiban.do_async_tasks("outside")
-		end
+		Antiban.do_async_tasks("outside")
 		sleep(Random.int(60, 140))
 	end
 	Loop.wrap_up()

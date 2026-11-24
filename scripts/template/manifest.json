@@ -10,11 +10,6 @@
 	"settings": {
 		"fields": [
 			{
-				"kind": "label",
-				"text": "Stop conditions",
-				"heading": 2
-			},
-			{
 				"id": "max_runs",
 				"kind": "number",
 				"label": "Max runs (0 is unlimited)",
@@ -22,26 +17,6 @@
 				"min": 0,
 				"max": 100000,
 				"integer": true
-			},
-			{
-				"id": "idle_minutes",
-				"kind": "number",
-				"label": "Stop after this many minutes without xp",
-				"default": 5,
-				"min": 1,
-				"max": 60,
-				"integer": true
-			},
-			{
-				"kind": "label",
-				"text": "Behaviour",
-				"heading": 2
-			},
-			{
-				"id": "antiban",
-				"kind": "check",
-				"label": "Antiban",
-				"default": true
 			}
 		]
 	}
