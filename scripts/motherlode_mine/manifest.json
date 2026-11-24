@@ -1,0 +1,97 @@
+{
+	"goals": [
+		{
+			"id": "paydirt",
+			"label": "Pay-dirt mined"
+		},
+		{
+			"id": "nuggets",
+			"label": "Golden nuggets"
+		}
+	],
+	"settings": {
+		"fields": [
+			{
+				"id": "owned_heading",
+				"kind": "label",
+				"label": "Unlocks this account already has (the bigger sack is detected)",
+				"heading": 2
+			},
+			{
+				"id": "have_upper",
+				"kind": "check",
+				"label": "Upper floor",
+				"default": false
+			},
+			{
+				"id": "have_hopper",
+				"kind": "check",
+				"label": "Upper floor hopper",
+				"default": false,
+				"visible_when": {
+					"id": "have_upper",
+					"equals": true
+				}
+			},
+			{
+				"id": "use_upper",
+				"kind": "check",
+				"label": "Mine the upper floor when the account has it (57 Mining)",
+				"default": true
+			},
+			{
+				"id": "unlocks_heading",
+				"kind": "label",
+				"label": "Buy unlocks from Prospector Percy with golden nuggets (order, 0 never buys)",
+				"heading": 2
+			},
+			{
+				"id": "buy_upper",
+				"kind": "number",
+				"label": "Upper floor (100 nuggets, waits for 57 Mining)",
+				"default": 1,
+				"min": 0,
+				"max": 3,
+				"integer": true,
+				"box_first": true,
+				"visible_when": {
+					"id": "have_upper",
+					"equals": false
+				}
+			},
+			{
+				"id": "buy_hopper",
+				"kind": "number",
+				"label": "Upper floor hopper (50 nuggets)",
+				"default": 2,
+				"min": 0,
+				"max": 3,
+				"integer": true,
+				"box_first": true,
+				"visible_when": {
+					"id": "have_hopper",
+					"equals": false
+				}
+			},
+			{
+				"id": "buy_sack",
+				"kind": "number",
+				"label": "Bigger sack (200 nuggets)",
+				"default": 3,
+				"min": 0,
+				"max": 3,
+				"integer": true,
+				"box_first": true
+			},
+			{
+				"id": "max_paydirt",
+				"kind": "number",
+				"label": "Max pay-dirt (0 is unlimited)",
+				"default": 0,
+				"min": 0,
+				"max": 1000000,
+				"integer": true
+			}
+		]
+	}
+}
