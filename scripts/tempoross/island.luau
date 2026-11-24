@@ -359,6 +359,11 @@ function Island.part_two_needs(needs: Needs)
 	if Read.fish_count() > 0 and Solo.at_crate() and Doing.player_is_working("load") == true then
 		needs.step = need.urgent
 	end
+	if r.p2_clear ~= "done" then
+		needs.fire = need.fire
+		needs.fire_box = r.p2_box
+		return
+	end
 	Island.fishing_needs(needs, Solo.part_two_left(), true)
 	needs.through_fire = true
 end

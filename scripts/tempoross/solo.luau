@@ -2033,7 +2033,10 @@ function Solo.advance_two()
 		Doing.clear_activity()
 		Log.log("Tempoross", `Intensity {intensity}%, loading the {count} fish we have ({raw} raw)`)
 	end
-	if not r.p2_loading and Solo.fishing_done(Solo.part_two_left(), true) then
+	if not r.p2_loading and r.p2_clear ~= "done" then
+		Solo.advance_p2_clear()
+	end
+	if not r.p2_loading and r.p2_clear == "done" and Solo.fishing_done(Solo.part_two_left(), true) then
 		r.p2_loading = true
 		Log.log("Tempoross", `{count} cooked fish, loading them all`)
 	end
@@ -2047,6 +2050,33 @@ function Solo.advance_two()
 		r.clear_progress = math.max(r.clear_progress, Solo.sweep_rank(snap.me))
 		Solo.update_clear()
 	end
+end
+
+function Solo.advance_p2_clear()
+	local r = S.solo
+	if r.p2_clear == nil then
+		Solo.start_p2_clear("ship", Solo.home_box(S.side :: Side))
+	end
+	if r.p2_clear == "ship" and not Solo.p2_clear_waits() then
+		local boxes = Solo.island_boxes()
+		Solo.start_p2_clear("north beach", boxes and (boxes :: { [string]: Box }).north_beach)
+	end
+	if r.p2_clear == "north beach" and not Solo.p2_clear_waits() then
+		r.p2_clear = "done"
+		r.p2_box = nil
+		Log.log("Tempoross", "   Ship and north beach clear, fishing")
+	end
+end
+
+function Solo.start_p2_clear(stage: string, box: Box?)
+	local r = S.solo
+	r.p2_clear = stage
+	r.p2_box = box
+	Log.log("Tempoross", `Part 2: putting out every fire on the {stage} ({#Solo.side_fires()})`)
+end
+
+function Solo.p2_clear_waits(): boolean
+	return S.solo.p2_box ~= nil and #Solo.side_fires() > 0 and Solo.has_water()
 end
 
 function Solo.advance_three()

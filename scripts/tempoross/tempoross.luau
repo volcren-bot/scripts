@@ -1957,16 +1957,13 @@ function Hazard.douse(fire: Npc, toward: Tile?): boolean
 		return false
 	end
 	local deadline = time() + 6000
-	local animation_ended = false
 	while time() < deadline do
 		if poured() then
 			return true
 		end
-		local dousing = Read.my_animation() == CONST.DOUSE_ANIMATION
-		animation_ended = animation_ended or not dousing
-		local st = if dousing and animation_ended then nil else Read.refresh_moving()
-		if st == nil or not Hazard.burning_at(fire) then
-			done(if st == nil then "settled" else "gone")
+		local st = Read.refresh_moving()
+		if not Hazard.burning_at(fire) then
+			done("gone")
 			return true
 		end
 		Hazard.watch_projectiles()
