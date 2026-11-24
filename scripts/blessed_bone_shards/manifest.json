@@ -2,101 +2,92 @@
 	"settings": {
 		"fields": [
 			{
-				"kind": "label",
-				"text": "What to do",
-				"heading": 2
-			},
-			{
-				"id": "mode",
-				"kind": "choice",
-				"label": "Mode",
-				"options": [
-					"Breaking",
-					"Sunfire wines",
-					"Offering",
-					"All"
+				"id": "tasks",
+				"kind": "tasks",
+				"label": "Tasks, done from top to bottom",
+				"types": [
+					{
+						"id": "break",
+						"label": "Break bones",
+						"fields": [
+							{
+								"id": "bones",
+								"kind": "choice",
+								"label": "Bones",
+								"options": [
+									"Sun-kissed bones",
+									"Bones",
+									"Bat bones",
+									"Big bones",
+									"Wyrmling bones",
+									"Zogre bones",
+									"Babydragon bones",
+									"Wyrm bones",
+									"Strykewyrm bones",
+									"Wyvern bones",
+									"Dragon bones",
+									"Drake bones",
+									"Fayrg bones",
+									"Lava dragon bones",
+									"Raurg bones",
+									"Frost dragon bones",
+									"Hydra bones",
+									"Ourg bones",
+									"Superior dragon bones"
+								],
+								"default": "Sun-kissed bones"
+							},
+							{
+								"id": "max_bones",
+								"kind": "number",
+								"label": "Max bones (0 is unlimited)",
+								"default": 0,
+								"min": 0,
+								"max": 1000000,
+								"integer": true
+							}
+						]
+					},
+					{
+						"id": "sunfire",
+						"label": "Make sunfire wines",
+						"fields": [
+							{
+								"id": "sunfire_wines",
+								"kind": "number",
+								"label": "Sunfire wines to make (0 is every Jug of wine)",
+								"default": 0,
+								"min": 0,
+								"max": 100000,
+								"integer": true
+							}
+						]
+					},
+					{
+						"id": "offer",
+						"label": "Offer shards",
+						"fields": [
+							{
+								"id": "wine",
+								"kind": "choice",
+								"label": "Wine",
+								"options": [
+									"Wine",
+									"Sunfire wine"
+								],
+								"default": "Wine"
+							}
+						]
+					}
 				],
-				"default": "Breaking"
-			},
-			{
-				"id": "bones",
-				"kind": "choice",
-				"label": "Bones",
-				"options": [
-					"Sun-kissed bones",
-					"Bones",
-					"Bat bones",
-					"Big bones",
-					"Wyrmling bones",
-					"Zogre bones",
-					"Babydragon bones",
-					"Wyrm bones",
-					"Strykewyrm bones",
-					"Wyvern bones",
-					"Dragon bones",
-					"Drake bones",
-					"Fayrg bones",
-					"Lava dragon bones",
-					"Raurg bones",
-					"Frost dragon bones",
-					"Hydra bones",
-					"Ourg bones",
-					"Superior dragon bones"
-				],
-				"default": "Sun-kissed bones",
-				"visible_when": {
-					"id": "mode",
-					"equals": [
-						"Breaking",
-						"All"
-					]
-				}
-			},
-			{
-				"id": "wine",
-				"kind": "choice",
-				"label": "Wine",
-				"options": [
-					"Wine",
-					"Sunfire wine"
-				],
-				"default": "Wine",
-				"visible_when": {
-					"id": "mode",
-					"equals": [
-						"Offering",
-						"All"
-					]
-				}
-			},
-			{
-				"id": "sunfire_wines",
-				"kind": "number",
-				"label": "Sunfire wines to make (0 is every Jug of wine)",
-				"default": 0,
-				"min": 0,
-				"max": 100000,
-				"integer": true,
-				"visible_when": {
-					"id": "mode",
-					"equals": "Sunfire wines"
-				}
-			},
-			{
-				"id": "max_bones",
-				"kind": "number",
-				"label": "Max bones (0 is unlimited)",
-				"default": 0,
-				"min": 0,
-				"max": 1000000,
-				"integer": true,
-				"visible_when": {
-					"id": "mode",
-					"equals": [
-						"Breaking",
-						"All"
-					]
-				}
+				"default": [
+					{
+						"type": "break"
+					},
+					{
+						"type": "offer"
+					}
+				]
 			}
 		]
 	}

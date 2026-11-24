@@ -76,12 +76,7 @@ local CONST = {
 	DROP_GAP_MS = { 1500, 3500 },
 	DROP_MIN_WALK = 5,
 	DROP_PACE = { shift_ms = { 60, 110 }, gap_ms = { 0, 120 }, confirm = false },
-	PHASES = {
-		["Breaking"] = { "BREAK" },
-		["Sunfire wines"] = { "WINE" },
-		["Offering"] = { "WINE", "OFFER" },
-		["All"] = { "BREAK", "WINE", "OFFER" },
-	} :: { [string]: { Phase } },
+	TASK_PHASES = { ["break"] = "BREAK", sunfire = "WINE", offer = "OFFER" } :: { [string]: Phase },
 	BUSY_GRACE_MS = 3600,
 	BURST = { fast_inventory = 0.4, micro_burst = 0.2, slow_stretch = 0.05, stretch = { 4, 12 }, start_delay_ms = 80 },
 	SLOW_PAUSE_MS = 600,
@@ -114,15 +109,14 @@ local CONST = {
 local Read, Game, Loop, Handler = {}, {}, {}, {}
 
 type Phase = "BREAK" | "WINE" | "OFFER"
+type Task = { phase: Phase, bones: string, max_bones: number, sunfire_wines: number, wine: string }
 type WineStep = "BANK" | "MAKE"
 type Craft = { tool: string, target: number | string, animation: number }
 
+local NO_TASK: Task = { phase = "BREAK", bones = "", max_bones = 0, sunfire_wines = 0, wine = "Wine" }
+
 local CONFIG = {
-	mode = "Breaking",
-	bones = "Sun-kissed bones",
-	max_bones = 0,
-	wine = "Wine",
-	sunfire_wines = 0,
+	tasks = {} :: { Task },
 	fast_bursts = true,
 	timeouts = { idle_minutes = 5, max_failures = 4 },
 	antiban = true,
@@ -137,8 +131,9 @@ type RunState = {
 	antiban_began_at: number,
 	last_progress_at: number,
 	busy_until: number,
-	phases: { Phase },
-	phase_index: number,
+	task: Task,
+	task_bones: number,
+	task_index: number,
 	phase: Phase,
 	wine_step: WineStep,
 	sunfire_goal: number?,
@@ -157,20 +152,32 @@ type RunState = {
 	offer_bank: boolean,
 }
 
-function Game.apply_settings(values: { [string]: any })
-	CONFIG.mode = values.mode or CONFIG.mode
-	CONFIG.bones = values.bones or CONFIG.bones
-	CONFIG.max_bones = values.max_bones or CONFIG.max_bones
-	CONFIG.wine = values.wine or CONFIG.wine
-	CONFIG.sunfire_wines = values.sunfire_wines or CONFIG.sunfire_wines
+function Read.tasks(values: { [string]: any }): { Task }
+	local tasks: { Task } = {}
+	local rows: { { [string]: any } } = values.tasks or {}
+	for _, row in ipairs(rows) do
+		local phase = CONST.TASK_PHASES[row.type]
+		if phase then
+			table.insert(tasks, {
+				phase = phase,
+				bones = row.bones or NO_TASK.bones,
+				max_bones = row.max_bones or 0,
+				sunfire_wines = row.sunfire_wines or 0,
+				wine = row.wine or NO_TASK.wine,
+			})
+		end
+	end
+	return tasks
 end
 
-function Game.poll_settings()
-	local values = Host.form_update()
-	if values then
-		Game.apply_settings(values)
-		Log.log(NAME, "Settings updated")
+function Read.describe(task: Task): string
+	if task.phase == "BREAK" then
+		return `break {if task.max_bones > 0 then `up to {task.max_bones}` else "every"} {task.bones}`
+	elseif task.phase == "WINE" then
+		local amount = if task.sunfire_wines > 0 then tostring(task.sunfire_wines) else "every"
+		return `make sunfire wine from {amount} {CONST.JUG}`
 	end
+	return `offer shards with {task.wine}`
 end
 
 local S: RunState = {
@@ -180,8 +187,9 @@ local S: RunState = {
 	antiban_began_at = 0,
 	last_progress_at = 0,
 	busy_until = 0,
-	phases = {},
-	phase_index = 1,
+	task = NO_TASK,
+	task_bones = 0,
+	task_index = 1,
 	phase = "BREAK",
 	wine_step = "BANK",
 	sunfire_goal = nil,
@@ -199,6 +207,21 @@ local S: RunState = {
 	fills = 0,
 	offer_bank = true,
 }
+
+function Game.poll_settings()
+	local values = Host.form_update()
+	if values == nil then
+		return
+	end
+	CONFIG.tasks = Read.tasks(values)
+	Log.log(NAME, "Settings updated")
+	local current = CONFIG.tasks[S.task_index]
+	if current and current.phase == S.phase then
+		S.task = current
+	else
+		Game.begin_task(S.task_index)
+	end
+end
 
 type State =
 	"LOADING"
@@ -223,20 +246,20 @@ function Read.scene_loading(s: ClientState): boolean
 end
 
 function Read.bones_left(): number
-	if CONFIG.max_bones <= 0 then
+	if S.task.max_bones <= 0 then
 		return math.huge
 	end
-	return math.max(CONFIG.max_bones - stats.bones, 0)
+	return math.max(S.task.max_bones - S.task_bones, 0)
 end
 
 function Read.unsupported(): string?
-	local phases = CONST.PHASES[CONFIG.mode]
-	if phases == nil then
-		return `there is no {CONFIG.mode} mode`
+	if #CONFIG.tasks == 0 then
+		return "there are no tasks to do"
 	end
-	local breaks = phases[1] == "BREAK"
-	if breaks and CONST.BREAKS[CONFIG.bones] == nil then
-		return `{CONFIG.bones} can't be blessed`
+	for _, task in ipairs(CONFIG.tasks) do
+		if task.phase == "BREAK" and CONST.BREAKS[task.bones] == nil then
+			return `{task.bones} can't be blessed`
+		end
 	end
 	return nil
 end
@@ -253,11 +276,11 @@ function Read.targets(): number
 end
 
 function Read.needs_altar(): boolean
-	return not CONST.PRE_BLESSED[CONFIG.bones]
+	return not CONST.PRE_BLESSED[S.task.bones]
 end
 
 function Read.breakable(): number
-	return CONST.BREAKS[CONFIG.bones]
+	return CONST.BREAKS[S.task.bones]
 end
 
 local stackable_ids: { [number]: boolean } = {}
@@ -277,7 +300,7 @@ type Unblessed = { loose: number, notes: number, notes_slot: number? }
 function Read.unblessed(): Unblessed
 	local found: Unblessed = { loose = 0, notes = 0, notes_slot = nil }
 	for _, item in ipairs(Inventory.items() or {}) do
-		if item.name == CONFIG.bones then
+		if item.name == S.task.bones then
 			if Read.stacks(item.id) then
 				found.notes += item.quantity
 				found.notes_slot = item.slot
@@ -426,31 +449,37 @@ function Game.walk_to(
 	return true
 end
 
-function Game.next_phase()
-	S.phase_index += 1
-	local phase = S.phases[S.phase_index]
-	if phase == nil then
+function Game.begin_task(index: number)
+	S.task_index = index
+	local task = CONFIG.tasks[index]
+	if task == nil then
+		Log.log(NAME, "No tasks left")
 		S.finished = true
 		return
 	end
-	S.phase, S.wine_step = phase, "BANK"
+	S.task, S.phase, S.wine_step = task, task.phase, "BANK"
+	S.task_bones, S.sunfire_goal = 0, nil
 	S.seen_targets, S.target_slot, S.idle_uses, S.offer_bank = nil, nil, 0, true
 	S.fast_inventory, S.flip_from, S.flip_to = false, 0, 0
-	Log.log(NAME, `Moving on to {string.lower(phase)}`)
+	Log.log(NAME, `Task {index} of {#CONFIG.tasks}: {Read.describe(task)}`)
+end
+
+function Game.next_task()
+	Game.begin_task(S.task_index + 1)
 end
 
 function Game.finish_if_done(): boolean
 	if Read.bones_left() > 0 then
 		return false
 	end
-	Log.log(NAME, `Broke {stats.bones} bones`)
-	Game.next_phase()
+	Log.log(NAME, `Broke {S.task_bones} bones`)
+	Game.next_task()
 	return true
 end
 
 function Game.out_of_bones()
-	Log.log(NAME, `Out of {CONFIG.bones} after breaking {stats.bones}`)
-	Game.next_phase()
+	Log.log(NAME, `Out of {S.task.bones} after breaking {S.task_bones}`)
+	Game.next_task()
 end
 
 function Game.withdraw_chisel(): boolean
@@ -539,7 +568,7 @@ function Game.bank_for_altar()
 	if not Game.open_bank() then
 		return
 	end
-	local keep: { number | string } = { CONST.CHISEL, CONST.COINS, CONST.SHARDS, CONFIG.bones }
+	local keep: { number | string } = { CONST.CHISEL, CONST.COINS, CONST.SHARDS, S.task.bones }
 	if Bankmain.inventory.contains_different(keep) and not Bankmain.deposit_different(keep) then
 		Game.fail("Couldn't deposit the inventory")
 		return
@@ -562,13 +591,13 @@ function Game.bank_for_altar()
 			return
 		end
 	end
-	if (Bankmain.count(CONFIG.bones) or 0) == 0 then
+	if (Bankmain.count(S.task.bones) or 0) == 0 then
 		if held.notes == 0 then
 			Game.out_of_bones()
 			return
 		end
-	elseif not Bankmain.withdraw(CONFIG.bones, wanted, true) then
-		Game.fail(`Couldn't withdraw noted {CONFIG.bones}`)
+	elseif not Bankmain.withdraw(S.task.bones, wanted, true) then
+		Game.fail(`Couldn't withdraw noted {S.task.bones}`)
 		return
 	end
 	Game.close_bank()
@@ -598,7 +627,7 @@ function Game.exchange()
 		return
 	end
 	if not Inventory.select_slot(held.notes_slot) or not Npcs.interact(npc, "Use") then
-		Game.fail(`Couldn't use the noted {CONFIG.bones} on {CONST.VIRILIS}`)
+		Game.fail(`Couldn't use the noted {S.task.bones} on {CONST.VIRILIS}`)
 		return
 	end
 	if not ChatOptions.wait_option("Exchange", false, CONST.DIALOG_TIMEOUT_MS) then
@@ -611,10 +640,10 @@ function Game.exchange()
 			return Read.unblessed().loose > 0
 		end, CONST.DIALOG_TIMEOUT_MS)
 	then
-		Game.fail(`Couldn't unnote the {CONFIG.bones}`)
+		Game.fail(`Couldn't unnote the {S.task.bones}`)
 		return
 	end
-	Log.log(NAME, `Unnoted {Read.unblessed().loose} {CONFIG.bones}`)
+	Log.log(NAME, `Unnoted {Read.unblessed().loose} {S.task.bones}`)
 	S.failures_in_row = 0
 end
 
@@ -626,13 +655,13 @@ function Game.bless()
 		return
 	end
 	if not Objects.interact(altar, "Bless") then
-		Game.fail(`Couldn't bless the {CONFIG.bones}`)
+		Game.fail(`Couldn't bless the {S.task.bones}`)
 		return
 	end
 	if not Widgets.wait_until(function()
 		return Read.unblessed().loose == 0
 	end, CONST.BLESS_TIMEOUT_MS) then
-		Game.fail(`The {CONFIG.bones} didn't get blessed`)
+		Game.fail(`The {S.task.bones} didn't get blessed`)
 		return
 	end
 	Game.plan_burst()
@@ -647,13 +676,13 @@ function Game.bank()
 	if not Game.open_bank() then
 		return
 	end
-	if Bankmain.inventory.contains_different({ CONST.CHISEL, CONFIG.bones }) then
-		if not Bankmain.deposit_different({ CONST.CHISEL, CONFIG.bones }) then
+	if Bankmain.inventory.contains_different({ CONST.CHISEL, S.task.bones }) then
+		if not Bankmain.deposit_different({ CONST.CHISEL, S.task.bones }) then
 			Game.fail("Couldn't deposit the inventory")
 			return
 		end
 	end
-	local wanted = Read.bones_left() - (Inventory.count(CONFIG.bones) or 0)
+	local wanted = Read.bones_left() - (Inventory.count(S.task.bones) or 0)
 	if wanted <= 0 then
 		Game.finish_if_done()
 		return
@@ -661,13 +690,13 @@ function Game.bank()
 	if not Game.withdraw_chisel() then
 		return
 	end
-	if (Bankmain.count(CONFIG.bones) or 0) == 0 then
+	if (Bankmain.count(S.task.bones) or 0) == 0 then
 		Game.out_of_bones()
 		return
 	end
 	local free = Inventory.free_slots() or 0
-	if free > 0 and not Bankmain.withdraw(CONFIG.bones, if wanted >= free then 0 else wanted, false) then
-		Game.fail(`Couldn't withdraw {CONFIG.bones}`)
+	if free > 0 and not Bankmain.withdraw(S.task.bones, if wanted >= free then 0 else wanted, false) then
+		Game.fail(`Couldn't withdraw {S.task.bones}`)
 		return
 	end
 	if Game.close_bank() then
@@ -683,19 +712,12 @@ type WinePlan = { buy: number, make: number }
 
 function Read.wine_plan(): WinePlan
 	local jugs, sunfire = Read.banked(CONST.JUG), Read.banked(CONST.SUNFIRE)
-	if CONFIG.mode == "Sunfire wines" then
-		if CONFIG.sunfire_wines <= 0 then
-			return { buy = 0, make = jugs }
-		end
-		local goal = S.sunfire_goal or sunfire + CONFIG.sunfire_wines
-		S.sunfire_goal = goal
-		return { buy = math.max(goal - sunfire - jugs, 0), make = math.max(goal - sunfire, 0) }
+	if S.task.sunfire_wines <= 0 then
+		return { buy = 0, make = jugs }
 	end
-	local wines = math.ceil(Read.banked(CONST.SHARDS) / CONST.SHARDS_PER_WINE)
-	if CONFIG.wine == "Wine" then
-		return { buy = math.max(wines - jugs, 0), make = 0 }
-	end
-	return { buy = math.max(wines - jugs - sunfire, 0), make = math.max(wines - sunfire, 0) }
+	local goal = S.sunfire_goal or sunfire + S.task.sunfire_wines
+	S.sunfire_goal = goal
+	return { buy = math.max(goal - sunfire - jugs, 0), make = math.max(goal - sunfire, 0) }
 end
 
 function Game.withdraw_one(item: string): boolean
@@ -763,12 +785,12 @@ function Game.wine_bank()
 			NAME,
 			`Have the wine: {Read.banked(CONST.JUG)} {CONST.JUG}, {Read.banked(CONST.SUNFIRE)} {CONST.SUNFIRE}`
 		)
-		Game.next_phase()
+		Game.next_task()
 	end
 end
 
 function Read.offer_wine(): string
-	return if CONFIG.wine == "Sunfire wine" then CONST.SUNFIRE else CONST.JUG
+	return if S.task.wine == "Sunfire wine" then CONST.SUNFIRE else CONST.JUG
 end
 
 function Read.blessed_wines(): number
@@ -811,7 +833,7 @@ function Game.offer_bank()
 	local shards = Inventory.count_ex(CONST.SHARDS) or 0
 	if shards == 0 then
 		Log.log(NAME, `Offered every {CONST.SHARDS}`)
-		Game.next_phase()
+		Game.next_task()
 		return
 	end
 	local wine = Read.offer_wine()
@@ -821,8 +843,8 @@ function Game.offer_bank()
 	if take > 0 then
 		if (Bankmain.count_ex(wine) or 0) == 0 then
 			if held == 0 then
-				S.blocked = `out of {wine}`
-				S.finished = true
+				Log.log(NAME, `Out of {wine} with {shards} shards left`)
+				Game.next_task()
 				return
 			end
 		elseif not Bankmain.withdraw(wine, if take >= free then 0 else take, false) then
@@ -1108,6 +1130,7 @@ function Loop.watch_progress(s: ClientState)
 			stats.sunfire_made += made
 		else
 			stats.bones += made
+			S.task_bones += made
 		end
 		S.last_progress_at = time()
 	end
@@ -1327,8 +1350,8 @@ function Loop.wrap_up()
 end
 
 function Loop.run()
-	Game.apply_settings(Host.settings())
-	Log.log(NAME, `{NAME} started: {CONFIG.mode}`)
+	CONFIG.tasks = Read.tasks(Host.settings())
+	Log.log(NAME, `{NAME} started with {#CONFIG.tasks} tasks`)
 	local unsupported = Read.unsupported()
 	if unsupported then
 		Log.log(NAME, `Can't start: {unsupported}`)
@@ -1336,13 +1359,8 @@ function Loop.run()
 		Loop.wrap_up()
 		return
 	end
-	S.phases = CONST.PHASES[CONFIG.mode]
-	S.phase = S.phases[1]
+	Game.begin_task(1)
 	Game.setup()
-	if S.phase == "WINE" and S.phases[2] == "OFFER" and Read.ready_to_offer() then
-		Log.log(NAME, "Already carrying shards and wine")
-		Game.next_phase()
-	end
 	S.last_progress_at, S.failures_in_row = time(), 0
 	Loop.hook_antiban_timeouts()
 
