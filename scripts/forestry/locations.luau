@@ -1,0 +1,117 @@
+--!strict
+local Host = require("@volcren/host")
+type Tile = Host.Tile
+
+export type Location = {
+	tree: string,
+	logs: string,
+	level: number,
+	trees: { Tile },
+	bank: Tile,
+	fires: Tile,
+}
+
+local Locations: { [string]: Location } = {
+	["Oak - Draynor Village"] = {
+		tree = "Oak tree",
+		logs = "Oak logs",
+		level = 15,
+		trees = { { x = 3102, y = 3242 }, { x = 3106, y = 3247 }, { x = 3114, y = 3239 } },
+		bank = { x = 3093, y = 3243 },
+		fires = { x = 3092, y = 3237 },
+	},
+	["Willow - Draynor Village"] = {
+		tree = "Willow tree",
+		logs = "Willow logs",
+		level = 30,
+		trees = {
+			{ x = 3083, y = 3237 },
+			{ x = 3085, y = 3235 },
+			{ x = 3087, y = 3231 },
+			{ x = 3088, y = 3227 },
+			{ x = 3088, y = 3234 },
+		},
+		bank = { x = 3093, y = 3243 },
+		fires = { x = 3092, y = 3237 },
+	},
+	["Willow - Catherby"] = {
+		tree = "Willow tree",
+		logs = "Willow logs",
+		level = 30,
+		trees = {
+			{ x = 2768, y = 3426 },
+			{ x = 2771, y = 3427 },
+			{ x = 2781, y = 3427 },
+			{ x = 2783, y = 3426 },
+			{ x = 2786, y = 3429 },
+		},
+		bank = { x = 2809, y = 3440 },
+		fires = { x = 2809, y = 3435 },
+	},
+	["Maple - Seers' Village"] = {
+		tree = "Maple tree",
+		logs = "Maple logs",
+		level = 45,
+		trees = { { x = 2721, y = 3501 }, { x = 2727, y = 3501 }, { x = 2730, y = 3501 }, { x = 2732, y = 3499 } },
+		bank = { x = 2727, y = 3493 },
+		fires = { x = 2725, y = 3485 },
+	},
+	["Mahogany - Farming Guild"] = {
+		tree = "Mahogany tree",
+		logs = "Mahogany logs",
+		level = 50,
+		trees = { { x = 1235, y = 3772 }, { x = 1239, y = 3769 } },
+		bank = { x = 1248, y = 3757 },
+		fires = { x = 1249, y = 3750 },
+	},
+	["Yew - Seers' Village church"] = {
+		tree = "Yew tree",
+		logs = "Yew logs",
+		level = 60,
+		trees = { { x = 2705, y = 3459 }, { x = 2705, y = 3464 }, { x = 2714, y = 3459 } },
+		bank = { x = 2727, y = 3493 },
+		fires = { x = 2725, y = 3485 },
+	},
+	["Yew - Catherby"] = {
+		tree = "Yew tree",
+		logs = "Yew logs",
+		level = 60,
+		trees = {
+			{ x = 2754, y = 3433 },
+			{ x = 2755, y = 3430 },
+			{ x = 2757, y = 3433 },
+			{ x = 2759, y = 3427 },
+			{ x = 2760, y = 3431 },
+			{ x = 2765, y = 3427 },
+			{ x = 2770, y = 3437 },
+		},
+		bank = { x = 2809, y = 3440 },
+		fires = { x = 2809, y = 3435 },
+	},
+	["Yew - Grand Exchange"] = {
+		tree = "Yew tree",
+		logs = "Yew logs",
+		level = 60,
+		trees = { { x = 3204, y = 3503 }, { x = 3208, y = 3499 }, { x = 3221, y = 3502 } },
+		bank = { x = 3167, y = 3489 },
+		fires = { x = 3165, y = 3480 },
+	},
+	["Magic - Ranging Guild"] = {
+		tree = "Magic tree",
+		logs = "Magic logs",
+		level = 75,
+		trees = { { x = 2690, y = 3427 }, { x = 2691, y = 3424 }, { x = 2696, y = 3423 } },
+		bank = { x = 2727, y = 3493 },
+		fires = { x = 2725, y = 3485 },
+	},
+	["Magic - Sorcerer's Tower"] = {
+		tree = "Magic tree",
+		logs = "Magic logs",
+		level = 75,
+		trees = { { x = 2698, y = 3396 }, { x = 2698, y = 3398 }, { x = 2705, y = 3396 }, { x = 2705, y = 3398 } },
+		bank = { x = 2727, y = 3493 },
+		fires = { x = 2725, y = 3485 },
+	},
+}
+
+return Locations

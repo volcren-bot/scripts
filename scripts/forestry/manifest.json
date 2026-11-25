@@ -1,0 +1,57 @@
+{
+	"goals": [
+		{
+			"id": "logs",
+			"label": "Logs"
+		},
+		{
+			"id": "events",
+			"label": "Events"
+		}
+	],
+	"finish_grace_minutes": 3,
+	"settings": {
+		"fields": [
+			{
+				"id": "location",
+				"kind": "choice",
+				"label": "Trees",
+				"options": [
+					"Oak - Draynor Village",
+					"Willow - Draynor Village",
+					"Willow - Catherby",
+					"Maple - Seers' Village",
+					"Mahogany - Farming Guild",
+					"Yew - Seers' Village church",
+					"Yew - Catherby",
+					"Yew - Grand Exchange",
+					"Magic - Ranging Guild",
+					"Magic - Sorcerer's Tower"
+				],
+				"default": "Maple - Seers' Village"
+			},
+			{
+				"id": "mode",
+				"kind": "choice",
+				"label": "Logs",
+				"options": ["Bank", "Drop", "Forester's Campfire", "Tinderbox", "Fletch and drop", "Fletch and bank", "Fletch arrow shafts"],
+				"default": "Bank"
+			},
+			{
+				"id": "events",
+				"kind": "check",
+				"label": "Do Forestry events",
+				"default": true
+			},
+			{
+				"id": "max_logs",
+				"kind": "number",
+				"label": "Max logs (0 is unlimited)",
+				"default": 0,
+				"min": 0,
+				"max": 1000000,
+				"integer": true
+			}
+		]
+	}
+}
