@@ -1,0 +1,115 @@
+{
+	"goals": [
+		{
+			"id": "rumours",
+			"label": "Rumours"
+		}
+	],
+	"settings": {
+		"fields": [
+			{
+				"id": "max_rumours",
+				"kind": "number",
+				"label": "Max rumours (0 is unlimited)",
+				"default": 0,
+				"min": 0,
+				"max": 100000,
+				"integer": true
+			},
+			{
+				"id": "open_loot_sacks",
+				"kind": "check",
+				"label": "Open hunters' loot sacks and bank the loot",
+				"default": true
+			},
+			{
+				"id": "bury_bones",
+				"kind": "check",
+				"label": "Bury bones",
+				"default": true
+			},
+			{
+				"id": "hides",
+				"kind": "choice",
+				"label": "Hides and furs",
+				"options": [
+					"Bank",
+					"Drop"
+				],
+				"default": "Bank"
+			},
+			{
+				"id": "meat",
+				"kind": "choice",
+				"label": "Meat",
+				"options": [
+					"Bank",
+					"Drop"
+				],
+				"default": "Bank"
+			},
+			{
+				"id": "catches",
+				"kind": "grid",
+				"label": "Caught creatures",
+				"search": "Search creatures",
+				"columns": [
+					{
+						"id": "bank",
+						"label": "Bank"
+					},
+					{
+						"id": "release",
+						"label": "Release"
+					}
+				],
+				"items": [
+					{
+						"id": "10034",
+						"label": "Red chinchompa",
+						"default": "bank"
+					},
+					{
+						"id": "10146",
+						"label": "Orange salamander",
+						"default": "release"
+					},
+					{
+						"id": "10147",
+						"label": "Red salamander",
+						"default": "release"
+					}
+				],
+				"default": "bank"
+			},
+			{
+				"id": "food",
+				"kind": "choice",
+				"label": "Food for traps that fight back",
+				"options": [
+					"Shrimps",
+					"Trout",
+					"Salmon",
+					"Tuna",
+					"Lobster",
+					"Bass",
+					"Swordfish",
+					"Monkfish",
+					"Cooked karambwan",
+					"Shark",
+					"Manta ray"
+				],
+				"default": "Bass"
+			},
+			{
+				"id": "food_count",
+				"kind": "number",
+				"label": "Food to bring",
+				"default": 6,
+				"min": 0,
+				"max": 28,
+				"integer": true
+			}
+		]
+	}
+}
