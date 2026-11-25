@@ -40,48 +40,65 @@
 				"default": true
 			},
 			{
-				"id": "unlocks_heading",
+				"id": "buy_heading",
 				"kind": "label",
-				"label": "Buy unlocks from Prospector Percy with golden nuggets (order, 0 never buys)",
+				"label": "Buy from Prospector Percy with golden nuggets",
 				"heading": 2
 			},
 			{
-				"id": "buy_upper",
-				"kind": "number",
-				"label": "Upper floor (100 nuggets, waits for 57 Mining)",
-				"default": 1,
-				"min": 0,
-				"max": 3,
-				"integer": true,
-				"box_first": true,
-				"visible_when": {
-					"id": "have_upper",
-					"equals": false
-				}
-			},
-			{
-				"id": "buy_hopper",
-				"kind": "number",
-				"label": "Upper floor hopper (50 nuggets)",
-				"default": 2,
-				"min": 0,
-				"max": 3,
-				"integer": true,
-				"box_first": true,
-				"visible_when": {
-					"id": "have_hopper",
-					"equals": false
-				}
-			},
-			{
-				"id": "buy_sack",
-				"kind": "number",
-				"label": "Bigger sack (200 nuggets)",
-				"default": 3,
-				"min": 0,
-				"max": 3,
-				"integer": true,
-				"box_first": true
+				"id": "buy",
+				"kind": "tasks",
+				"label": "Bought top to bottom; owned items are skipped and prospector pieces are worn",
+				"types": [
+					{
+						"id": "upper",
+						"label": "Upper floor (100 nuggets, waits for 57 Mining)"
+					},
+					{
+						"id": "hopper",
+						"label": "Upper floor hopper (50 nuggets)"
+					},
+					{
+						"id": "sack",
+						"label": "Bigger sack (200 nuggets)"
+					},
+					{
+						"id": "coal_bag",
+						"label": "Coal bag (100 nuggets)"
+					},
+					{
+						"id": "gem_bag",
+						"label": "Gem bag (100 nuggets)"
+					},
+					{
+						"id": "helmet",
+						"label": "Prospector helmet (40 nuggets)"
+					},
+					{
+						"id": "jacket",
+						"label": "Prospector jacket (60 nuggets)"
+					},
+					{
+						"id": "legs",
+						"label": "Prospector legs (50 nuggets)"
+					},
+					{
+						"id": "boots",
+						"label": "Prospector boots (30 nuggets)"
+					}
+				],
+				"default": [
+					{
+						"type": "upper"
+					},
+					{
+						"type": "hopper"
+					},
+					{
+						"type": "sack"
+					}
+				],
+				"max": 9
 			},
 			{
 				"id": "max_paydirt",

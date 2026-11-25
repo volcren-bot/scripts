@@ -25,6 +25,7 @@ local Objects = require("@volcren/objects")
 local Player = require("@volcren/player")
 local Players = require("@volcren/players")
 local Random = require("@volcren/random")
+local Shopmain = require("@volcren/shopmain")
 local Stats = require("@volcren/stats")
 local StatsReport = require("@volcren/stats_report")
 local Toplevel = require("@volcren/toplevel")
@@ -34,6 +35,8 @@ local Widgets = require("@volcren/widgets")
 local Wornitems = require("@volcren/wornitems")
 
 local NAME = "Motherlode Mine"
+
+type ShopItem = { item: string, owned: { number | string }, price: number, wear: boolean }
 
 local CONST = {
 	REPORT = { counters_key = "" },
@@ -75,6 +78,35 @@ local CONST = {
 		hopper = { label = "hopper", price = 50 },
 		sack = { label = "bigger sack", price = 200 },
 	} :: { [string]: { label: string, price: number } },
+	SHOP = {
+		coal_bag = { item = "Coal bag", owned = { "Coal bag", "Open coal bag" }, price = 100, wear = false },
+		gem_bag = { item = "Gem bag", owned = { "Gem bag", "Open gem bag" }, price = 100, wear = false },
+		helmet = {
+			item = "Prospector helmet",
+			owned = { "Prospector helmet", "Golden prospector helmet" },
+			price = 40,
+			wear = true,
+		},
+		jacket = {
+			item = "Prospector jacket",
+			owned = { "Prospector jacket", "Golden prospector jacket" },
+			price = 60,
+			wear = true,
+		},
+		legs = {
+			item = "Prospector legs",
+			owned = { "Prospector legs", "Golden prospector legs" },
+			price = 50,
+			wear = true,
+		},
+		boots = {
+			item = "Prospector boots",
+			owned = { "Prospector boots", "Golden prospector boots" },
+			price = 30,
+			wear = true,
+		},
+	} :: { [string]: ShopItem },
+	WEAR = { option = "Wear", wait_ms = 2400 },
 	MINE = { START_MS = 5000, IDLE_MS = 2400, MAX_MS = 90000, POLL_MS = 100, TINY_ANTIBAN = 0.35 },
 	CLUSTER = { RADIUS = 4, MAX_EXTRA = 12, HOP_BIAS = 10 },
 	DEPOSIT_MS = 6000,
@@ -95,7 +127,7 @@ local CONFIG = {
 	use_upper = true,
 	have_upper = false,
 	have_hopper = false,
-	buy = { upper = 1, hopper = 2, sack = 3 } :: { [UnlockKey]: number },
+	buy = { "upper", "hopper", "sack" } :: { string },
 	max_paydirt = 0,
 	timeouts = { idle_minutes = 5, max_failures = 5 },
 }
@@ -127,6 +159,7 @@ type RunState = {
 	emptying: boolean,
 	bags_filled: boolean,
 	bank_nuggets: number?,
+	bank_owned: { [string]: boolean }?,
 	clusters: { [Floor]: { Cluster } },
 	cluster: Cluster?,
 	cluster_floor: Floor?,
@@ -154,6 +187,7 @@ local S: RunState = {
 	emptying = false,
 	bags_filled = true,
 	bank_nuggets = nil,
+	bank_owned = nil,
 	clusters = {},
 	cluster = nil,
 	cluster_floor = nil,
@@ -210,7 +244,7 @@ type State =
 	| "NUGGETS"
 	| "RECOVER"
 
-type Plan = { buy: UnlockKey? }
+type Plan = { buy: string? }
 
 local plan: Plan = {}
 
@@ -667,34 +701,68 @@ function Route.pick_vein(floor: Floor): Candidate?
 	return nil
 end
 
-function Game.next_purchase(): UnlockKey?
+function Read.owns(key: string): boolean
+	local shop = CONST.SHOP[key]
+	if shop == nil then
+		return S.unlocks ~= nil and (S.unlocks :: any)[key] == true
+	end
+	return Wornitems.contains_any(shop.owned)
+		or Inventory.contains_any(shop.owned)
+		or (S.bank_owned ~= nil and S.bank_owned[key] == true)
+end
+
+function Game.price(key: string): number
+	local shop = CONST.SHOP[key]
+	return if shop then shop.price else CONST.UNLOCKS[key].price
+end
+
+function Game.describe(key: string): string
+	local shop = CONST.SHOP[key]
+	return if shop then string.lower(shop.item) else `{key} unlock`
+end
+
+function Game.next_purchase(): string?
 	local u = S.unlocks
 	if u == nil then
 		return nil
 	end
-	local order: { UnlockKey } = { "upper", "hopper", "sack" }
-	table.sort(order, function(a, b)
-		return CONFIG.buy[a] < CONFIG.buy[b]
-	end)
-	for _, k in ipairs(order) do
-		if CONFIG.buy[k] > 0 and not (u :: any)[k] then
-			if k == "hopper" and not u.upper then
+	for _, k in ipairs(CONFIG.buy) do
+		if Read.owns(k) then
+			continue
+		end
+		if CONST.SHOP[k] then
+			if S.bank_locked then
 				continue
-			end
-			if k == "upper" and (snap == nil or snap.mining < CONST.UPPER_MINING) then
-				return nil
 			end
 			return k
 		end
+		if k == "hopper" and not u.upper then
+			continue
+		end
+		if k == "upper" and (snap == nil or snap.mining < CONST.UPPER_MINING) then
+			return nil
+		end
+		return k
 	end
 	return nil
 end
 
-function Game.fetch_nuggets_for(buy: UnlockKey): boolean
+function Game.ready_to_buy(buy: string): boolean
+	local c = snap.carried
+	if c.dirt > 0 or c.nuggets < Game.price(buy) then
+		return false
+	end
+	return CONST.SHOP[buy] == nil or (S.bank_owned ~= nil and c.free > 0)
+end
+
+function Game.fetch_nuggets_for(buy: string): boolean
 	if S.bank_locked or snap.carried.dirt > 0 or S.emptying or snap.floor ~= "lower" then
 		return false
 	end
-	local price = CONST.UNLOCKS[buy].price
+	if CONST.SHOP[buy] and S.bank_owned == nil then
+		return true
+	end
+	local price = Game.price(buy)
 	return snap.carried.nuggets < price and (S.bank_nuggets == nil or S.bank_nuggets + snap.carried.nuggets >= price)
 end
 
@@ -931,7 +999,7 @@ function Game.read_unlock_list(options: { ChatOptions.Option }): Unlocks
 	}
 end
 
-function Game.talk_to_percy(buy: UnlockKey?): boolean
+function Game.approach_percy(option: string): boolean
 	if Toplevel.has_interface() then
 		Toplevel.escape_clear()
 	end
@@ -944,7 +1012,51 @@ function Game.talk_to_percy(buy: UnlockKey?): boolean
 	if percy then
 		Route.clear_way(Route.neighbours(percy))
 	end
-	if percy == nil or not Npcs.approach(percy, CONST.PERCY.talk) then
+	return percy ~= nil and Npcs.approach(percy, option)
+end
+
+function Game.wear(item: string)
+	Log.log(NAME, `Wearing the {string.lower(item)}`)
+	if
+		not Inventory.interact(item, CONST.WEAR.option)
+		or not Widgets.wait_until(function()
+			return Wornitems.is_wearing(item)
+		end, CONST.WEAR.wait_ms, 100)
+	then
+		Game.fail(`Couldn't wear the {string.lower(item)}`)
+	end
+end
+
+function Game.buy_from_shop(key: string): boolean
+	local shop = CONST.SHOP[key]
+	if not Game.approach_percy(Shopmain.OPTION) or not Shopmain.wait_open() then
+		Game.fail("Couldn't open Prospector Percy's shop")
+		Toplevel.escape_clear()
+		return false
+	end
+	sleep(Random.int(300, 700))
+	local bought = Shopmain.buy(shop.item, 1)
+	sleep(Random.int(200, 500))
+	Shopmain.close()
+	if bought < 1 then
+		Game.fail(`Prospector Percy's shop didn't sell the {string.lower(shop.item)}`)
+		return false
+	end
+	stats.bought += 1
+	stats.nuggets_spent += shop.price
+	Log.log(NAME, `Bought the {string.lower(shop.item)}`)
+	sleep(Random.int(300, 700))
+	if shop.wear then
+		Game.wear(shop.item)
+	else
+		Game.open_bags()
+	end
+	Game.progress()
+	return true
+end
+
+function Game.talk_to_percy(buy: UnlockKey?): boolean
+	if not Game.approach_percy(CONST.PERCY.talk) then
 		Game.fail("Couldn't talk to Prospector Percy")
 		return false
 	end
@@ -1110,7 +1222,7 @@ function Loop.get_state(): State
 		end
 	end
 	local buy = Game.next_purchase()
-	if buy and c.dirt == 0 and c.nuggets >= CONST.UNLOCKS[buy].price and not skipped["BUY"] then
+	if buy and Game.ready_to_buy(buy) and not skipped["BUY"] then
 		plan.buy = buy
 		return "BUY"
 	end
@@ -1420,9 +1532,9 @@ function Handler.bank()
 end
 
 function Handler.fetch_nuggets()
-	local buy = plan.buy :: UnlockKey
-	local price = CONST.UNLOCKS[buy].price
-	Log.log(NAME, `Checking the bank for {price} golden nuggets to buy the {buy} unlock`)
+	local buy = plan.buy :: string
+	local price = Game.price(buy)
+	Log.log(NAME, `Checking the bank for {price} golden nuggets to buy the {Game.describe(buy)}`)
 	Route.clear_way(Route.neighbours(CONST.BANK_CHEST))
 	if not Bankmain.open() then
 		if BankpinKeypad.is_open() then
@@ -1441,9 +1553,19 @@ function Handler.fetch_nuggets()
 		S.skip["NUGGETS"] = true
 		return
 	end
+	local owned: { [string]: boolean } = {}
+	for k, shop in pairs(CONST.SHOP) do
+		owned[k] = Bankmain.contains_any(shop.owned)
+	end
+	S.bank_owned = owned
 	local banked = Bankmain.count_ex(CONST.NUGGET) or 0
 	S.bank_nuggets = banked
-	if banked + snap.carried.nuggets >= price then
+	if Read.owns(buy) then
+		Log.log(NAME, `The bank already holds a {Game.describe(buy)}, skipping it`)
+		Game.progress()
+	elseif snap.carried.nuggets >= price then
+		Game.progress()
+	elseif banked + snap.carried.nuggets >= price then
 		if Bankmain.withdraw(CONST.NUGGET, 0) then
 			S.bank_nuggets = 0
 			Game.progress()
@@ -1583,11 +1705,17 @@ function Handler.repair()
 	end
 end
 
-function Handler.percy(buy: UnlockKey?)
+function Handler.percy(buy: string)
 	if not Handler.ensure_lower() then
 		return
 	end
-	if not Game.talk_to_percy(buy) then
+	if CONST.SHOP[buy] then
+		if not Game.buy_from_shop(buy) then
+			S.skip["BUY"] = true
+		end
+		return
+	end
+	if not Game.talk_to_percy(buy :: UnlockKey) then
 		S.skip["BUY"] = true
 		return
 	end
@@ -1602,7 +1730,7 @@ Handler.states = {
 		Game.sign_in()
 	end,
 	BUY = function()
-		Handler.percy(plan.buy)
+		Handler.percy(plan.buy :: string)
 	end,
 	BANK = Handler.bank,
 	NUGGETS = Handler.fetch_nuggets,
@@ -1624,9 +1752,15 @@ function Game.apply_settings(values: { [string]: any })
 	if values.have_hopper ~= nil then
 		CONFIG.have_hopper = values.have_hopper
 	end
-	CONFIG.buy.upper = values.buy_upper or CONFIG.buy.upper
-	CONFIG.buy.hopper = values.buy_hopper or CONFIG.buy.hopper
-	CONFIG.buy.sack = values.buy_sack or CONFIG.buy.sack
+	if values.buy ~= nil then
+		local buy: { string } = {}
+		for _, row in ipairs(values.buy :: { { type: string } }) do
+			if CONST.SHOP[row.type] or CONST.UNLOCKS[row.type] then
+				table.insert(buy, row.type)
+			end
+		end
+		CONFIG.buy = buy
+	end
 	CONFIG.max_paydirt = values.max_paydirt or CONFIG.max_paydirt
 end
 
