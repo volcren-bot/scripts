@@ -441,7 +441,7 @@ end
 
 function Island.confine_box(): Box?
 	local r = S.solo
-	if r.p4_stage == "fish" then
+	if r.p4_stage == "fish" or r.p3_stage == "clear" then
 		return r.p3_box
 	end
 	return nil

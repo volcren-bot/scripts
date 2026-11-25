@@ -1852,26 +1852,13 @@ function Hazard.live_fire(fire: Npc): Npc?
 	return nil
 end
 
-function Hazard.approach_fire(fire: Npc): boolean
-	local route = Hazard.douse_route(fire)
-	local stand = route and route[#route]
-	if stand == nil then
-		Log.log("Tempoross", `   Can't reach the fire at {fire.x},{fire.y}`)
+function Hazard.went_out(fire: Npc): boolean
+	if npcs() == nil then
 		return false
 	end
-	local target = stand :: Tile
-	Log.log("Tempoross", `   The fire at {fire.x},{fire.y} is out of NPC range, walking toward {target.x},{target.y}`)
-	local function walk()
-		Route.walk(target, 0, CONST.FIRE_APPROACH_MS, function(): boolean
-			return Hazard.live_fire(fire) == nil
-		end)
-	end
-	if CONFIG.solo then
-		Solo.move_safely(target, walk)
-	else
-		walk()
-	end
-	return false
+	S.doused[`{fire.x},{fire.y}`] = time()
+	Log.log("Tempoross", `   The fire at {fire.x},{fire.y} is already out`)
+	return true
 end
 
 function Hazard.douse(fire: Npc, toward: Tile?): boolean
@@ -1882,12 +1869,13 @@ function Hazard.douse(fire: Npc, toward: Tile?): boolean
 	end
 	local current = Hazard.live_fire(fire)
 	if current == nil then
-		return Hazard.approach_fire(fire)
+		return Hazard.went_out(fire)
 	end
 	local target = Hazard.douse_target(current)
 	local live = Hazard.live_fire(target)
 	if live == nil then
-		return Hazard.approach_fire(target)
+		Hazard.went_out(target)
+		return false
 	end
 	fire = live :: Npc
 	if Island.scoring() and string.sub(S.solo.acting :: string, 1, 5) == "fire:" then
