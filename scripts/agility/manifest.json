@@ -34,12 +34,6 @@
 				"default": false
 			},
 			{
-				"id": "highlight",
-				"kind": "check",
-				"label": "Highlight obstacles",
-				"default": true
-			},
-			{
 				"id": "courses",
 				"kind": "list",
 				"label": "Courses to walk to, in order (untick to skip one)",

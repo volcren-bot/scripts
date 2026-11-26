@@ -12,6 +12,7 @@ local Biometrics = require("@volcren/biometrics")
 local Camera = require("@volcren/camera")
 local Clickbox = require("@volcren/clickbox")
 local Consumables = require("@volcren/consumables")
+local DebugDraw = require("@volcren/debug_draw")
 local Draw = require("@volcren/draw")
 local GameState = require("@volcren/game_state")
 local Geometry = require("@volcren/geometry")
@@ -78,7 +79,7 @@ local CONST = {
 	WALK_THROUGH = { ["Chop down"] = true } :: { [string]: boolean },
 	REACT_MS = { 200, 900 },
 	CLICK_TRIES = 3,
-	OVERLAY = { EVERY_MS = 100, FILL = { 255, 255, 0, 70 } },
+	OVERLAY = { EVERY_MS = 100, LAYER = "agility obstacle", FACES = { 255, 255, 0, 70 }, HULL = { 255, 255, 0, 255 } },
 	COURSES = {
 		canifis = {
 			name = "Canifis",
@@ -1868,7 +1869,6 @@ local CONFIG = {
 		wyrm_basic = true,
 		wyrm_advanced = true,
 	} :: { [string]: boolean },
-	highlight = true,
 	max_laps = 0,
 	prehover = 0.8,
 	seers_teleport = false,
@@ -1889,7 +1889,7 @@ type RunState = {
 	course: Course?,
 	unreachable: { [string]: boolean },
 	overlay_at: number,
-	overlay_drawn: boolean,
+	overlay_key: string?,
 	marks_start: number,
 	eat_at: number,
 	ate_tick: number,
@@ -1907,7 +1907,7 @@ local S: RunState = {
 	course = nil,
 	unreachable = {},
 	overlay_at = 0,
-	overlay_drawn = false,
+	overlay_key = nil,
 	marks_start = 0,
 	eat_at = 0,
 	ate_tick = -math.huge,
@@ -2259,38 +2259,41 @@ end
 
 function Overlay.update()
 	local course = S.course
-	if not CONFIG.highlight or course == nil or time() - S.overlay_at < CONST.OVERLAY.EVERY_MS then
+	if course == nil or time() - S.overlay_at < CONST.OVERLAY.EVERY_MS then
 		return
 	end
 	S.overlay_at = time()
-	local box: Clickbox.Clickbox? = nil
+	local loc: Loc? = nil
 	local p = game_state().position
-	if p then
+	if p and DebugDraw.on() then
 		local pos = { x = p.x, y = p.y }
 		local step = course.steps[Read.step_of(course, pos, p.plane or 0)]
-		local loc = step and Read.obstacle(step, pos)
-		box = loc and Objects.clickbox(loc)
+		loc = step and Read.obstacle(step, pos)
 	end
-	if box == nil and not S.overlay_drawn then
+	local key = if loc then `{loc.kind},{loc.id},{loc.x},{loc.y}` else nil
+	if key == S.overlay_key then
 		return
 	end
-	S.overlay_drawn = box ~= nil
-	Draw.batch(function()
-		Draw.clear()
-		if box then
-			local fill = CONST.OVERLAY.FILL
-			for _, triangle in ipairs(box.triangles or {}) do
-				Draw.polygon(triangle, Draw.color(fill[1], fill[2], fill[3], fill[4]))
-			end
-			Clickbox.draw(box)
-		end
+	S.overlay_key = key
+	if loc == nil then
+		DebugDraw.set(CONST.OVERLAY.LAYER, nil)
+		return
+	end
+	local shown: Loc = loc
+	local faces, hull = CONST.OVERLAY.FACES, CONST.OVERLAY.HULL
+	DebugDraw.set(CONST.OVERLAY.LAYER, function()
+		DebugDraw.loc(
+			shown,
+			Draw.color(faces[1], faces[2], faces[3], faces[4]),
+			Draw.color(hull[1], hull[2], hull[3], hull[4])
+		)
 	end)
 end
 
 function Overlay.clear()
-	if S.overlay_drawn then
-		S.overlay_drawn = false
-		Draw.clear()
+	if S.overlay_key then
+		S.overlay_key = nil
+		DebugDraw.set(CONST.OVERLAY.LAYER, nil)
 	end
 end
 
@@ -2306,13 +2309,9 @@ end
 
 function Game.apply_live(values: { [string]: any })
 	CONFIG.progressive = values.progressive == true
-	CONFIG.highlight = values.highlight == true
 	local picked = values.courses :: { [string]: boolean }
 	for _, entry in ipairs(Read.courses_by_level()) do
 		CONFIG.blacklist[entry.key] = if picked[entry.key] == true then nil else true
-	end
-	if not CONFIG.highlight then
-		Overlay.clear()
 	end
 end
 
