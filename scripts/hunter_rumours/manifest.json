@@ -17,6 +17,15 @@
 				"integer": true
 			},
 			{
+				"id": "stop_level",
+				"kind": "number",
+				"label": "Stop at Hunter level (0 is never)",
+				"default": 0,
+				"min": 0,
+				"max": 99,
+				"integer": true
+			},
+			{
 				"id": "open_loot_sacks",
 				"kind": "check",
 				"label": "Open hunters' loot sacks and bank the loot",
@@ -65,9 +74,19 @@
 				],
 				"items": [
 					{
+						"id": "10033",
+						"label": "Grey chinchompa",
+						"default": "bank"
+					},
+					{
 						"id": "10034",
 						"label": "Red chinchompa",
 						"default": "bank"
+					},
+					{
+						"id": "10149",
+						"label": "Swamp lizard",
+						"default": "release"
 					},
 					{
 						"id": "10146",

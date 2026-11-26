@@ -4,8 +4,8 @@ local sleep = Host.sleep
 local time = Host.time
 type Npc = Host.Npc
 type Point = Host.Tile
-local Antiban = require("@volcren/antiban")
 local Chat = require("@volcren/chat")
+local Idle = require("./idle")
 local Inventory = require("@volcren/inventory")
 local Log = require("@volcren/log")
 local Npcs = require("@volcren/npcs")
@@ -24,9 +24,10 @@ export type Creature = {
 	level: number,
 	barehanded: number?,
 	part: number?,
+	moth: boolean?,
 	areas: { Area },
 }
-export type State = "BLOCKED" | "DONE" | "WIELD_NET" | "TRAVEL" | "CATCH" | "WAIT"
+export type State = "BLOCKED" | "DONE" | "WIELD_NET" | "TRAVEL" | "CATCH" | "RETURN" | "WAIT"
 export type Task = {
 	creature: Creature,
 	camp: Tile?,
@@ -34,6 +35,8 @@ export type Task = {
 	fresh: boolean,
 	seen: { [number]: boolean },
 	catches: number,
+	active_at: number,
+	misses: number,
 	wield: string?,
 	blocked: string?,
 }
@@ -51,6 +54,9 @@ local CONST = {
 	REACT_MS = { 250, 900 },
 	WAIT_MS = { 150, 400 },
 	POLL_MS = 100,
+	IDLE_CAMP_MS = 45000,
+	MISSES = 6,
+	HOME_RADIUS = 2,
 }
 
 local CREATURES: { [string]: Creature } = {
@@ -96,8 +102,8 @@ local CREATURES: { [string]: Creature } = {
 			},
 		},
 	},
-	["sunlight moth"] = { name = "Sunlight moth", level = 65, barehanded = 75, part = 29237, areas = {} },
-	["moonlight moth"] = { name = "Moonlight moth", level = 75, barehanded = 85, part = 29240, areas = {} },
+	["sunlight moth"] = { name = "Sunlight moth", level = 65, barehanded = 75, part = 29237, moth = true, areas = {} },
+	["moonlight moth"] = { name = "Moonlight moth", level = 75, barehanded = 85, part = 29240, moth = true, areas = {} },
 }
 
 local Netting = {}
@@ -114,7 +120,7 @@ function Netting.new(prey: string): Task?
 	if creature == nil then
 		return nil
 	end
-	return { creature = creature, fresh = false, seen = {}, catches = 0 }
+	return { creature = creature, fresh = false, seen = {}, catches = 0, active_at = 0, misses = 0 }
 end
 
 function Read.best_net(): (string?, boolean)
@@ -146,7 +152,17 @@ function Read.pick_camp(task: Task, me: Point): Tile?
 	if area == nil then
 		return nil
 	end
-	local camp = area.spawns[Random.int(1, #area.spawns)]
+	local choices: { Tile } = {}
+	for _, spawn in ipairs(area.spawns) do
+		if task.camp == nil or spawn ~= task.camp then
+			table.insert(choices, spawn)
+		end
+	end
+	if #choices == 0 then
+		choices = area.spawns
+	end
+	local camp = choices[Random.int(1, #choices)]
+	task.active_at = time()
 	Log.log(NAME, `Camping the {task.creature.name} spawn at {camp.x}, {camp.y} in the {area.name}`)
 	return camp
 end
@@ -206,7 +222,18 @@ function Netting.state(task: Task): State
 		return "TRAVEL"
 	end
 	task.target = Read.target(task, camp)
-	return if task.target then "CATCH" else "WAIT"
+	if task.target then
+		return "CATCH"
+	end
+	if not c.moth and Walker.distance(me, camp) > CONST.HOME_RADIUS then
+		return "RETURN"
+	end
+	if time() - task.active_at > CONST.IDLE_CAMP_MS then
+		Log.log(NAME, `Nothing has come to {camp.x}, {camp.y} for a while, moving spawns`)
+		task.camp = Read.pick_camp(task, me)
+		return "TRAVEL"
+	end
+	return "WAIT"
 end
 
 function Game.wait_until(done: () -> boolean, timeout_ms: number): boolean
@@ -252,6 +279,12 @@ function Game.catch(task: Task): boolean
 	local last = Chat.last_message()
 	local seen = if last then last.uid else -1
 	if not Npcs.interact(target, CONST.OPTION.CATCH, false) then
+		Random.sleep(400, 900)
+		task.misses += 1
+		if task.misses < CONST.MISSES then
+			return true
+		end
+		task.misses = 0
 		return false
 	end
 	local deadline = time() + CONST.CATCH_TIMEOUT_MS
@@ -260,6 +293,8 @@ function Game.catch(task: Task): boolean
 			seen = m.uid
 			if string.find(m.text, CONST.CAUGHT) then
 				task.catches += 1
+				task.active_at, task.misses = time(), 0
+				Log.log(NAME, `Caught: {task.creature.name} ({task.catches} so far)`)
 				Game.wait_until(function()
 					return Npcs.refresh(target) == nil
 				end, CONST.RELEASE_TIMEOUT_MS)
@@ -276,9 +311,21 @@ function Game.catch(task: Task): boolean
 	return false
 end
 
+function Game.return_home(task: Task): boolean
+	local camp = task.camp :: Tile
+	local r = CONST.HOME_RADIUS
+	for _ = 1, 8 do
+		local tile = { x = camp.x + Random.int(-r, r), y = camp.y + Random.int(-r, r), plane = camp.plane }
+		local route = Walker.route(tile)
+		if route and route.reached then
+			return Walker.walk_tile(tile, 6000)
+		end
+	end
+	return false
+end
+
 function Game.wait()
-	Antiban.do_antiban()
-	Random.sleep(CONST.WAIT_MS[1], CONST.WAIT_MS[2])
+	Idle.wait(CONST.WAIT_MS)
 end
 
 Handler.states = {
@@ -291,6 +338,7 @@ Handler.states = {
 	WIELD_NET = Game.wield_net,
 	TRAVEL = Game.travel,
 	CATCH = Game.catch,
+	RETURN = Game.return_home,
 	WAIT = function(_task: Task): boolean
 		Game.wait()
 		return true

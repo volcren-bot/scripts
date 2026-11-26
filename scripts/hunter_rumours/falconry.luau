@@ -1,11 +1,11 @@
 --!strict
 local Host = require("@volcren/host")
 type ClientState = Host.ClientState
+local Idle = require("./idle")
 local Inventory = require("@volcren/inventory")
 local Log = require("@volcren/log")
 local Npcs = require("@volcren/npcs")
 local Position = require("@volcren/position")
-local Random = require("@volcren/random")
 local Travel = require("./travel")
 local Walker = require("@volcren/walker")
 local Wornitems = require("@volcren/wornitems")
@@ -22,12 +22,15 @@ export type Task = {
 	prey: number?,
 	sent_at: number,
 	catches: number,
+	missed: { [number]: number },
+	misses: number,
 	blocked: string?,
 }
 
 local CONST = {
+	MISSED_MS = 6000,
+	MISSES = 6,
 	ARRIVE_NEAR = 3,
-	ARRIVE_SPREAD = 1,
 	FENCE_Y = 3620,
 	FALCONER = { NPC = "Matthias", OPTION = "Quick-falcon", FEE = 500 },
 	GLOVE = "Falconer's glove",
@@ -87,7 +90,7 @@ function Falconry.new(prey: string): Task?
 	if creature == nil then
 		return nil
 	end
-	return { creature = creature, sent_at = 0, catches = 0 }
+	return { creature = creature, sent_at = 0, catches = 0, missed = {}, misses = 0 }
 end
 
 function Read.inside(area: Area, state: ClientState): boolean
@@ -178,12 +181,7 @@ end
 
 function Game.travel(task: Task): boolean
 	local area = task.area :: Area
-	local spread = CONST.ARRIVE_SPREAD
-	local goal = {
-		x = area.arrive.x + Random.int(-spread, spread),
-		y = area.arrive.y + Random.int(-spread, spread),
-		plane = area.arrive.plane,
-	}
+	local goal = Travel.spread(area.arrive)
 	Log.log(NAME, `Travelling to the {area.name}`)
 	local walked, why = Travel.walk(goal, CONST.ARRIVE_NEAR)
 	if why then
@@ -223,14 +221,30 @@ end
 
 function Game.catch(task: Task): boolean
 	local me = Walker.position()
-	local kebbit = if me then Npcs.nearest(task.creature.npc, me) else nil
+	local kebbit: Host.Npc? = nil
+	if me then
+		local now, best_d = Host.time(), math.huge
+		for _, npc in ipairs(Npcs.find() or {}) do
+			local d = Walker.distance(me, npc)
+			if npc.name == task.creature.npc and (task.missed[npc.index] or 0) < now and d < best_d then
+				kebbit, best_d = npc, d
+			end
+		end
+	end
 	if kebbit == nil then
 		return (Travel.walk((task.area :: Area).arrive, CONST.ARRIVE_NEAR))
 	end
 	local target = kebbit :: Host.Npc
 	if not Npcs.interact(target, CONST.CATCH_OPTION, false) then
+		task.missed[target.index] = Host.time() + CONST.MISSED_MS
+		task.misses += 1
+		if task.misses < CONST.MISSES then
+			return true
+		end
+		task.misses = 0
 		return false
 	end
+	task.misses = 0
 	task.prey = target.index
 	task.sent_at = Host.time()
 	local deadline = Host.time() + CONST.FLIGHT_TIMEOUT_MS
@@ -257,7 +271,7 @@ function Game.retrieve(task: Task): boolean
 		if Read.falcon_ready() then
 			task.prey = nil
 			task.catches += 1
-			Log.log(NAME, `Caught a {task.creature.npc} ({task.catches} so far)`)
+			Log.log(NAME, `Caught: {task.creature.npc} ({task.catches} so far)`)
 			return true
 		end
 		Host.sleep(CONST.POLL_MS)
@@ -269,7 +283,7 @@ function Game.wait(task: Task): boolean
 	if task.prey ~= nil and Host.time() - task.sent_at > CONST.RETRIEVE_TIMEOUT_MS then
 		task.prey = nil
 	end
-	Random.sleep(CONST.WAIT_MS[1], CONST.WAIT_MS[2])
+	Idle.wait(CONST.WAIT_MS)
 	return true
 end
 

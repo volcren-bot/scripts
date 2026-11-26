@@ -4,18 +4,19 @@ local sleep = Host.sleep
 local time = Host.time
 type GroundItem = Host.GroundItem
 type Loc = Host.Loc
-local Antiban = require("@volcren/antiban")
 local Biometrics = require("@volcren/biometrics")
 local GroundItems = require("@volcren/ground_items")
+local Hop = require("./hop")
+local Idle = require("./idle")
 local Inventory = require("@volcren/inventory")
 local Log = require("@volcren/log")
 local Objects = require("@volcren/objects")
+local Player = require("@volcren/player")
 local Players = require("@volcren/players")
 local Random = require("@volcren/random")
 local Stats = require("@volcren/stats")
 local Travel = require("./travel")
 local Walker = require("@volcren/walker")
-local WorldSwitcher = require("@volcren/worldswitcher")
 
 local NAME = "Salamanders"
 
@@ -33,28 +34,29 @@ export type Task = {
 	limit: number?,
 	target: Tile?,
 	net: GroundItem?,
-	worlds: { number }?,
 	busy: string?,
 	idle: boolean,
+	claimed: boolean,
 	catches: number,
 	blocked: string?,
 }
 
 local CONST = {
 	ARRIVE_NEAR = 3,
-	ARRIVE_SPREAD = 1,
 	LEASH = 12,
+	NEAR = 5,
 	TREE = { NAME = "Young tree", SET = "Set-trap" },
 	NET = { ITEM = "Net trap", RESET = "Reset", CHECK = "Check", DISMANTLE = "Dismantle", TAKE = "Take" },
 	TRAPS = { MAX = 5, LEVELS_PER_TRAP = 20 },
 	PLAYER_RANGE = 8,
-	ACT_TIMEOUT_MS = 12000,
+	ACT_TIMEOUT_MS = 20000,
 	EMPTY_GRACE_MS = 4000,
-	HOP_SETTLE_MS = { 1200, 2400 },
 	WAIT_MS = { 100, 250 },
 	REACT_MS = { mode = 450, min = 0, max = 1800 },
+	SETTLE_MS = 2400,
+	TICK_WAIT_MS = 700,
+	TRAP_ACTIONS = { SET = true, RESET = true, PICKUP = true } :: { [string]: boolean },
 	PREHOVER_MS = { 150, 450 },
-	ANTIBAN_GAP_MS = { 3000, 9000 },
 	POLL_MS = 100,
 }
 
@@ -116,6 +118,63 @@ local CREATURES: { [string]: Creature } = {
 	},
 }
 
+local TRAP_STATES: { [number]: Status } = {
+	[8732] = "empty",
+	[8990] = "empty",
+	[9000] = "empty",
+	[9341] = "empty",
+	[50721] = "empty",
+	[8730] = "set",
+	[8731] = "set",
+	[8989] = "set",
+	[8992] = "set",
+	[8999] = "set",
+	[9002] = "set",
+	[9257] = "set",
+	[9343] = "set",
+	[50720] = "set",
+	[50723] = "set",
+	[8733] = "busy",
+	[8972] = "busy",
+	[8973] = "busy",
+	[8974] = "busy",
+	[8985] = "busy",
+	[8987] = "busy",
+	[8988] = "busy",
+	[8991] = "busy",
+	[8993] = "busy",
+	[8997] = "busy",
+	[8998] = "busy",
+	[9001] = "busy",
+	[9003] = "busy",
+	[9005] = "busy",
+	[9158] = "busy",
+	[9342] = "busy",
+	[50716] = "busy",
+	[50718] = "busy",
+	[50719] = "busy",
+	[50722] = "busy",
+	[8734] = "sprung",
+	[8986] = "sprung",
+	[8996] = "sprung",
+	[9004] = "sprung",
+	[50717] = "sprung",
+	[62522] = "sprung",
+	[62523] = "sprung",
+	[62524] = "sprung",
+	[62525] = "sprung",
+	[62526] = "sprung",
+	[62527] = "sprung",
+	[62528] = "sprung",
+	[62529] = "sprung",
+	[62530] = "sprung",
+	[62531] = "sprung",
+}
+
+local STATUS_RANK: { [Status]: number } = { empty = 1, busy = 2, set = 3, sprung = 4 }
+
+local FULL_IDS: { [number]: boolean } = { [8734] = true, [8986] = true, [8996] = true, [9004] = true, [50717] = true }
+
 local Salamanders = {}
 local Read, Game, Handler = {}, {}, {}
 
@@ -130,7 +189,7 @@ function Salamanders.new(prey: string): Task?
 	if creature == nil then
 		return nil
 	end
-	return { creature = creature, trees = {}, traps = {}, empty_since = {}, idle = false, catches = 0 }
+	return { creature = creature, trees = {}, traps = {}, empty_since = {}, idle = false, claimed = false, catches = 0 }
 end
 
 function Read.key(t: { x: number, y: number }): string
@@ -167,35 +226,25 @@ function Read.nearest(me: Host.Tile, tiles: { Tile }): Tile?
 	return best
 end
 
-local actions_of: { [number]: { string } } = {}
-
-function Read.actions(loc: Loc): { string }
-	local known = actions_of[loc.id]
-	if known == nil then
-		local views = Host.loc_shown({ loc.id })
-		known = if views and views[1] then views[1].actions else {}
-		actions_of[loc.id] = known
-	end
-	return known
-end
-
 function Read.tree_at(tree: Tile): (Status, Loc?)
+	local best: Status? = nil
+	local best_loc: Loc? = nil
 	for _, loc in ipairs(Objects.find() or {}) do
-		if loc.x == tree.x and loc.y == tree.y and loc.plane == tree.plane then
-			local name = loc.name or ""
-			if name ~= CONST.TREE.NAME and name ~= CONST.NET.ITEM then
-				continue
-			end
-			local actions = Read.actions(loc)
-			if table.find(actions, CONST.TREE.SET) then
-				return "empty", loc
-			elseif table.find(actions, CONST.NET.CHECK) or table.find(actions, CONST.NET.RESET) then
-				return "sprung", loc
-			elseif #actions == 0 then
-				return "busy", loc
-			end
-			return "set", loc
+		local status = TRAP_STATES[loc.id]
+		if
+			status
+			and loc.plane == tree.plane
+			and tree.x >= loc.x
+			and tree.x < loc.x + math.max(loc.size_x, 1)
+			and tree.y >= loc.y
+			and tree.y < loc.y + math.max(loc.size_y, 1)
+			and (best == nil or STATUS_RANK[status] > STATUS_RANK[best :: Status])
+		then
+			best, best_loc = status, loc
 		end
+	end
+	if best then
+		return best :: Status, best_loc
 	end
 	return "busy", nil
 end
@@ -223,6 +272,18 @@ function Read.player_near(area: Area): string?
 		end
 	end
 	return nil
+end
+
+function Read.on_site(area: Area, me: Host.Tile): boolean
+	if Walker.distance(me, area.arrive) <= CONST.LEASH then
+		return true
+	end
+	for _, tree in ipairs(area.trees) do
+		if Walker.distance(me, tree) <= CONST.LEASH then
+			return true
+		end
+	end
+	return false
 end
 
 function Read.adopt(task: Task, area: Area)
@@ -300,21 +361,37 @@ function Read.trap_state(task: Task, me: Host.Tile): State
 			task.empty_since[key] = nil
 		end
 	end
-	if #sprung > 0 then
-		table.sort(sprung, function(a: Tile, b: Tile): boolean
-			return (task.traps[Read.key(a)] or 0) < (task.traps[Read.key(b)] or 0)
-		end)
-		task.target = sprung[1]
-		return "RESET"
+	local best_state: State = "WAIT"
+	local best_d: number = math.huge
+	for _, tree in ipairs(sprung) do
+		local d = Walker.distance(me, tree)
+		if d < best_d then
+			task.target = tree
+			best_state = "RESET" :: State
+			best_d = d
+		end
 	end
 	local net = Read.dropped_net(task)
 	if net then
-		task.net = net
-		return "PICKUP"
+		local d = Walker.distance(me, net)
+		if d < best_d then
+			task.net = net
+			best_state = "PICKUP" :: State
+			best_d = d
+		end
 	end
-	if #empty > 0 and Inventory.contains(CONST.NET.ITEM) then
-		task.target = Read.nearest(me, empty)
-		return "SET"
+	if Inventory.contains(CONST.NET.ITEM) then
+		for _, tree in ipairs(empty) do
+			local d = Walker.distance(me, tree)
+			if d < best_d then
+				task.target = tree
+				best_state = "SET" :: State
+				best_d = d
+			end
+		end
+	end
+	if best_state ~= "WAIT" then
+		return best_state
 	end
 	if #empty > 0 and #Read.ours(task) == 0 then
 		task.blocked = "no net traps left to set"
@@ -354,17 +431,18 @@ function Salamanders.state(task: Task): State
 		Log.log(NAME, `Hunting {task.creature.npc} in the {(task.area :: Area).name}`)
 	end
 	local area = task.area :: Area
-	if me.plane ~= area.arrive.plane or Walker.distance(me, area.arrive) > CONST.LEASH then
+	if me.plane ~= area.arrive.plane or not Read.on_site(area, me) then
 		return "TRAVEL"
 	end
 	if next(task.traps) == nil and #task.trees == 0 and Read.player_near(area) == nil then
 		Read.adopt(task, area)
 	end
-	if next(task.traps) == nil then
+	if not task.claimed then
 		task.busy = Read.occupied(task, area)
 		if task.busy then
 			return "HOP"
 		end
+		task.claimed = true
 	end
 	if #task.trees < math.min(Read.limit(task), #area.trees) then
 		Read.pick_trees(task, area)
@@ -385,12 +463,7 @@ end
 
 function Game.travel(task: Task): boolean
 	local area = task.area :: Area
-	local spread = CONST.ARRIVE_SPREAD
-	local goal = {
-		x = area.arrive.x + Random.int(-spread, spread),
-		y = area.arrive.y + Random.int(-spread, spread),
-		plane = area.arrive.plane,
-	}
+	local goal = Travel.spread(area.arrive)
 	Log.log(NAME, `Travelling to the {area.name}`)
 	local walked, why = Travel.walk(goal, CONST.ARRIVE_NEAR)
 	if why then
@@ -399,30 +472,8 @@ function Game.travel(task: Task): boolean
 	return walked
 end
 
-function Game.worlds(): { number }
-	local worlds: { number } = {}
-	if WorldSwitcher.open(true) then
-		for _, row in ipairs(WorldSwitcher.rows() or {}) do
-			if row.members and row.available and (row.activity == nil or row.activity == "-") then
-				table.insert(worlds, row.world)
-			end
-		end
-	end
-	return worlds
-end
-
 function Game.hop(task: Task): boolean
-	Log.log(NAME, `The young trees are taken ({task.busy}), hopping worlds`)
-	if task.worlds == nil or #(task.worlds :: { number }) == 0 then
-		task.worlds = Game.worlds()
-	end
-	if not WorldSwitcher.random(task.worlds :: { number }) then
-		Log.log(NAME, "Couldn't hop")
-		return false
-	end
-	Log.log(NAME, `Now on world {WorldSwitcher.current() or "?"}`)
-	Random.sleep(CONST.HOP_SETTLE_MS[1], CONST.HOP_SETTLE_MS[2])
-	return true
+	return Hop.away(NAME, `The young trees are taken ({task.busy})`)
 end
 
 function Game.prehover(task: Task, current: Tile)
@@ -455,7 +506,7 @@ function Game.set(task: Task): boolean
 		return true
 	end
 	Log.log(NAME, `Setting a net trap on the young tree at {tree.x}, {tree.y}`)
-	if not Objects.interact(loc :: Loc, CONST.TREE.SET, false) then
+	if not Game.use(loc :: Loc, CONST.TREE.SET) then
 		return false
 	end
 	local set = Game.wait_until(function(): boolean
@@ -479,6 +530,14 @@ function Game.counted(task: Task, act: () -> boolean): boolean
 	return ok
 end
 
+function Game.use(loc: Loc, option: string): boolean
+	local me = Walker.position()
+	if me and Walker.distance(me, loc) <= CONST.NEAR and Objects.interact(loc, option, false) then
+		return true
+	end
+	return Objects.approach(loc, option)
+end
+
 function Game.reset(task: Task): boolean
 	local tree = task.target :: Tile
 	local status, loc = Read.tree_at(tree)
@@ -486,16 +545,16 @@ function Game.reset(task: Task): boolean
 		return true
 	end
 	local trap = loc :: Loc
-	local option = if table.find(Read.actions(trap), CONST.NET.RESET) then CONST.NET.RESET else CONST.NET.CHECK
+	local option = CONST.NET.RESET
 	Log.log(NAME, `{option} on the net trap at {tree.x}, {tree.y}`)
 	return Game.counted(task, function(): boolean
-		if not Objects.interact(trap, option, false) then
+		if not Game.use(trap, option) then
 			return false
 		end
 		Game.prehover(task, tree)
 		local done = Game.wait_until(function(): boolean
 			local now = Read.tree_at(tree)
-			return now == "set" or (option == CONST.NET.CHECK and now == "empty")
+			return now == "set"
 		end, CONST.ACT_TIMEOUT_MS)
 		if done then
 			task.traps[Read.key(tree)] = time()
@@ -508,7 +567,7 @@ function Game.pickup(task: Task): boolean
 	local net = task.net :: GroundItem
 	local before = Inventory.count_ex(CONST.NET.ITEM) or 0
 	Log.log(NAME, `Picking up the net trap at {net.x}, {net.y}`)
-	if not GroundItems.interact(net, CONST.NET.TAKE) then
+	if not GroundItems.interact(net, CONST.NET.TAKE, false) then
 		return false
 	end
 	return Game.wait_until(function(): boolean
@@ -516,13 +575,8 @@ function Game.pickup(task: Task): boolean
 	end, CONST.ACT_TIMEOUT_MS)
 end
 
-local next_antiban = 0
-
 function Game.wait(): boolean
-	if time() >= next_antiban and Antiban.do_async_tasks("game") then
-		next_antiban = time() + Random.int(CONST.ANTIBAN_GAP_MS[1], CONST.ANTIBAN_GAP_MS[2])
-	end
-	Random.sleep(CONST.WAIT_MS[1], CONST.WAIT_MS[2])
+	Idle.wait(CONST.WAIT_MS)
 	return true
 end
 
@@ -534,14 +588,13 @@ function Game.pack(task: Task): boolean
 		return true
 	end
 	local trap = loc :: Loc
-	local actions = Read.actions(trap)
-	local option = if table.find(actions, CONST.NET.CHECK) then CONST.NET.CHECK else CONST.NET.DISMANTLE
-	if not table.find(actions, option) then
+	if status == "busy" then
 		return Game.wait()
 	end
+	local option = if FULL_IDS[trap.id] then CONST.NET.CHECK else CONST.NET.DISMANTLE
 	Log.log(NAME, `Packing up: {option} on the net trap at {tree.x}, {tree.y}`)
 	local ok = Game.counted(task, function(): boolean
-		return Objects.interact(trap, option, false)
+		return Game.use(trap, option)
 	end)
 	if not ok then
 		return false
@@ -573,7 +626,22 @@ Handler.states = {
 	PACK = Game.pack,
 } :: { [State]: (Task) -> boolean }
 
+function Game.settle()
+	local deadline = time() + CONST.SETTLE_MS
+	while Player.animation() ~= -1 and time() < deadline do
+		sleep(CONST.POLL_MS)
+	end
+	local tick = Host.game_state().tick_count
+	local next_tick = time() + CONST.TICK_WAIT_MS
+	while Host.game_state().tick_count == tick and time() < next_tick do
+		sleep(CONST.POLL_MS)
+	end
+end
+
 function Salamanders.step(task: Task, state: State): boolean
+	if CONST.TRAP_ACTIONS[state] then
+		Game.settle()
+	end
 	if state == "WAIT" then
 		task.idle = true
 	elseif task.idle then

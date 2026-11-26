@@ -4,19 +4,21 @@ local sleep = Host.sleep
 local time = Host.time
 type GroundItem = Host.GroundItem
 type Loc = Host.Loc
-local Antiban = require("@volcren/antiban")
 local Biometrics = require("@volcren/biometrics")
 local Chat = require("@volcren/chat")
 local GroundItems = require("@volcren/ground_items")
+local Hop = require("./hop")
+local Idle = require("./idle")
 local Inventory = require("@volcren/inventory")
 local Log = require("@volcren/log")
+local Minimenu = require("@volcren/minimenu")
 local Objects = require("@volcren/objects")
+local Player = require("@volcren/player")
 local Players = require("@volcren/players")
 local Random = require("@volcren/random")
 local Stats = require("@volcren/stats")
 local Travel = require("./travel")
 local Walker = require("@volcren/walker")
-local WorldSwitcher = require("@volcren/worldswitcher")
 
 local NAME = "Boxing"
 
@@ -37,6 +39,7 @@ export type State =
 	| "WAIT"
 	| "PACK"
 export type Status = "empty" | "set" | "sprung" | "ground" | "busy"
+export type Shape = { center: boolean, corners: { { number } }, dropped: { { number } } }
 export type Task = {
 	creature: Creature,
 	area: Area?,
@@ -44,6 +47,7 @@ export type Task = {
 	square: Tile?,
 	spots: { Tile },
 	spare: { Tile },
+	shape: Shape?,
 	stand_fails: { [string]: number },
 	stands: { Tile },
 	traps: { [string]: number },
@@ -51,7 +55,6 @@ export type Task = {
 	bad_squares: { [string]: boolean },
 	limit: number?,
 	target: Tile?,
-	worlds: { number }?,
 	busy: string?,
 	catches: number,
 	idle: boolean,
@@ -63,7 +66,6 @@ local CONST = {
 	LEASH = 8,
 	CLUSTER_RANGE = 7,
 	MIN_WEIGHT = 0.25,
-	HOP_SETTLE_MS = { 1200, 2400 },
 	TRAP = {
 		ITEM = "Box trap",
 		LAY = "Lay",
@@ -71,7 +73,6 @@ local CONST = {
 		CHECK = "Check",
 		DISMANTLE = "Dismantle",
 		TAKE = "Take",
-		NAMES = { "Box trap", "Shaking box" },
 		CANT_LAY = "can't lay a trap here",
 		TOO_MANY = "more than",
 		MAX = 5,
@@ -82,8 +83,14 @@ local CONST = {
 	ACT_TIMEOUT_MS = 12000,
 	WAIT_MS = { 100, 250 },
 	REACT_MS = { mode = 450, min = 0, max = 1800 },
-	ANTIBAN_GAP_MS = { 3000, 9000 },
+	CORNERS = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 } },
+	CENTER_BIAS = { 0.25, 0.75 },
+	SETTLE_MS = 2400,
+	TICK_WAIT_MS = 700,
+	START_MS = 1800,
+	TRAP_ACTIONS = { LAY = true, RESET = true, RELAY = true } :: { [string]: boolean },
 	STAND_ATTEMPTS = 2,
+	STAND_TIMEOUT_MS = 3000,
 	STEP_OFF_WAIT_MS = 2500,
 	EMPTY_GRACE_MS = 4000,
 	PREHOVER_MS = { 150, 450 },
@@ -126,6 +133,39 @@ local CREATURES: { [string]: Creature } = {
 		},
 	},
 }
+
+local TRAP_STATES: { [number]: Status } = {
+	[9380] = "set",
+	[9381] = "busy",
+	[9386] = "busy",
+	[9387] = "busy",
+	[9388] = "busy",
+	[9389] = "busy",
+	[9390] = "busy",
+	[9391] = "busy",
+	[9392] = "busy",
+	[9393] = "busy",
+	[9394] = "busy",
+	[9395] = "busy",
+	[9396] = "busy",
+	[9397] = "busy",
+	[2025] = "busy",
+	[2026] = "busy",
+	[2028] = "busy",
+	[2029] = "busy",
+	[50728] = "busy",
+	[50729] = "busy",
+	[50730] = "busy",
+	[50731] = "busy",
+	[721] = "sprung",
+	[9382] = "sprung",
+	[9383] = "sprung",
+	[9384] = "sprung",
+	[50727] = "sprung",
+	[9385] = "sprung",
+}
+
+local FULL_IDS: { [number]: boolean } = { [721] = true, [9382] = true, [9383] = true, [9384] = true, [50727] = true }
 
 local Boxing = {}
 local Read, Game, Handler = {}, {}, {}
@@ -198,19 +238,81 @@ function Read.occupied(task: Task, cluster: Cluster): string?
 		end
 	end
 	for _, loc in ipairs(Objects.find() or {}) do
-		local name = loc.name or ""
-		for _, trap in ipairs(CONST.TRAP.NAMES) do
-			if
-				name == trap
-				and loc.plane == center.plane
-				and Walker.distance(center, loc) <= CONST.CLUSTER_RANGE
-				and not task.traps[Read.key(loc)]
-			then
-				return `someone's {string.lower(trap)} is at {loc.x}, {loc.y}`
-			end
+		if
+			TRAP_STATES[loc.id]
+			and loc.plane == center.plane
+			and Walker.distance(center, loc) <= CONST.CLUSTER_RANGE
+			and not task.traps[Read.key(loc)]
+		then
+			return `someone's box trap is at {loc.x}, {loc.y}`
 		end
 	end
 	return nil
+end
+
+function Read.adopt(task: Task, area: Area, me: Host.Tile): boolean
+	local self = Players.me()
+	for _, cluster in ipairs(area.clusters) do
+		local center = cluster[1]
+		if Walker.distance(me, center) <= CONST.LEASH then
+			for _, p in ipairs(Players.find() or {}) do
+				if (self == nil or p.index ~= self.index) and Walker.distance(center, p) <= CONST.CLUSTER_RANGE then
+					return false
+				end
+			end
+			local found: { Tile } = {}
+			local function add(t: { x: number, y: number })
+				if Walker.distance(center, t) <= CONST.CLUSTER_RANGE then
+					table.insert(found, { x = t.x, y = t.y, plane = center.plane })
+				end
+			end
+			for _, loc in ipairs(Objects.find() or {}) do
+				if TRAP_STATES[loc.id] then
+					add(loc)
+				end
+			end
+			for _, item in ipairs(GroundItems.find(CONST.TRAP.ITEM) or {}) do
+				add(item)
+			end
+			if #found > 0 and #found <= Read.limit(task) then
+				local sx, sy = 0, 0
+				for _, t in ipairs(found) do
+					sx += t.x
+					sy += t.y
+				end
+				local square = { x = math.round(sx / #found), y = math.round(sy / #found), plane = center.plane }
+				task.cluster, task.square = cluster, square
+				Read.layout(task, square)
+				local spare: { Tile } = {}
+				for _, t in ipairs(task.spots) do
+					table.insert(spare, t)
+				end
+				for _, t in ipairs(task.spare) do
+					table.insert(spare, t)
+				end
+				task.spots, task.spare = found, {}
+				for _, t in ipairs(spare) do
+					local used = false
+					for _, f in ipairs(found) do
+						used = used or (f.x == t.x and f.y == t.y)
+					end
+					if not used then
+						table.insert(task.spare, t)
+					end
+				end
+				local now = time()
+				for i, t in ipairs(found) do
+					task.traps[Read.key(t)] = now + i
+				end
+				while #task.spots < Read.limit(task) and #task.spare > 0 do
+					table.insert(task.spots, table.remove(task.spare, 1) :: Tile)
+				end
+				Log.log(NAME, `Taking over {#found} box traps already set at the cluster at {center.x}, {center.y}`)
+				return true
+			end
+		end
+	end
+	return false
 end
 
 function Read.limit(task: Task): number
@@ -221,36 +323,10 @@ function Read.limit(task: Task): number
 	return math.min(CONST.TRAP.MAX, 1 + level // CONST.TRAP.LEVELS_PER_TRAP)
 end
 
-local actions_of: { [number]: { string } } = {}
-
-function Read.actions(loc: Loc): { string }
-	local known = actions_of[loc.id]
-	if known == nil then
-		local views = Host.loc_shown({ loc.id })
-		known = if views and views[1] then views[1].actions else {}
-		actions_of[loc.id] = known
-	end
-	return known
-end
-
-function Read.has_action(loc: Loc, action: string): boolean
-	return table.find(Read.actions(loc), action) ~= nil
-end
-
 function Read.trap_at(spot: Tile): (Status, Loc?, GroundItem?)
 	for _, loc in ipairs(Objects.find() or {}) do
-		if
-			loc.x == spot.x
-			and loc.y == spot.y
-			and loc.plane == spot.plane
-			and table.find(CONST.TRAP.NAMES, loc.name or "")
-		then
-			if Read.has_action(loc, CONST.TRAP.RESET) or Read.has_action(loc, CONST.TRAP.CHECK) then
-				return "sprung", loc, nil
-			elseif #Read.actions(loc) == 0 then
-				return "busy", loc, nil
-			end
-			return "set", loc, nil
+		if loc.x == spot.x and loc.y == spot.y and loc.plane == spot.plane and TRAP_STATES[loc.id] then
+			return TRAP_STATES[loc.id], loc, nil
 		end
 	end
 	for _, item in ipairs(GroundItems.find(CONST.TRAP.ITEM) or {}) do
@@ -327,21 +403,80 @@ function Read.pick_square(task: Task): Tile?
 end
 
 function Read.layout(task: Task, square: Tile)
-	local positions = { { -1, -1 }, { 1, -1 }, { -1, 1 }, { 1, 1 }, { 0, 0 } }
-	for i = #positions, 2, -1 do
-		local j = Random.int(1, i)
-		positions[i], positions[j] = positions[j], positions[i]
+	local function at(d: { number }): Tile
+		return { x = square.x + d[1], y = square.y + d[2], plane = square.plane }
+	end
+	if task.shape == nil then
+		local limit = Read.limit(task)
+		local center_bias = CONST.CENTER_BIAS[1]
+			+ (CONST.CENTER_BIAS[2] - CONST.CENTER_BIAS[1]) * Biometrics.get_probability(Biometrics.RATING)
+		local center = limit >= 5 or (limit > 1 and Biometrics.random_boolean(center_bias))
+		local kept = table.clone(CONST.CORNERS)
+		local wanted = math.min(#kept, if center then limit - 1 else limit)
+		local cut: { { number } } = {}
+		while #kept > wanted do
+			table.insert(cut, table.remove(kept, Random.int(1, #kept)) :: { number })
+		end
+		task.shape = { center = center, corners = kept, dropped = cut }
+	end
+	local shape = task.shape :: Shape
+	local with_center = shape.center
+	local corners = table.clone(shape.corners)
+	local dropped = shape.dropped
+	if Biometrics.biometric_boolean(Biometrics.LIKES) then
+		local reversed: { { number } } = {}
+		for k = #corners, 1, -1 do
+			table.insert(reversed, corners[k])
+		end
+		corners = reversed
+	end
+	local me = Walker.position()
+	if me and #corners > 1 then
+		local first, best_d = 1, math.huge
+		for k, d in ipairs(corners) do
+			local dist = Walker.distance(me, at(d))
+			if dist < best_d then
+				first, best_d = k, dist
+			end
+		end
+		local rotated: { { number } } = {}
+		for k = 0, #corners - 1 do
+			table.insert(rotated, corners[(first - 1 + k) % #corners + 1])
+		end
+		corners = rotated
 	end
 	task.spots, task.spare = {}, {}
-	local limit = Read.limit(task)
-	for i, d in ipairs(positions) do
-		local tile = { x = square.x + d[1], y = square.y + d[2], plane = square.plane }
-		table.insert(if i <= limit then task.spots else task.spare, tile)
+	local center_first = with_center and Biometrics.random_boolean(Biometrics.get_probability(Biometrics.DISLIKES))
+	if center_first then
+		table.insert(task.spots, at({ 0, 0 }))
+	end
+	for _, d in ipairs(corners) do
+		table.insert(task.spots, at(d))
+	end
+	if with_center and not center_first then
+		table.insert(task.spots, at({ 0, 0 }))
+	end
+	if not with_center then
+		table.insert(task.spare, at({ 0, 0 }))
+	end
+	for _, d in ipairs(dropped) do
+		table.insert(task.spare, at(d))
 	end
 	task.stands = {}
 	for _, d in ipairs({ { 0, 1 }, { 0, -1 }, { 1, 0 }, { -1, 0 } }) do
-		table.insert(task.stands, { x = square.x + d[1], y = square.y + d[2], plane = square.plane })
+		table.insert(task.stands, at(d))
 	end
+end
+
+function Read.next_spot(task: Task, empty: { Tile }): Tile?
+	for _, spot in ipairs(task.spots) do
+		for _, e in ipairs(empty) do
+			if e.x == spot.x and e.y == spot.y then
+				return spot
+			end
+		end
+	end
+	return empty[1]
 end
 
 function Read.nearest(me: Host.Tile, spots: { Tile }): Tile?
@@ -406,7 +541,7 @@ function Read.trap_state(task: Task, me: Host.Tile): State
 		return if table.find(sprung, pending[1]) then "RESET" else "RELAY"
 	end
 	if #empty > 0 and Inventory.contains(CONST.TRAP.ITEM) then
-		task.target = Read.nearest(me, empty)
+		task.target = Read.next_spot(task, empty)
 		return "LAY"
 	end
 	if #empty > 0 and #Read.ours(task) == 0 then
@@ -450,7 +585,7 @@ function Boxing.state(task: Task): State
 		task.blocked = `no known {task.creature.npc} spawns in the {area.name}`
 		return "BLOCKED"
 	end
-	if task.cluster == nil then
+	if task.cluster == nil and not Read.adopt(task, area, me) then
 		local picked = Read.pick_cluster(area)
 		task.cluster = picked
 		Log.log(NAME, `Picked the cluster at {picked[1].x}, {picked[1].y}`)
@@ -481,39 +616,13 @@ function Game.walk(goal: Tile, near: number, what: string, task: Task): boolean
 	return walked
 end
 
-function Game.spread(t: Tile, by: number): Tile
-	return { x = t.x + Random.int(-by, by), y = t.y + Random.int(-by, by), plane = t.plane }
-end
-
 function Game.camp(task: Task): boolean
 	local center = (task.cluster :: Cluster)[1]
-	return Game.walk(Game.spread(center, 1), CONST.CAMP_NEAR, `the cluster at {center.x}, {center.y}`, task)
-end
-
-function Game.worlds(): { number }
-	local worlds: { number } = {}
-	if WorldSwitcher.open(true) then
-		for _, row in ipairs(WorldSwitcher.rows() or {}) do
-			if row.members and row.available and (row.activity == nil or row.activity == "-") then
-				table.insert(worlds, row.world)
-			end
-		end
-	end
-	return worlds
+	return Game.walk(Travel.spread(center), CONST.CAMP_NEAR, `the cluster at {center.x}, {center.y}`, task)
 end
 
 function Game.hop(task: Task): boolean
-	Log.log(NAME, `The cluster is taken ({task.busy}), hopping worlds`)
-	if task.worlds == nil or #(task.worlds :: { number }) == 0 then
-		task.worlds = Game.worlds()
-	end
-	if not WorldSwitcher.random(task.worlds :: { number }) then
-		Log.log(NAME, "Couldn't hop")
-		return false
-	end
-	Log.log(NAME, `Now on world {WorldSwitcher.current() or "?"}`)
-	Random.sleep(CONST.HOP_SETTLE_MS[1], CONST.HOP_SETTLE_MS[2])
-	return true
+	return Hop.away(NAME, `The cluster is taken ({task.busy})`)
 end
 
 function Game.square(task: Task): boolean
@@ -545,7 +654,7 @@ function Game.stand_on(tile: Tile): boolean
 	if me and me.x == tile.x and me.y == tile.y then
 		return true
 	end
-	if Walker.on_screen(tile) and Walker.walk_tile(tile) then
+	if Walker.on_screen(tile) and Walker.walk_tile(tile, CONST.STAND_TIMEOUT_MS) then
 		return true
 	end
 	return Walker.walk(tile, { near = 0, plane = tile.plane }) and Walker.wait_arrival(tile)
@@ -566,6 +675,7 @@ end
 
 function Game.lay(task: Task): boolean
 	local spot = task.target :: Tile
+	local began = time()
 	if not Game.stand_on(spot) then
 		local key = Read.key(spot)
 		task.stand_fails[key] = (task.stand_fails[key] or 0) + 1
@@ -583,8 +693,12 @@ function Game.lay(task: Task): boolean
 		return false
 	end
 	local chat = Game.watch_chat()
-	Log.log(NAME, `Laying a trap at {spot.x}, {spot.y}`)
+	local stood = time()
+	Log.log(NAME, `Laying a trap at {spot.x}, {spot.y} ({math.floor(stood - began)} ms to get there)`)
 	if not Inventory.interact(CONST.TRAP.ITEM, CONST.TRAP.LAY) then
+		return false
+	end
+	if not Game.started(spot, "empty", CONST.TRAP.LAY) then
 		return false
 	end
 	local refused: string? = nil
@@ -610,6 +724,7 @@ function Game.lay(task: Task): boolean
 	end
 	if laid then
 		task.traps[Read.key(spot)] = time()
+		Log.log(NAME, `Laid the trap at {spot.x}, {spot.y} in {math.floor(time() - stood)} ms`)
 	end
 	return laid
 end
@@ -620,7 +735,7 @@ function Game.counted(task: Task, act: () -> boolean): boolean
 	local gained = (Inventory.count_ex(task.creature.catch) or before) - before
 	if gained > 0 then
 		task.catches += gained
-		Log.log(NAME, `Caught a {task.creature.npc} ({task.catches} so far)`)
+		Log.log(NAME, `Caught: {task.creature.npc} ({task.catches} so far)`)
 	end
 	return ok
 end
@@ -650,6 +765,22 @@ function Game.prehover(task: Task, current: Tile)
 	end
 end
 
+function Game.started(spot: Tile, before: Status, option: string): boolean
+	local from = Walker.position()
+	local animation = Player.animation()
+	local started = Game.wait_until(function(): boolean
+		local me = Walker.position()
+		local now = Player.animation()
+		return Read.trap_at(spot) ~= before
+			or (now ~= -1 and now ~= animation)
+			or (me ~= nil and from ~= nil and (me.x ~= from.x or me.y ~= from.y))
+	end, CONST.START_MS)
+	if not started then
+		Log.log(NAME, `The game ignored {option} on the trap at {spot.x}, {spot.y}, clicking again`)
+	end
+	return started
+end
+
 function Game.reset(task: Task): boolean
 	local spot = task.target :: Tile
 	local status, loc = Read.trap_at(spot)
@@ -657,18 +788,32 @@ function Game.reset(task: Task): boolean
 		return true
 	end
 	local trap = loc :: Loc
-	local option = if Read.has_action(trap, CONST.TRAP.RESET) then CONST.TRAP.RESET else CONST.TRAP.CHECK
+	local option = CONST.TRAP.RESET
 	Log.log(NAME, `{option} on the {string.lower(trap.name or "trap")} at {spot.x}, {spot.y}`)
 	return Game.counted(task, function(): boolean
+		local chat = Game.watch_chat()
 		if not Objects.interact(trap, option, false) then
+			Log.log(NAME, `Couldn't click {option} on the trap at {spot.x}, {spot.y}`)
+			return false
+		end
+		if not Game.started(spot, "sprung", option) then
 			return false
 		end
 		Game.prehover(task, spot)
 		local done = Game.wait_until(function(): boolean
-			return Read.trap_at(spot) == "set" or (option == CONST.TRAP.CHECK and Read.trap_at(spot) == "empty")
+			return Read.trap_at(spot) == "set"
 		end, CONST.ACT_TIMEOUT_MS)
 		if done then
 			task.traps[Read.key(spot)] = time()
+		else
+			local clicked = Minimenu.clicked()
+			local me = Walker.position()
+			Log.log(
+				NAME,
+				`The trap at {spot.x}, {spot.y} is still {(Read.trap_at(spot))} after {option}: clicked "{clicked and Minimenu.text(
+					clicked.entry
+				) or "?"}", standing at {me and me.x}, {me and me.y}, chat [{table.concat(chat(), " | ")}]`
+			)
 		end
 		return done
 	end)
@@ -681,15 +826,24 @@ function Game.relay(task: Task): boolean
 		return true
 	end
 	local trap = item :: GroundItem
-	if not GroundItems.interact(trap, CONST.TRAP.LAY) and not GroundItems.interact(trap, CONST.TRAP.TAKE) then
+	local option = CONST.TRAP.LAY
+	Log.log(NAME, `Laying the fallen trap at {spot.x}, {spot.y} again`)
+	if not GroundItems.interact(trap, option, false) then
+		option = CONST.TRAP.TAKE
+		if not GroundItems.interact(trap, option, false) then
+			return false
+		end
+	end
+	if not Game.started(spot, "ground", option) then
 		return false
 	end
 	Game.prehover(task, spot)
 	local done = Game.wait_until(function(): boolean
-		return Read.trap_at(spot) == "set"
+		local now = Read.trap_at(spot)
+		return now == "set" or (option == CONST.TRAP.TAKE and now == "empty")
 	end, CONST.ACT_TIMEOUT_MS)
 	if done then
-		task.traps[Read.key(spot)] = time()
+		task.traps[Read.key(spot)] = if Read.trap_at(spot) == "set" then time() else nil
 	end
 	return done
 end
@@ -716,13 +870,8 @@ function Game.step_off(task: Task): boolean
 	return Game.stand_on(stand)
 end
 
-local next_antiban = 0
-
 function Game.wait(): boolean
-	if time() >= next_antiban and Antiban.do_async_tasks("game") then
-		next_antiban = time() + Random.int(CONST.ANTIBAN_GAP_MS[1], CONST.ANTIBAN_GAP_MS[2])
-	end
-	Random.sleep(CONST.WAIT_MS[1], CONST.WAIT_MS[2])
+	Idle.wait(CONST.WAIT_MS)
 	return true
 end
 
@@ -741,7 +890,7 @@ function Game.pack(task: Task): boolean
 			return GroundItems.interact(item, CONST.TRAP.TAKE)
 		end
 		local trap = loc :: Loc
-		local option = if Read.has_action(trap, CONST.TRAP.CHECK) then CONST.TRAP.CHECK else CONST.TRAP.DISMANTLE
+		local option = if FULL_IDS[trap.id] then CONST.TRAP.CHECK else CONST.TRAP.DISMANTLE
 		return Objects.interact(trap, option, false)
 	end)
 	if not ok then
@@ -776,7 +925,22 @@ Handler.states = {
 	PACK = Game.pack,
 } :: { [State]: (Task) -> boolean }
 
+function Game.settle()
+	local deadline = time() + CONST.SETTLE_MS
+	while Player.animation() ~= -1 and time() < deadline do
+		sleep(CONST.POLL_MS)
+	end
+	local tick = Host.game_state().tick_count
+	local next_tick = time() + CONST.TICK_WAIT_MS
+	while Host.game_state().tick_count == tick and time() < next_tick do
+		sleep(CONST.POLL_MS)
+	end
+end
+
 function Boxing.step(task: Task, state: State): boolean
+	if CONST.TRAP_ACTIONS[state] then
+		Game.settle()
+	end
 	if state == "WAIT" then
 		task.idle = true
 	elseif task.idle then

@@ -13,6 +13,7 @@ local Biometrics = require("@volcren/biometrics")
 local Boxing = require("./boxing")
 local Chat = require("@volcren/chat")
 local ChatOptions = require("@volcren/chat_options")
+local Deadfall = require("./deadfall")
 local Falconry = require("./falconry")
 local GameState = require("@volcren/game_state")
 local Handoff = require("@volcren/handoff")
@@ -40,10 +41,22 @@ local Wornitems = require("@volcren/wornitems")
 
 local NAME = "Hunter Rumours"
 
+local MEAT_POUCHES = { "Large meat pouch (open)", "Large meat pouch", "Small meat pouch (open)", "Small meat pouch" }
+local FUR_POUCHES = {
+	"Large fur pouch (open)",
+	"Large fur pouch",
+	"Medium fur pouch (open)",
+	"Medium fur pouch",
+	"Small fur pouch (open)",
+	"Small fur pouch",
+}
+
 local CONST = {
 	REPORT = { counters_key = "" },
 	ANTIBAN_GAP_MS = { 3000, 9000 },
 	MAPSQUARE = { HUNTER_GUILD = 6191, HUNTER_GUILD_BASEMENT = 6291 },
+	BURROW_SPREAD = 2,
+	BURROW_LOAD_MS = 2500,
 	TILE = {
 		BURROW = { x = 1558, y = 9457, plane = 0 },
 		BANK = { x = 1544, y = 3040, plane = 0 },
@@ -53,6 +66,10 @@ local CONST = {
 	NPC = { PITRI = 13135, IMIA = 13131 },
 	OPTION = { RECHARGE = "Recharge-whistle", WEAR = "Wear", OPEN = "Open" },
 	OPEN_TIMEOUT_MS = 2400,
+	RELEASE = "Release",
+	PROGRESS_TILES = 10,
+	RELEASE_GAP_MS = { 120, 380 },
+	SACK_FREE_SLOTS = 8,
 	LOOT_SACKS = {
 		"Hunters' loot sack (basic)",
 		"Hunters' loot sack (adept)",
@@ -76,49 +93,20 @@ local CONST = {
 		["box trap"] = { { items = { "Box trap" }, want = 50, need = 5, shop = true } },
 		["butterfly net"] = { { items = { "Magic insect net", "Insect net" }, want = 1, need = 0, shop = true } },
 		["net trap"] = { { items = { "Net trap" }, want = 10, need = 5, shop = true } },
+		["deadfall"] = {
+			{ items = { "Fletching knife", "Knife" }, want = 1, need = 1, shop = false },
+			{ items = MEAT_POUCHES, want = 1, need = 0, shop = false },
+			{ items = FUR_POUCHES, want = 1, need = 0, shop = false },
+		},
 		["pitfall"] = {
 			{ items = { "Hunter's spear", "Teasing stick" }, want = 1, need = 1, shop = true },
 			{ items = { "Knife", "Fletching knife" }, want = 1, need = 1, shop = false },
-			{
-				items = { "Large meat pouch (open)", "Large meat pouch", "Small meat pouch (open)", "Small meat pouch" },
-				want = 1,
-				need = 0,
-				shop = false,
-			},
-			{
-				items = {
-					"Large fur pouch (open)",
-					"Large fur pouch",
-					"Medium fur pouch (open)",
-					"Medium fur pouch",
-					"Small fur pouch (open)",
-					"Small fur pouch",
-				},
-				want = 1,
-				need = 0,
-				shop = false,
-			},
+			{ items = MEAT_POUCHES, want = 1, need = 0, shop = false },
+			{ items = FUR_POUCHES, want = 1, need = 0, shop = false },
 		},
 		["falconry"] = {
-			{
-				items = { "Large meat pouch (open)", "Large meat pouch", "Small meat pouch (open)", "Small meat pouch" },
-				want = 1,
-				need = 1,
-				shop = false,
-			},
-			{
-				items = {
-					"Large fur pouch (open)",
-					"Large fur pouch",
-					"Medium fur pouch (open)",
-					"Medium fur pouch",
-					"Small fur pouch (open)",
-					"Small fur pouch",
-				},
-				want = 1,
-				need = 1,
-				shop = false,
-			},
+			{ items = MEAT_POUCHES, want = 1, need = 1, shop = false },
+			{ items = FUR_POUCHES, want = 1, need = 1, shop = false },
 		},
 	} :: { [string]: { { items: { string }, want: number, need: number, shop: boolean } } },
 	PREY_GEAR = {
@@ -126,7 +114,7 @@ local CONST = {
 			{
 				items = { "Waterskin(4)", "Waterskin(3)", "Waterskin(2)", "Waterskin(1)" },
 				want = 4,
-				need = 4,
+				need = 2,
 				shop = false,
 			},
 		},
@@ -145,9 +133,19 @@ local CONST = {
 		{ name = "Bronze axe", level = 1 },
 	},
 	FOOD_TRAPS = { pitfall = true },
-	POUCH = { OPEN = "Open", OPENED = "(open)" },
+	LOOT_SLOTS = {
+		deadfall = 3,
+		pitfall = 4,
+		falconry = 2,
+		["box trap"] = 1,
+		["net trap"] = 1,
+		["butterfly net"] = 0,
+	} :: { [string]: number },
+	AXE_TRAPS = { pitfall = true, deadfall = true },
+	POUCH = { OPEN = "Open", OPENED = "(open)", EMPTY = "Empty" },
 	LOOT = { BURY = "Bury", BONES = { "Bones", "Big bones" }, HIDES = { " fur$", " hide$" }, MEAT = { "^Raw " } },
-	CHORE_STATES = { WAIT = true, CATCH = true, TEASE = true },
+	CHORE_STATES = { WAIT = true, CATCH = true, TEASE = true, CHOP = true },
+	MID_CATCH_STATES = { JUMP = true, RETRIEVE = true, LURE = true },
 	EAT_AT = { 0.4, 0.55 },
 	EAT_OPTION = "Eat",
 	RUMOUR = {
@@ -156,6 +154,7 @@ local CONST = {
 		ASSIGNED = "rumours of an? rare (.-) coming in%. Once you find it, bring back (.-)%.$",
 		ANOTHER = { YES = "Yes.", NO = "No." },
 		TIMEOUT_MS = 2400,
+		READ_ATTEMPTS = 3,
 		DIALOGUE_TIMEOUT_MS = 8000,
 		CONTINUES = 3,
 	},
@@ -217,14 +216,21 @@ local Read, Game, Loop, Handler = {}, {}, {}, {}
 
 local CONFIG = {
 	max_rumours = 0,
+	stop_level = 0,
 	open_sacks = true,
 	bury_bones = true,
 	hides = "Bank",
 	meat = "Bank",
-	catches = { [10034] = "bank", [10146] = "release", [10147] = "release" } :: { [number]: string },
+	catches = {
+		[10033] = "bank",
+		[10034] = "bank",
+		[10146] = "release",
+		[10147] = "release",
+		[10149] = "release",
+	} :: { [number]: string },
 	food = "Bass",
 	food_count = 6,
-	timeouts = { idle_minutes = 5, max_failures = 4 },
+	timeouts = { idle_minutes = 5, max_failures = 4, max_restarts = 3, restart_window_ms = 600000 },
 }
 
 local stats = { rumours = 0, catches = 0, failures = 0 }
@@ -235,7 +241,9 @@ type RunState = {
 	antiban_began_at: number,
 	last_progress_at: number,
 	last_xp: number,
+	progress_tile: Host.Tile?,
 	failures_in_row: number,
+	restarts: { number },
 	rumour: Rumour?,
 	task: Task?,
 	prep: Prep,
@@ -247,6 +255,7 @@ type RunState = {
 
 function Game.apply_settings(values: { [string]: any })
 	CONFIG.max_rumours = values.max_rumours or CONFIG.max_rumours
+	CONFIG.stop_level = values.stop_level or CONFIG.stop_level
 	CONFIG.open_sacks = values.open_loot_sacks ~= false
 	CONFIG.bury_bones = values.bury_bones ~= false
 	CONFIG.hides = values.hides or CONFIG.hides
@@ -275,6 +284,7 @@ type Prep = {
 	rebanked: boolean,
 	kit_seen: boolean,
 	shopped: boolean,
+	recharged: boolean,
 	ready: boolean,
 	bank: { [string]: number },
 }
@@ -286,7 +296,8 @@ type Solver = {
 }
 type Task = { solver: Solver, job: { catches: number, blocked: string? } }
 
-local SOLVERS: { Solver } = { Netting :: any, Boxing :: any, Falconry :: any, Salamanders :: any, Pitfall :: any }
+local SOLVERS: { Solver } =
+	{ Netting :: any, Boxing :: any, Falconry :: any, Salamanders :: any, Pitfall :: any, Deadfall :: any }
 
 function Read.new_task(prey: string): Task?
 	for _, solver in ipairs(SOLVERS) do
@@ -307,6 +318,7 @@ function Read.new_prep(): Prep
 		rebanked = false,
 		kit_seen = false,
 		shopped = false,
+		recharged = false,
 		ready = false,
 		bank = {},
 	}
@@ -319,6 +331,7 @@ local S: RunState = {
 	last_progress_at = 0,
 	last_xp = 0,
 	failures_in_row = 0,
+	restarts = {},
 	rumour = nil,
 	task = nil,
 	prep = Read.new_prep(),
@@ -448,7 +461,6 @@ function Game.setup_antiban()
 	Antiban.add_async_task(AntibanTasks.small_random_mouse, 40 * SECOND, 0.4, "game")
 	Antiban.add_async_task(AntibanTasks.hover_random_npc, 90 * SECOND, 0.4, "game")
 	Antiban.add_async_task(AntibanTasks.hover_random_player, 120 * SECOND, 0.4, "game")
-	Antiban.add_async_task(AntibanTasks.random_tab, 90 * SECOND, 0.4, "game")
 
 	Antiban.add_async_task(AntibanTasks.random_tab, 40 * SECOND, 0.4, "outside")
 	Antiban.add_async_task(AntibanTasks.toggle_tab, 70 * SECOND, 0.4, "outside")
@@ -489,7 +501,7 @@ function Read.missing_charges(): number
 	if S.recharge_at == nil then
 		local range = CONST.WHISTLES[rank].recharge_at or { 0, 0 }
 		S.recharge_at = Random.int(range[1], range[2])
-		Log.log(NAME, `Recharging the whistle at {S.recharge_at} charges or fewer`)
+		Log.log(NAME, `Next whistle recharge at {S.recharge_at} charges or fewer`)
 	end
 	if charges > (S.recharge_at :: number) then
 		return 0
@@ -497,9 +509,31 @@ function Read.missing_charges(): number
 	return math.max(0, max - charges)
 end
 
+function Read.unnoted(name: string): number
+	local held: { { id: number, quantity: number } } = {}
+	local ids: { number } = {}
+	for _, item in ipairs(Inventory.items() or {}) do
+		if item.name == name then
+			table.insert(held, item)
+			table.insert(ids, item.id)
+		end
+	end
+	if #held == 0 then
+		return 0
+	end
+	local stacks = Host.item_stackable(ids) or {}
+	local count = 0
+	for i, item in ipairs(held) do
+		if stacks[i] == false then
+			count += item.quantity
+		end
+	end
+	return count
+end
+
 function Read.has_recharge_items(): boolean
 	for _, item in ipairs(CONST.RECHARGE_ITEMS) do
-		if Inventory.contains(item.name) then
+		if Read.unnoted(item.name) > 0 then
 			return true
 		end
 	end
@@ -516,7 +550,13 @@ function Read.wants(): { Want }
 		table.insert(list, { items = { piece }, want = 1, need = 0, kit = true, shop = false })
 	end
 	for _, gear in ipairs(Read.rumour_gear()) do
-		table.insert(list, { items = gear.items, want = gear.want, need = gear.need, kit = true, shop = gear.shop })
+		table.insert(list, {
+			items = gear.items,
+			want = gear.want,
+			need = gear.need,
+			kit = Read.storable(gear.items),
+			shop = gear.shop,
+		})
 	end
 	return list
 end
@@ -531,7 +571,7 @@ function Read.rumour_gear(): { { items: { string }, want: number, need: number, 
 	for _, gear in ipairs(if prey then CONST.PREY_GEAR[prey] or {} else {}) do
 		table.insert(list, gear)
 	end
-	if trap == "pitfall" then
+	if trap and CONST.AXE_TRAPS[trap] then
 		local woodcutting = Stats.real_level("Woodcutting") or 1
 		local axes: { string } = {}
 		for _, axe in ipairs(CONST.AXES) do
@@ -545,6 +585,15 @@ function Read.rumour_gear(): { { items: { string }, want: number, need: number, 
 		table.insert(list, { items = { CONFIG.food }, want = CONFIG.food_count, need = 1, shop = false })
 	end
 	return list
+end
+
+function Read.storable(items: { string }): boolean
+	for _, name in ipairs(items) do
+		if HuntsmansKit.can_store(name) then
+			return true
+		end
+	end
+	return false
 end
 
 function Read.short(w: Want): number
@@ -597,23 +646,14 @@ function Read.outfit_to_wear(): string?
 end
 
 function Read.closed_pouch(): string?
-	for _, gear in ipairs(CONST.GEAR.falconry) do
-		for _, name in ipairs(gear.items) do
+	for _, pouches in ipairs({ MEAT_POUCHES, FUR_POUCHES }) do
+		for _, name in ipairs(pouches) do
 			if not string.find(name, CONST.POUCH.OPENED, 1, true) and Inventory.contains(name) then
 				return name
 			end
 		end
 	end
 	return nil
-end
-
-function Read.has_pouch(): boolean
-	for _, gear in ipairs(CONST.GEAR.falconry) do
-		if Inventory.contains_any(gear.items :: { Item.Item }) then
-			return true
-		end
-	end
-	return false
 end
 
 function Read.loot(patterns: { string }): { string }
@@ -662,6 +702,21 @@ function Read.to_release(): string?
 	return nil
 end
 
+function Read.loot_full(): boolean
+	local trap = S.rumour and S.rumour.trap
+	local room = if trap then CONST.LOOT_SLOTS[trap] or 1 else 1
+	if (Inventory.free_slots() or 0) >= math.max(room, 1) then
+		return false
+	end
+	local keep = Item.matcher(Read.keep_items())
+	for _, item in ipairs(Inventory.items() or {}) do
+		if not Item.matches(keep, item.id, item.name) then
+			return true
+		end
+	end
+	return false
+end
+
 function Read.chore(bank: boolean): State?
 	if Read.to_release() then
 		return "RELEASE"
@@ -672,7 +727,7 @@ function Read.chore(bank: boolean): State?
 	if #Read.to_drop() > 0 then
 		return "DROP"
 	end
-	if bank and (Inventory.free_slots() or 0) == 0 then
+	if bank and Read.loot_full() then
 		return "BANK_LOOT"
 	end
 	return nil
@@ -726,6 +781,16 @@ function Read.current_gear(): { [string]: boolean }
 	return current
 end
 
+function Read.spare_for_kit(): { string }
+	local spare: { string } = {}
+	for _, name in ipairs(Read.spare_gear()) do
+		if HuntsmansKit.can_store(name) then
+			table.insert(spare, name)
+		end
+	end
+	return spare
+end
+
 function Read.spare_gear(): { string }
 	local current = Read.current_gear()
 	local spare: { string } = {}
@@ -748,6 +813,16 @@ function Read.keep_items(): { Item.Item }
 	for _, name in ipairs(S.start_worn) do
 		table.insert(keep, name)
 	end
+	if CONFIG.open_sacks then
+		for _, sack in ipairs(CONST.LOOT_SACKS) do
+			table.insert(keep, sack)
+		end
+	end
+	if Read.missing_charges() > 0 then
+		for _, item in ipairs(CONST.RECHARGE_ITEMS) do
+			table.insert(keep, item.name)
+		end
+	end
 	for _, name in ipairs(CONST.STAFFS) do
 		table.insert(keep, name)
 	end
@@ -758,7 +833,7 @@ function Read.keep_items(): { Item.Item }
 		table.insert(keep, name)
 	end
 	if not S.prep.kit_seen and (HuntsmansKit.held() or Read.in_bank({ CONST.KIT })) then
-		for _, name in ipairs(Read.spare_gear()) do
+		for _, name in ipairs(Read.spare_for_kit()) do
 			table.insert(keep, name)
 		end
 	end
@@ -768,6 +843,14 @@ end
 function Read.at_guild(plane: number): boolean
 	local p = snap.state.position
 	return p ~= nil and p.plane == plane and Read.mapsquare(snap.state) == CONST.MAPSQUARE.HUNTER_GUILD
+end
+
+function Read.in_burrow(): boolean
+	local me = Walker.position()
+	if me == nil then
+		return false
+	end
+	return (me.x // 64) * 256 + me.y // 64 == CONST.MAPSQUARE.HUNTER_GUILD_BASEMENT
 end
 
 function Read.near_guild(): boolean
@@ -797,7 +880,7 @@ function Read.prep_state(): State?
 		Log.log(NAME, "Already carrying what the rumour needs, skipping the guild")
 		return nil
 	end
-	if CONFIG.open_sacks and Read.loot_sack() then
+	if CONFIG.open_sacks and Read.loot_sack() and (Inventory.free_slots() or 0) >= CONST.SACK_FREE_SLOTS then
 		return "OPEN_SACK"
 	end
 	if Read.outfit_to_wear() then
@@ -807,7 +890,7 @@ function Read.prep_state(): State?
 		return "OPEN_POUCH"
 	end
 	if not p.kit_seen and HuntsmansKit.held() then
-		if Read.kit_short() or #Read.spare_gear() > 0 then
+		if Read.kit_short() or #Read.spare_for_kit() > 0 then
 			return "KIT"
 		end
 		p.kit_seen = true
@@ -824,7 +907,7 @@ function Read.prep_state(): State?
 	if Read.outfit_to_wear() then
 		return "EQUIP"
 	end
-	if Read.missing_charges() > 0 and Read.has_recharge_items() then
+	if not p.recharged and Read.missing_charges() > 0 and Read.has_recharge_items() then
 		return "RECHARGE"
 	end
 	p.ready = true
@@ -902,6 +985,18 @@ function Game.bank_recharge_items()
 	end
 end
 
+function Game.empty_pouches()
+	for _, pouches in ipairs({ MEAT_POUCHES, FUR_POUCHES }) do
+		for _, name in ipairs(pouches) do
+			if Bankmain.inventory.contains(name) then
+				local emptied = Bankmain.inventory.interact(name, CONST.POUCH.EMPTY)
+				Log.log(NAME, if emptied then `Emptied the {name} into the bank` else `Couldn't empty the {name}`)
+				Random.sleep(300, 700)
+			end
+		end
+	end
+end
+
 function Game.bank(): boolean
 	if not Read.at_guild(0) then
 		return Game.go_to(CONST.TILE.BANK, "the guild's bank")
@@ -909,12 +1004,10 @@ function Game.bank(): boolean
 	if not Bankmain.is_open() and not Bankmain.open() then
 		return false
 	end
+	Game.empty_pouches()
 	if not Bankmain.deposit_different(Read.keep_items()) then
 		Log.log(NAME, "Couldn't bank the loot")
 		return false
-	end
-	if Read.has_pouch() then
-		Bankmain.deposit_containers()
 	end
 	for _, item in ipairs(Bankmain.items() or {}) do
 		if item.name and item.quantity > 0 then
@@ -939,7 +1032,7 @@ function Game.kit(): boolean
 	if not HuntsmansKit.open() then
 		return false
 	end
-	for _, name in ipairs(Read.spare_gear()) do
+	for _, name in ipairs(Read.spare_for_kit()) do
 		if HuntsmansKit.deposit(name, "All") then
 			Log.log(NAME, `Stored the {name} in the huntsman's kit`)
 		end
@@ -1030,14 +1123,37 @@ function Game.bury(): boolean
 end
 
 function Game.release(): boolean
-	local ids: { Item.Item } = {}
+	local slots: { number } = {}
 	for _, item in ipairs(Inventory.items() or {}) do
-		if CONFIG.catches[item.id] == "release" and not table.find(ids, item.id) then
-			table.insert(ids, item.id)
+		if CONFIG.catches[item.id] == "release" then
+			table.insert(slots, item.slot)
 		end
 	end
-	Log.log(NAME, `Releasing {#ids} kinds of caught creature`)
-	return Inventory.shift_drop(ids)
+	Log.log(NAME, `Releasing {#slots} caught creatures`)
+	local settle = time() + CONST.OPEN_TIMEOUT_MS
+	while Player.animation() ~= -1 and time() < settle do
+		sleep(100)
+	end
+	for _, slot in ipairs(slots) do
+		if not Inventory.interact_slot(slot, CONST.RELEASE) then
+			return false
+		end
+		Random.sleep(CONST.RELEASE_GAP_MS[1], CONST.RELEASE_GAP_MS[2])
+	end
+	local deadline = time() + CONST.OPEN_TIMEOUT_MS
+	repeat
+		local left = 0
+		for _, item in ipairs(Inventory.items() or {}) do
+			if CONFIG.catches[item.id] == "release" then
+				left += 1
+			end
+		end
+		if left == 0 then
+			return true
+		end
+		sleep(100)
+	until time() >= deadline
+	return false
 end
 
 function Game.drop(): boolean
@@ -1063,6 +1179,9 @@ function Game.open_sack(): boolean
 	local deadline = time() + CONST.OPEN_TIMEOUT_MS
 	repeat
 		if (Inventory.count_ex(sack) or 0) < before then
+			if S.prep.banked then
+				S.prep.banked, S.prep.rebanked = false, false
+			end
 			return true
 		end
 		sleep(100)
@@ -1096,19 +1215,23 @@ function Game.recharge(): boolean
 	local _, max = Read.held_whistle()
 	local meat: { [string]: number } = {}
 	for _, item in ipairs(CONST.RECHARGE_ITEMS) do
-		meat[item.name] = Inventory.count_ex(item.name) or 0
+		meat[item.name] = Read.unnoted(item.name)
 	end
 	if not Npcs.approach(pitri, CONST.OPTION.RECHARGE) then
 		return false
 	end
+	S.prep.recharged = true
 	Random.sleep(CONST.RECHARGE_SETTLE_MS[1], CONST.RECHARGE_SETTLE_MS[2])
 	local added = 0
 	for _, item in ipairs(CONST.RECHARGE_ITEMS) do
-		added += (meat[item.name] - (Inventory.count_ex(item.name) or 0)) * item.charges
+		added += (meat[item.name] - Read.unnoted(item.name)) * item.charges
 	end
 	if added <= 0 then
-		Log.log(NAME, "Soar Leader Pitri didn't take any meat, so the whistle is already full")
-		Quetzal.set_charges(max or before)
+		local checked = Quetzal.charges()
+		Log.log(NAME, `Soar Leader Pitri didn't take any meat; the whistle has {checked or "unknown"} charges`)
+		if checked == nil then
+			Quetzal.set_charges(max or before)
+		end
 		S.recharge_at = nil
 		return true
 	end
@@ -1224,12 +1347,33 @@ function Game.hand_in(): boolean
 		S.finished = true
 		return false
 	end
-	local me = Walker.position()
-	local master = if me and Read.mapsquare(snap.state) == CONST.MAPSQUARE.HUNTER_GUILD_BASEMENT
-		then Npcs.nearest(rumour.master_npc, me)
-		else nil
+	local inside = Read.in_burrow()
+	local master: Host.Npc? = nil
+	if inside then
+		local deadline = time() + CONST.BURROW_LOAD_MS
+		repeat
+			local me = Walker.position()
+			master = if me then Npcs.nearest(rumour.master_npc, me) else nil
+			if master == nil then
+				sleep(100)
+			end
+		until master ~= nil or time() >= deadline
+	end
 	if master == nil then
-		return Game.go_to(CONST.TILE.BURROW, `{rumour.master} with the {Item.name(part) or "rumour part"}`)
+		local what = `{rumour.master} with the {Item.name(part) or "rumour part"}`
+		if inside then
+			local middle = CONST.TILE.BURROW
+			local r = CONST.BURROW_SPREAD
+			local tile = { x = middle.x + Random.int(-r, r), y = middle.y + Random.int(-r, r), plane = middle.plane }
+			Log.log(NAME, `Can't see {rumour.master}, walking into the middle of the room`)
+			return (Travel.walk(tile, 1))
+		end
+		Log.log(NAME, `Walking to {what}`)
+		local walked, why = Travel.walk(CONST.TILE.BURROW, 3, Read.in_burrow)
+		if why then
+			Log.log(NAME, `No way to {what}: {why}`)
+		end
+		return walked
 	end
 	if not Npcs.approach(master, CONST.RUMOUR.OPTION) then
 		return false
@@ -1276,6 +1420,7 @@ function Game.setup()
 	end
 
 	Game.setup_antiban()
+	Toplevel.escape_clear()
 	for _, item in pairs(Wornitems.worn() or {}) do
 		local name = Item.name(item.id)
 		if name then
@@ -1290,7 +1435,13 @@ function Game.setup()
 		charges = Quetzal.charges() or charges
 	end
 	Log.log(NAME, if charges ~= nil then `Quetzal whistle charges: {charges}` else "No quetzal whistle charges read")
-	Game.read_rumour()
+	for _ = 1, CONST.RUMOUR.READ_ATTEMPTS do
+		if Game.read_rumour() then
+			break
+		end
+		Toplevel.escape_clear()
+		Random.sleep(600, 1400)
+	end
 end
 
 function Loop.watch_progress(s: ClientState)
@@ -1300,6 +1451,11 @@ function Loop.watch_progress(s: ClientState)
 		S.last_progress_at = time()
 	end
 	S.last_xp = xp
+	local me = s.position
+	if me and (S.progress_tile == nil or Walker.distance(me, S.progress_tile :: Host.Tile) > CONST.PROGRESS_TILES) then
+		S.progress_tile = me
+		S.last_progress_at = time()
+	end
 end
 
 function Loop.report_counters()
@@ -1316,6 +1472,26 @@ function Loop.report_counters()
 	})
 end
 
+function Loop.restart_hunt(): boolean
+	local t = CONFIG.timeouts
+	local now = time()
+	local recent: { number } = {}
+	for _, at in ipairs(S.restarts) do
+		if now - at < t.restart_window_ms then
+			table.insert(recent, at)
+		end
+	end
+	S.restarts = recent
+	if S.rumour == nil or #recent >= t.max_restarts then
+		return false
+	end
+	table.insert(S.restarts, now)
+	Log.log(NAME, `{S.failures_in_row} failures in a row, starting the {S.rumour.prey} hunt over`)
+	S.task = Read.new_task(S.rumour.prey)
+	S.failures_in_row = 0
+	return true
+end
+
 function Loop.check_timeouts()
 	local t = CONFIG.timeouts
 	local idle = time() - S.last_progress_at
@@ -1323,7 +1499,14 @@ function Loop.check_timeouts()
 	if idle >= t.idle_minutes * 60000 then
 		reason = `no xp for {t.idle_minutes} minutes`
 	elseif S.failures_in_row >= t.max_failures then
+		if Loop.restart_hunt() then
+			return
+		end
 		reason = `{S.failures_in_row} failures in a row`
+	elseif CONFIG.stop_level > 0 and (Stats.real_level("Hunter") or 0) >= CONFIG.stop_level then
+		Log.log(NAME, `Reached Hunter level {CONFIG.stop_level}, stopping the script`)
+		S.finished = true
+		return
 	elseif CONFIG.max_rumours > 0 and stats.rumours >= CONFIG.max_rumours then
 		Log.log(NAME, `Reached {CONFIG.max_rumours} rumours, stopping the script`)
 		S.finished = true
@@ -1397,7 +1580,12 @@ Handler.states = {
 			return
 		end
 		local state = task.solver.state(task.job)
-		local chore = if CONST.CHORE_STATES[state] then Read.chore(true) else nil
+		local chore: State? = nil
+		if CONST.CHORE_STATES[state] then
+			chore = Read.chore(true)
+		elseif not CONST.MID_CATCH_STATES[state] and not Read.holds_part() and Read.loot_full() then
+			chore = Read.chore(true)
+		end
 		if chore then
 			Handler.states[chore]()
 			return
@@ -1410,7 +1598,11 @@ Handler.states = {
 		elseif state == "DONE" then
 			return
 		end
-		Handler.outcome(task.solver.step(task.job, state))
+		local ok = task.solver.step(task.job, state)
+		if not ok then
+			Log.log(NAME, `{state} didn't work`)
+		end
+		Handler.outcome(ok)
 	end,
 	HAND_IN = function()
 		Handler.outcome(Game.hand_in())
@@ -1505,7 +1697,7 @@ function Loop.run()
 		close_stray()
 		Handler.states[state]()
 
-		if time() >= Loop.next_antiban and Antiban.do_async_tasks("outside") then
+		if state ~= "HUNT" and time() >= Loop.next_antiban and Antiban.do_async_tasks("outside") then
 			Loop.next_antiban = time() + Random.int(CONST.ANTIBAN_GAP_MS[1], CONST.ANTIBAN_GAP_MS[2])
 		end
 		sleep(Random.int(60, 140))

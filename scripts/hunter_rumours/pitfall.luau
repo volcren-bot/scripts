@@ -4,10 +4,14 @@ local sleep = Host.sleep
 local time = Host.time
 type Loc = Host.Loc
 type Npc = Host.Npc
+local Combat = require("@volcren/combat")
+local Idle = require("./idle")
 local Inventory = require("@volcren/inventory")
 local Log = require("@volcren/log")
+local Logs = require("./logs")
 local Npcs = require("@volcren/npcs")
 local Objects = require("@volcren/objects")
+local Player = require("@volcren/player")
 local Players = require("@volcren/players")
 local Random = require("@volcren/random")
 local Travel = require("./travel")
@@ -19,8 +23,20 @@ export type Tile = { x: number, y: number, plane: number }
 export type Pit = { x: number, y: number, plane: number, rotation: number }
 export type Area = { name: string, arrive: Tile, pits: { Pit } }
 export type Creature = { name: string, npc: string, part: number, areas: { Area } }
-export type State = "BLOCKED" | "DONE" | "TRAVEL" | "CHOP" | "SET" | "TEASE" | "LURE" | "JUMP" | "DISMANTLE" | "WAIT"
-export type PitState = "Pit" | "Spiked pit" | "Collapsed trap" | "unknown"
+export type State =
+	"BLOCKED"
+	| "DONE"
+	| "TRAVEL"
+	| "RETALIATE_OFF"
+	| "RETALIATE_ON"
+	| "CHOP"
+	| "SET"
+	| "TEASE"
+	| "LURE"
+	| "JUMP"
+	| "DISMANTLE"
+	| "WAIT"
+export type PitState = "Pit" | "Spiked pit" | "Falling" | "Collapsed trap" | "unknown"
 export type Task = {
 	creature: Creature,
 	area: Area?,
@@ -30,22 +46,30 @@ export type Task = {
 	target: Pit?,
 	stand: Tile?,
 	teased_at: number,
+	stall_key: string?,
+	stall_at: number,
+	log_goal: number,
+	retaliate_checked: boolean,
 	waypoint: Tile?,
 	avoid: { [string]: boolean },
+	bad_tiles: { [string]: boolean },
 	catches: number,
 	blocked: string?,
 }
 
 local CONST = {
 	ARRIVE_NEAR = 3,
-	ARRIVE_SPREAD = 1,
 	LEASH = 14,
-	LOGS = { NAME = "Logs", KEEP = 2, CHOP_TO = 3, TREES = { "Chop-down", "Cut" } },
+	LOGS = { KEEP = 2 },
 	PIT = { SET = "Trap", JUMP = "Jump", DISMANTLE = "Dismantle" },
 	TEASE = "Tease",
 	SIZE = 2,
+	NEAR = 3,
+	PIT_IDS = { FIRST = 19253, LAST = 19268, FIRST_VARBIT = 2958 },
 	CHASE_LOST_MS = 6000,
 	TEASE_GRACE_MS = 3000,
+	TEASE_TIMEOUT_MS = 8000,
+	STALL_MS = 3000,
 	BLOCKED_FLAGS = 0x1240100,
 	SIM_STEPS = 30,
 	WAYPOINT_RADIUS = 7,
@@ -53,7 +77,6 @@ local CONST = {
 	LAND_TIMEOUT_MS = 5000,
 	OUTCOME_MS = 6000,
 	ACT_TIMEOUT_MS = 8000,
-	CHOP_TIMEOUT_MS = 20000,
 	WAIT_MS = { 80, 160 },
 	POLL_MS = 100,
 }
@@ -79,6 +102,16 @@ local CREATURES: { [string]: Creature } = {
 	},
 }
 
+local PIT_STATES: { [number]: PitState } = {
+	[0] = "Pit",
+	[1] = "Spiked pit",
+	[2] = "Falling",
+	[3] = "Collapsed trap",
+	[4] = "Collapsed trap",
+}
+
+local restore_retaliate = false
+
 local Pitfall = {}
 local Read, Game, Handler = {}, {}, {}
 
@@ -93,7 +126,17 @@ function Pitfall.new(prey: string): Task?
 	if creature == nil then
 		return nil
 	end
-	return { creature = creature, chaser_seen = 0, teased_at = 0, avoid = {}, catches = 0 }
+	return {
+		creature = creature,
+		chaser_seen = 0,
+		teased_at = 0,
+		stall_at = 0,
+		log_goal = Logs.goal(CONST.LOGS.KEEP),
+		retaliate_checked = false,
+		avoid = {},
+		bad_tiles = {},
+		catches = 0,
+	}
 end
 
 function Read.nearest_area(c: Creature, me: Host.Tile): Area?
@@ -109,12 +152,16 @@ end
 
 function Read.pit_at(pit: Pit): (PitState, Loc?)
 	for _, loc in ipairs(Objects.find() or {}) do
-		if loc.x == pit.x and loc.y == pit.y and loc.plane == pit.plane then
-			local views = Host.loc_shown({ loc.id })
-			local name = views and views[1] and views[1].name or ""
-			if name == "Pit" or name == "Spiked pit" or name == "Collapsed trap" then
-				return name :: PitState, loc
-			end
+		local index = loc.id - CONST.PIT_IDS.FIRST
+		if
+			index >= 0
+			and loc.id <= CONST.PIT_IDS.LAST
+			and loc.x == pit.x
+			and loc.y == pit.y
+			and loc.plane == pit.plane
+		then
+			local value = Host.varbit(CONST.PIT_IDS.FIRST_VARBIT + index)
+			return (if value then PIT_STATES[value] else nil) or "unknown", loc
 		end
 	end
 	return "unknown", nil
@@ -179,7 +226,7 @@ function Read.chaser(task: Task): Npc?
 end
 
 function Read.logs(): number
-	return Inventory.count_ex(CONST.LOGS.NAME) or 0
+	return Logs.count()
 end
 
 function Read.pits_by(task: Task, from: Host.Tile): { Pit }
@@ -190,13 +237,14 @@ function Read.pits_by(task: Task, from: Host.Tile): { Pit }
 	return pits
 end
 
-function Read.collapsed(task: Task): Pit?
+function Read.collapsed(task: Task): (Pit?, PitState?)
 	for _, pit in ipairs((task.area :: Area).pits) do
-		if Read.pit_at(pit) == "Collapsed trap" then
-			return pit
+		local status = Read.pit_at(pit)
+		if status == "Collapsed trap" or status == "Falling" then
+			return pit, status
 		end
 	end
-	return nil
+	return nil, nil
 end
 
 function Read.lure_pit(task: Task, from: Host.Tile): Pit?
@@ -302,13 +350,23 @@ function Read.on_side(pit: Pit, x1: number, y1: number, low: boolean): boolean
 	return (centre < edge) == low
 end
 
-function Read.plan(grid: Grid, pit: Pit, npc: Npc, me: Host.Tile): (Tile?, Tile?)
+function Read.key(t: { x: number, y: number }): string
+	return `{t.x},{t.y}`
+end
+
+function Read.plan(grid: Grid, pit: Pit, npc: Npc, me: Host.Tile, bad: { [string]: boolean }): (Tile?, Tile?)
 	local low, high = Read.stands(pit)
 	local x1, y1 = Read.footprint(npc)
 	local options: { { stand: Tile, low: boolean } } = {}
 	local first_low = Read.low_side(pit, npc)
-	table.insert(options, { stand = if first_low then low else high, low = first_low })
-	table.insert(options, { stand = if first_low then high else low, low = not first_low })
+	for _, option in ipairs({
+		{ stand = if first_low then low else high, low = first_low },
+		{ stand = if first_low then high else low, low = not first_low },
+	}) do
+		if not bad[Read.key(option.stand)] then
+			table.insert(options, option)
+		end
+	end
 	for _, option in ipairs(options) do
 		local reached, fx, fy = Read.chase(grid, x1, y1, option.stand)
 		if reached and Read.on_side(pit, fx, fy, option.low) then
@@ -316,28 +374,37 @@ function Read.plan(grid: Grid, pit: Pit, npc: Npc, me: Host.Tile): (Tile?, Tile?
 		end
 	end
 	local r = CONST.WAYPOINT_RADIUS
-	local best: Tile? = nil
-	local best_stand: Tile? = nil
-	local best_d = math.huge
+	local candidates: { Tile } = {}
+	local fx1, fy1, fx2, fy2 = Read.footprint(npc)
 	for dx = -r, r do
 		for dy = -r, r do
 			local w = { x = me.x + dx, y = me.y + dy, plane = pit.plane }
-			local d = Walker.distance(me, w)
-			if d < best_d and Read.free(grid, w.x, w.y) then
-				local reached, fx, fy = Read.chase(grid, x1, y1, w)
-				if reached then
-					for _, option in ipairs(options) do
-						local ok, sx, sy = Read.chase(grid, fx, fy, option.stand)
-						if ok and Read.on_side(pit, sx, sy, option.low) then
-							best, best_stand, best_d = w, option.stand, d
-							break
-						end
+			local under = w.x >= fx1 and w.x <= fx2 and w.y >= fy1 and w.y <= fy2
+			if not under and not bad[Read.key(w)] and Read.free(grid, w.x, w.y) then
+				table.insert(candidates, w)
+			end
+		end
+	end
+	table.sort(candidates, function(a: Tile, b: Tile): boolean
+		return Walker.distance(me, a) < Walker.distance(me, b)
+	end)
+	for _, w in ipairs(candidates) do
+		local reached, fx, fy = Read.chase(grid, x1, y1, w)
+		if reached then
+			for _, option in ipairs(options) do
+				local ok, sx, sy = Read.chase(grid, fx, fy, option.stand)
+				if ok and Read.on_side(pit, sx, sy, option.low) then
+					local route = Walker.route(w)
+					if route and route.reached then
+						return option.stand, w
 					end
+					bad[Read.key(w)] = true
+					break
 				end
 			end
 		end
 	end
-	return best_stand, best
+	return nil, nil
 end
 
 function Pitfall.state(task: Task): State
@@ -357,16 +424,26 @@ function Pitfall.state(task: Task): State
 		Log.log(NAME, `Hunting {task.creature.npc} in the {(task.area :: Area).name}`)
 	end
 	local area = task.area :: Area
-	if me.plane ~= area.arrive.plane or Walker.distance(me, area.arrive) > CONST.LEASH * 2 then
-		return "TRAVEL"
+	local far = me.plane ~= area.arrive.plane or Walker.distance(me, area.arrive) > CONST.LEASH * 2
+	local collapsed: Pit?, fall: PitState? = nil, nil
+	if not far then
+		collapsed, fall = Read.collapsed(task)
 	end
-	local collapsed = Read.collapsed(task)
 	if collapsed then
+		if fall == "Falling" then
+			return "WAIT"
+		end
 		task.target = collapsed
 		return "DISMANTLE"
 	end
 	if Inventory.contains(task.creature.part) then
-		return "DONE"
+		return if restore_retaliate then "RETALIATE_ON" else "DONE"
+	end
+	if far then
+		return "TRAVEL"
+	end
+	if not task.retaliate_checked then
+		return "RETALIATE_OFF"
 	end
 	local chaser = Read.chaser(task)
 	local from: Host.Tile = if chaser then chaser else me
@@ -387,7 +464,7 @@ function Pitfall.state(task: Task): State
 		if task.chaser ~= nil then
 			return "WAIT"
 		end
-		if Read.logs() < CONST.LOGS.KEEP then
+		if Read.logs() < task.log_goal then
 			return "CHOP"
 		end
 		return "TEASE"
@@ -408,7 +485,7 @@ function Pitfall.state(task: Task): State
 		local grid = Read.grid(area)
 		local stand, waypoint = nil, nil
 		if grid then
-			stand, waypoint = Read.plan(grid :: Grid, pit :: Pit, npc, me)
+			stand, waypoint = Read.plan(grid :: Grid, pit :: Pit, npc, me, task.bad_tiles)
 		end
 		if stand == nil then
 			Log.log(NAME, `No way to lead the {task.creature.npc} to the pit at {(pit :: Pit).x}, {(pit :: Pit).y}`)
@@ -439,12 +516,7 @@ end
 
 function Game.travel(task: Task): boolean
 	local area = task.area :: Area
-	local spread = CONST.ARRIVE_SPREAD
-	local goal = {
-		x = area.arrive.x + Random.int(-spread, spread),
-		y = area.arrive.y + Random.int(-spread, spread),
-		plane = area.arrive.plane,
-	}
+	local goal = Travel.spread(area.arrive)
 	Log.log(NAME, `Travelling to the pits in the {area.name}`)
 	local walked, why = Travel.walk(goal, CONST.ARRIVE_NEAR)
 	if why then
@@ -453,48 +525,22 @@ function Game.travel(task: Task): boolean
 	return walked
 end
 
-function Game.nearest_tree(me: Host.Tile): Loc?
-	local found: { Loc } = {}
-	local ids: { number } = {}
-	for _, loc in ipairs(Objects.find() or {}) do
-		if Walker.distance(me, loc) <= CONST.LEASH then
-			table.insert(found, loc)
-			table.insert(ids, loc.id)
-		end
+function Game.chop(task: Task): boolean
+	local ok, why = Logs.chop(NAME, function(): boolean
+		return Read.logs() >= task.log_goal
+	end)
+	if why then
+		task.blocked = why
 	end
-	local views = if #ids > 0 then Host.loc_shown(ids) else nil
-	local best, best_d = nil, math.huge
-	for i, loc in ipairs(found) do
-		local view = views and views[i]
-		if view then
-			for _, option in ipairs(CONST.LOGS.TREES) do
-				if table.find(view.actions, option) and Walker.distance(me, loc) < best_d then
-					best, best_d = loc, Walker.distance(me, loc)
-				end
-			end
-		end
-	end
-	return best
+	return ok
 end
 
-function Game.chop(task: Task): boolean
+function Game.use(loc: Loc, option: string): boolean
 	local me = Walker.position()
-	local tree = if me then Game.nearest_tree(me) else nil
-	if tree == nil then
-		task.blocked = "no trees to cut logs from"
-		return false
+	if me and Walker.distance(me, loc) <= CONST.NEAR and Objects.interact(loc, option, false) then
+		return true
 	end
-	local views = Host.loc_shown({ (tree :: Loc).id })
-	local actions = views and views[1] and views[1].actions or {}
-	local option = if table.find(actions, "Chop-down") then "Chop-down" else "Cut"
-	Log.log(NAME, `Cutting logs from the {views and views[1].name or "tree"}`)
-	local before = Read.logs()
-	if not Objects.approach(tree :: Loc, option) then
-		return false
-	end
-	return Game.wait_until(function(): boolean
-		return Read.logs() > before or Read.logs() >= CONST.LOGS.CHOP_TO or Read.chaser(task) ~= nil
-	end, CONST.CHOP_TIMEOUT_MS)
+	return Objects.approach(loc, option)
 end
 
 function Game.set(task: Task): boolean
@@ -504,7 +550,7 @@ function Game.set(task: Task): boolean
 		return true
 	end
 	Log.log(NAME, `Setting the pit at {pit.x}, {pit.y}`)
-	if not Objects.approach(loc :: Loc, CONST.PIT.SET) then
+	if not Game.use(loc :: Loc, CONST.PIT.SET) then
 		return false
 	end
 	return Game.wait_until(function(): boolean
@@ -535,8 +581,17 @@ function Game.tease(task: Task): boolean
 	if not Npcs.interact(npc, CONST.TEASE, false) then
 		return false
 	end
+	local angry = Game.wait_until(function(): boolean
+		local now = Npcs.refresh(npc)
+		return now ~= nil and now.interacting_player ~= -1
+	end, CONST.TEASE_TIMEOUT_MS)
+	if not angry then
+		Log.log(NAME, `The {task.creature.npc} didn't take the bait`)
+		return false
+	end
 	task.chaser, task.chaser_seen, task.teased_at, task.jumped = npc.index, time(), time(), nil
-	task.waypoint, task.avoid = nil, {}
+	task.log_goal = Logs.goal(CONST.LOGS.KEEP)
+	task.waypoint, task.avoid, task.bad_tiles = nil, {}, {}
 	return true
 end
 
@@ -550,8 +605,31 @@ function Game.lure(task: Task): boolean
 		if Walker.walk_tile(stand, 4000) then
 			return true
 		end
-		return Walker.walk(stand, { near = 0, plane = stand.plane, transports = false })
+		if
+			Walker.walk(stand, { near = 0, plane = stand.plane, transports = false })
 			and Walker.wait_arrival(stand, 3000)
+		then
+			return true
+		end
+		Log.log(NAME, `Can't reach {stand.x}, {stand.y}, planning another way`)
+		task.bad_tiles[Read.key(stand)] = true
+		task.waypoint = nil
+		return true
+	end
+	local npc = Read.chaser(task)
+	if npc and Read.gap(me, npc :: Npc) > 1 then
+		local key = `{npc.x},{npc.y}`
+		if task.stall_key ~= key then
+			task.stall_key, task.stall_at = key, time()
+		elseif time() - task.stall_at > CONST.STALL_MS then
+			Log.log(
+				NAME,
+				`The {task.creature.npc} is stuck at {npc.x}, {npc.y} and can't reach {stand.x}, {stand.y}, planning another way`
+			)
+			task.bad_tiles[Read.key(stand)] = true
+			task.waypoint, task.stall_key = nil, nil
+			return true
+		end
 	end
 	Random.sleep(CONST.WAIT_MS[1], CONST.WAIT_MS[2])
 	return true
@@ -564,6 +642,11 @@ function Game.jump(task: Task): boolean
 		return false
 	end
 	local start = Walker.position()
+	local before = Read.chaser(task)
+	Log.log(
+		NAME,
+		`Jumping the pit at {pit.x}, {pit.y} from {start and start.x or "?"}, {start and start.y or "?"} with the {task.creature.npc} at {before and before.x or "?"}, {before and before.y or "?"}`
+	)
 	if not Objects.interact(loc :: Loc, CONST.PIT.JUMP, false) then
 		return false
 	end
@@ -575,10 +658,16 @@ function Game.jump(task: Task): boolean
 		return false
 	end
 	local caught = Game.wait_until(function(): boolean
-		return Read.pit_at(pit) == "Collapsed trap"
+		local status = Read.pit_at(pit)
+		return status == "Collapsed trap" or status == "Falling"
 	end, CONST.OUTCOME_MS)
 	if not caught then
-		Log.log(NAME, `The {task.creature.npc} jumped over the pit at {pit.x}, {pit.y}`)
+		local after = Read.chaser(task)
+		local now = Walker.position()
+		Log.log(
+			NAME,
+			`No catch at {pit.x}, {pit.y}: we're at {now and now.x or "?"}, {now and now.y or "?"}, the {task.creature.npc} at {after and after.x or "?"}, {after and after.y or "?"}`
+		)
 		task.jumped = pit
 	end
 	return true
@@ -590,7 +679,12 @@ function Game.dismantle(task: Task): boolean
 	if status ~= "Collapsed trap" or loc == nil then
 		return true
 	end
-	if not Objects.interact(loc :: Loc, CONST.PIT.DISMANTLE, false) then
+	Game.wait_until(function(): boolean
+		return not Player.is_animating()
+	end, CONST.LAND_TIMEOUT_MS)
+	Log.log(NAME, `Dismantling the collapsed trap at {pit.x}, {pit.y}`)
+	if not Game.use(loc :: Loc, CONST.PIT.DISMANTLE) then
+		Random.sleep(600, 1200)
 		return false
 	end
 	local done = Game.wait_until(function(): boolean
@@ -599,7 +693,7 @@ function Game.dismantle(task: Task): boolean
 	if done then
 		task.catches += 1
 		task.chaser, task.jumped = nil, nil
-		Log.log(NAME, `Caught a {task.creature.npc} ({task.catches} so far)`)
+		Log.log(NAME, `Caught: {task.creature.npc} ({task.catches} so far)`)
 	end
 	return done
 end
@@ -607,6 +701,26 @@ end
 Handler.states = {
 	BLOCKED = function(_task: Task): boolean
 		return false
+	end,
+	RETALIATE_OFF = function(task: Task): boolean
+		local on = Combat.auto_retaliate()
+		if on and not Combat.set_auto_retaliate(false) then
+			return false
+		end
+		if on then
+			Log.log(NAME, `Turned auto retaliate off so the {task.creature.npc} can't interrupt us`)
+		end
+		task.retaliate_checked = true
+		restore_retaliate = restore_retaliate or on == true
+		return true
+	end,
+	RETALIATE_ON = function(_task: Task): boolean
+		if not Combat.set_auto_retaliate(true) then
+			return false
+		end
+		Log.log(NAME, "Turned auto retaliate back on")
+		restore_retaliate = false
+		return true
 	end,
 	DONE = function(_task: Task): boolean
 		return true
@@ -619,7 +733,7 @@ Handler.states = {
 	JUMP = Game.jump,
 	DISMANTLE = Game.dismantle,
 	WAIT = function(_task: Task): boolean
-		Random.sleep(CONST.WAIT_MS[1], CONST.WAIT_MS[2])
+		Idle.wait(CONST.WAIT_MS)
 		return true
 	end,
 } :: { [State]: (Task) -> boolean }
