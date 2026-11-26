@@ -12,11 +12,19 @@ export type Location = {
 }
 
 local Locations: { [string]: Location } = {
+	["Tree - Draynor Village"] = {
+		tree = "Tree",
+		logs = "Logs",
+		level = 1,
+		trees = { { x = 3099, y = 3242 }, { x = 3099, y = 3247 }, { x = 3101, y = 3252 } },
+		bank = { x = 3093, y = 3243 },
+		fires = { x = 3092, y = 3237 },
+	},
 	["Oak - Draynor Village"] = {
 		tree = "Oak tree",
 		logs = "Oak logs",
 		level = 15,
-		trees = { { x = 3102, y = 3242 }, { x = 3106, y = 3247 }, { x = 3114, y = 3239 } },
+		trees = { { x = 3102, y = 3242 } },
 		bank = { x = 3093, y = 3243 },
 		fires = { x = 3092, y = 3237 },
 	},
@@ -47,6 +55,21 @@ local Locations: { [string]: Location } = {
 		},
 		bank = { x = 2809, y = 3440 },
 		fires = { x = 2809, y = 3435 },
+	},
+	["Willow - Seers' Village"] = {
+		tree = "Willow tree",
+		logs = "Willow logs",
+		level = 30,
+		trees = {
+			{ x = 2704, y = 3506 },
+			{ x = 2708, y = 3513 },
+			{ x = 2709, y = 3510 },
+			{ x = 2711, y = 3511 },
+			{ x = 2712, y = 3508 },
+			{ x = 2719, y = 3505 },
+		},
+		bank = { x = 2727, y = 3493 },
+		fires = { x = 2725, y = 3485 },
 	},
 	["Maple - Seers' Village"] = {
 		tree = "Maple tree",

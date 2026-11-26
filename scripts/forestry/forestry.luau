@@ -24,7 +24,9 @@ local Login = require("@volcren/login")
 local Make = require("@volcren/make")
 local Objects = require("@volcren/objects")
 local Player = require("@volcren/player")
+local Players = require("@volcren/players")
 local Random = require("@volcren/random")
+local SpecialAttack = require("@volcren/special_attack")
 local Stats = require("@volcren/stats")
 local StatsReport = require("@volcren/stats_report")
 local Toplevel = require("@volcren/toplevel")
@@ -46,7 +48,7 @@ type Mode =
 
 local CONST = {
 	REPORT = { counters_key = "" },
-	KIT = "Forestry kit",
+	KITS = { "Forestry kit", "Forestry basket", "Open forestry basket" },
 	TINDERBOX = "Tinderbox",
 	KNIVES = { "Fletching knife", "Knife" } :: { number | string },
 	FLETCH_MS = 3000,
@@ -88,12 +90,16 @@ local CONST = {
 		["Magic logs"] = { menu = "90 arrow shafts", item = "Arrow shaft", level = 75 },
 	} :: { [string]: Fletchable },
 	BUSY_GRACE_MS = 1800,
+	BASKET_TOGGLE_MS = 2400,
+	SPECIAL_RETRY_MS = 60000,
+	SPECIAL_DELAY_MS = { 400, 2500 },
 	BASKETS = { "Open log basket", "Log basket", "Open forestry basket", "Forestry basket" } :: { number | string },
-	EMPTY = "Empty",
 	CLOSED_BASKETS = { "Log basket", "Forestry basket" } :: { number | string },
 	OPEN_BASKETS = { "Open log basket", "Open forestry basket" } :: { number | string },
 	OPEN = "Open",
 	CLOSE = "Close",
+	CONFIGURE = "Configure",
+	OPEN_CLOSE = "Open/close",
 	CAMPFIRE_BUILD_MS = 5000,
 	CAMPFIRE = "Forester's Campfire",
 	FIRE = "Fire",
@@ -102,6 +108,11 @@ local CONST = {
 	NEST = "nest",
 	NEST_REACH = 10,
 	FAR = 6,
+	BANK_NEAR = 1,
+	NEST_SKIP_MS = 30000,
+	BANK_BOOTH = "Bank booth",
+	BANK = "Bank",
+	BOOTH_REACH = 8,
 	CAMPFIRE_REACH = 15,
 	START_MS = 4000,
 	LIGHT_MS = 6000,
@@ -138,6 +149,9 @@ type RunState = {
 	last_logs: number,
 	event: Events.Kind?,
 	skip: { [string]: boolean },
+	special_tried_at: number,
+	event_anchor: Tile?,
+	nest_skipped: { [string]: number },
 }
 
 local S: RunState = {
@@ -157,6 +171,8 @@ local S: RunState = {
 	last_logs = 0,
 	event = nil,
 	skip = {},
+	special_tried_at = 0,
+	nest_skipped = {},
 }
 
 local spot: Locations.Location = Locations[CONFIG.location]
@@ -204,10 +220,11 @@ type State =
 	| "FLETCH"
 	| "DROP_FLETCHED"
 	| "WALK"
+	| "SPECIAL"
 	| "CHOP"
 	| "IDLE"
 
-type Plan = { event: Events.Active?, tree: Loc?, nest: GroundItem? }
+type Plan = { event: Events.Active?, tree: Loc?, nest: GroundItem?, choppers: number? }
 
 local plan: Plan = {}
 
@@ -241,6 +258,41 @@ function Read.trees(): { Loc }
 		end
 	end
 	return out
+end
+
+function Read.busiest(trees: { Loc }): { Loc }
+	local counts: { [Loc]: number } = {}
+	local most = 0
+	for _, tree in trees do
+		counts[tree] = 0
+	end
+	for _, player in Players.find() or {} do
+		if player.name ~= snap.state.player_name and player.animation ~= -1 then
+			for _, tree in trees do
+				if Objects.distance(tree, player) == 1 then
+					counts[tree] += 1
+					most = math.max(most, counts[tree])
+					break
+				end
+			end
+		end
+	end
+	local out = {}
+	for _, tree in trees do
+		if counts[tree] == most then
+			table.insert(out, tree)
+		end
+	end
+	plan.choppers = most
+	return out
+end
+
+function Read.special_ready(): boolean
+	if time() - S.special_tried_at < CONST.SPECIAL_RETRY_MS then
+		return false
+	end
+	local cost, energy = SpecialAttack.cost(), SpecialAttack.energy()
+	return cost ~= nil and cost > 0 and energy ~= nil and energy >= cost
 end
 
 function Read.centre(): Tile
@@ -343,6 +395,7 @@ function Read.nest(): GroundItem?
 	for _, item in GroundItems.find() or {} do
 		if
 			Read.is_nest(item.name)
+			and time() - (S.nest_skipped[`{item.x},{item.y}`] or -math.huge) > CONST.NEST_SKIP_MS
 			and GroundItems.distance(item, snap.me) <= CONST.NEST_REACH
 			and GroundItems.fits(item)
 		then
@@ -352,20 +405,52 @@ function Read.nest(): GroundItem?
 	return nil
 end
 
-function Read.carried_nests(): { string }
-	local names: { string } = {}
-	for _, item in Inventory.items() or {} do
-		if item.name and Read.is_nest(item.name) and not table.find(names, item.name) then
-			table.insert(names, item.name)
+function Read.banks(id: number): boolean
+	local view = (Host.loc_shown({ id }) or {})[1]
+	return view ~= nil and table.find(view.actions or {}, CONST.BANK) ~= nil
+end
+
+function Read.bank_booth(me: Tile): Loc?
+	local best: Loc? = nil
+	local best_d = math.huge
+	local usable: { [number]: boolean } = {}
+	for _, booth in Objects.find(CONST.BANK_BOOTH) or {} do
+		if usable[booth.id] == nil then
+			usable[booth.id] = Read.banks(booth.id)
+		end
+		local d = Objects.distance(booth, me)
+		if usable[booth.id] and Walker.distance(booth, spot.bank) <= CONST.BOOTH_REACH and d < best_d then
+			best, best_d = booth, d
 		end
 	end
-	return names
+	return best
+end
+
+function Read.carried_logs(): { number }
+	local ids: { number } = {}
+	for _, item in Inventory.items() or {} do
+		local name = string.lower(item.name or "")
+		if (name == "logs" or string.sub(name, -5) == " logs") and not table.find(ids, item.id) then
+			table.insert(ids, item.id)
+		end
+	end
+	return ids
+end
+
+function Read.carried_nests(): { number }
+	local ids: { number } = {}
+	for _, item in Inventory.items() or {} do
+		if Read.is_nest(item.name) and not table.find(ids, item.id) then
+			table.insert(ids, item.id)
+		end
+	end
+	return ids
 end
 
 function Read.has_kit(): boolean
 	local function has(items: { Inv.Slot }?): boolean
 		for _, item in items or {} do
-			if item.name == CONST.KIT then
+			if table.find(CONST.KITS, item.name) then
 				return true
 			end
 		end
@@ -447,7 +532,7 @@ function Game.check_requirements(): string?
 		return `{spot.tree} needs {spot.level} Woodcutting`
 	end
 	if CONFIG.events and not Read.has_kit() then
-		return "events need a Forestry kit worn or in the inventory"
+		return "events need a Forestry kit or Forestry basket worn or in the inventory"
 	end
 	if
 		(CONFIG.mode == "Tinderbox" or CONFIG.mode == "Forester's Campfire")
@@ -492,18 +577,34 @@ function Game.wait_start(started: () -> boolean): boolean
 		if started() then
 			return true
 		end
+		if Player.is_moving() then
+			t0 = time()
+		end
 		sleep(100)
 	end
 	return started()
 end
 
 function Game.chop(tree: Loc)
-	Log.log(NAME, `Chopping the {spot.tree} at {tree.x}, {tree.y}`)
-	if Objects.interact(tree, "Chop down") and Game.wait_start(Player.is_animating) then
+	Log.log(NAME, `Chopping the {spot.tree} at {tree.x}, {tree.y} with {plan.choppers} others`)
+	local clicked = Objects.distance(tree, snap.me) <= CONST.FAR and Objects.interact(tree, "Chop down")
+	if not clicked and Read.standing(tree) then
+		clicked = Objects.approach(tree, "Chop down")
+	end
+	if clicked and Game.wait_start(Player.is_animating) then
 		S.failures_in_row = 0
-	else
+	elseif Read.standing(tree) then
 		S.failures_in_row += 1
 	end
+end
+
+function Read.standing(tree: Loc): boolean
+	for _, loc in Objects.find(spot.tree) or {} do
+		if loc.x == tree.x and loc.y == tree.y then
+			return true
+		end
+	end
+	return false
 end
 
 function Game.take_nest(nest: GroundItem)
@@ -516,6 +617,12 @@ function Game.take_nest(nest: GroundItem)
 		stats.nests += 1
 	else
 		S.failures_in_row += 1
+		S.nest_skipped[`{nest.x},{nest.y}`] = time()
+		local click = Host.menu_click()
+		Log.log(
+			NAME,
+			`TRACE nest pickup failed, last click {click and click.entry.option} {click and click.entry.target}`
+		)
 	end
 end
 
@@ -545,20 +652,29 @@ function Read.fletch_product(): Fletchable?
 	return nil
 end
 
+function Read.holding(names: { number | string }): boolean
+	return Inventory.contains_any(names) or Wornitems.contains_any(names)
+end
+
+function Read.basket_should_open(): boolean
+	return CONFIG.mode == "Bank" and S.event ~= "BEEHIVE"
+end
+
 function Read.basket_wrong(): boolean
-	if CONFIG.mode == "Bank" then
-		return Inventory.contains_any(CONST.CLOSED_BASKETS)
-	end
-	return Inventory.contains_any(CONST.OPEN_BASKETS)
+	return Read.holding(if Read.basket_should_open() then CONST.CLOSED_BASKETS else CONST.OPEN_BASKETS)
 end
 
 function Game.toggle_basket()
-	local opening = CONFIG.mode == "Bank"
+	local opening = Read.basket_should_open()
 	local from = if opening then CONST.CLOSED_BASKETS else CONST.OPEN_BASKETS
+	local option = if opening then CONST.OPEN else CONST.CLOSE
 	Log.log(NAME, if opening then "Opening the log basket" else "Closing the log basket so logs stay in the inventory")
-	if
-		Inventory.interact(from, if opening then CONST.OPEN else CONST.CLOSE) and Inventory.wait_count(from, 0, 2400)
-	then
+	local clicked = Events.use_basket(from, option, CONST.CONFIGURE, CONST.OPEN_CLOSE)
+	local t0 = time()
+	while clicked and Read.holding(from) and time() - t0 < CONST.BASKET_TOGGLE_MS do
+		sleep(100)
+	end
+	if clicked and not Read.holding(from) then
 		S.failures_in_row = 0
 	else
 		S.failures_in_row += 1
@@ -566,18 +682,25 @@ function Game.toggle_basket()
 end
 
 function Game.bank()
-	if not snap.ground or Walker.distance(snap.me, spot.bank) > 6 then
+	local booth = if snap.ground then Read.bank_booth(snap.me) else nil
+	local at_bank = snap.ground and Walker.distance(snap.me, spot.bank) <= CONST.BANK_NEAR
+	if booth == nil and not at_bank then
 		Log.log(NAME, "Walking to the bank")
-		if not Walker.walk(spot.bank, { near = 3, plane = 0 }) then
+		if not Walker.walk(spot.bank, { near = CONST.BANK_NEAR, plane = 0 }) then
 			S.failures_in_row += 1
-			return
 		end
+		return
 	end
-	if not Bankmain.open() then
+	Log.log(NAME, if booth then `Opening the bank booth at {booth.x}, {booth.y}` else "Opening the bank")
+	if not Bankmain.open(if booth then { loc = booth, npc = nil } else nil) then
 		S.failures_in_row += 1
 		return
 	end
-	if not Bankmain.inventory.contains(spot.logs) or Bankmain.deposit(spot.logs) then
+	local deposited = true
+	for _, id in Read.carried_logs() do
+		deposited = Bankmain.deposit(id) and deposited
+	end
+	if deposited then
 		S.failures_in_row = 0
 	end
 	for _, nest in Read.carried_nests() do
@@ -589,14 +712,12 @@ function Game.bank()
 		end
 	end
 	S.unloading = false
-	if CONFIG.mode == "Bank" and Bankmain.inventory.contains_any(CONST.BASKETS) then
+	if CONFIG.mode == "Bank" and Read.holding(CONST.BASKETS) then
 		Log.log(NAME, "Emptying the log basket into the bank")
-		Bankmain.inventory.interact(CONST.BASKETS, CONST.EMPTY)
+		Bankmain.deposit_containers()
 		Host.sleep(Random.int(400, 900))
 	end
 	Bankmain.close()
-	Log.log(NAME, `Walking back to the {spot.tree}s`)
-	Walker.walk(Read.centre(), { near = 4, plane = 0 })
 end
 
 function Game.fletch()
@@ -838,6 +959,9 @@ function Loop.track_event(active: Events.Active?)
 		Log.log(NAME, `Event over: {previous}`)
 		Events.reset()
 	end
+	if kind ~= previous then
+		S.event_anchor = if kind then snap.me else nil
+	end
 	S.event = kind
 end
 
@@ -894,8 +1018,9 @@ function Loop.get_state(): State
 
 	if CONFIG.events then
 		Events.trace(snap.me)
-		local active = Events.find(spot.trees)
+		local active = Events.find({ S.event_anchor or snap.me })
 		Loop.track_event(active)
+		Events.paint(if active then active.kind else nil)
 		if active and not skipped["EVENT"] then
 			plan.event = active
 			return "EVENT"
@@ -916,6 +1041,9 @@ function Loop.get_state(): State
 	if not Read.near_trees(snap.me) then
 		return "WALK"
 	end
+	if Read.special_ready() then
+		return "SPECIAL"
+	end
 	if Player.is_animating() or Player.is_moving() then
 		S.last_busy_at = time()
 		return "IDLE"
@@ -923,7 +1051,7 @@ function Loop.get_state(): State
 	if time() - S.last_busy_at < CONST.BUSY_GRACE_MS then
 		return "IDLE"
 	end
-	local trees = Read.trees()
+	local trees = Read.busiest(Read.trees())
 	local me = snap.me
 	plan.tree = Random.nearest_weighted(trees, function(t: Loc): number
 		return Objects.distance(t, me)
@@ -953,6 +1081,12 @@ Handler.states = {
 	end,
 	BASKET = function()
 		Game.toggle_basket()
+	end,
+	SPECIAL = function()
+		S.special_tried_at = time()
+		Biometrics.sleep(CONST.SPECIAL_DELAY_MS[1], CONST.SPECIAL_DELAY_MS[2])
+		Log.log(NAME, "Using the axe's special attack")
+		SpecialAttack.use()
 	end,
 	BANK = function()
 		Game.bank()

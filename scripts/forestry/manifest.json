@@ -17,9 +17,11 @@
 				"kind": "choice",
 				"label": "Trees",
 				"options": [
+					"Tree - Draynor Village",
 					"Oak - Draynor Village",
 					"Willow - Draynor Village",
 					"Willow - Catherby",
+					"Willow - Seers' Village",
 					"Maple - Seers' Village",
 					"Mahogany - Farming Guild",
 					"Yew - Seers' Village church",

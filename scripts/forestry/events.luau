@@ -6,14 +6,20 @@ type Npc = Host.Npc
 type Loc = Host.Loc
 local Biometrics = require("@volcren/biometrics")
 local Chat = require("@volcren/chat")
+local DebugDraw = require("@volcren/debug_draw")
+local Draw = require("@volcren/draw")
 local Inventory = require("@volcren/inventory")
 local Item = require("@volcren/item")
 local Log = require("@volcren/log")
+local Make = require("@volcren/make")
+local Minimenu = require("@volcren/minimenu")
 local Npcs = require("@volcren/npcs")
 local Objects = require("@volcren/objects")
 local Player = require("@volcren/player")
+local Projection = require("@volcren/projection")
 local Random = require("@volcren/random")
 local Walker = require("@volcren/walker")
+local Wornitems = require("@volcren/wornitems")
 
 local NAME = "Forestry"
 
@@ -41,9 +47,6 @@ local NPC_KIND: { [number]: Kind } = {
 	[12541] = "POACHERS",
 	[12543] = "ENT",
 	[12544] = "ENT",
-	[12553] = "POACHERS",
-	[12554] = "POACHERS",
-	[12555] = "POACHERS",
 	[12559] = "POACHERS",
 }
 for id = 12120, 12152 do
@@ -111,21 +114,32 @@ local COLLECT_MS = 6000
 local FEEDBACK_MS = 6000
 local ENT_RESULT_MS = 3500
 local BUILD_MS = 9000
+local BASKET_EMPTY_MS = 2400
+local MAKE_OPEN_MS = 1800
+local BASKET_RETRY_MS = 20000
 local NEST_SAFE_MS = 8000
 local NEST_NEIGHBOUR = 2
 local STUN_MS = 3200
 local RAINBOW_DELAY_MS = 1200
+local ACTION_DELAY_MS = 1200
+local REACTION_MS = { 600, 2400 }
+local OPEN_BASKETS: { number | string } = { "Open log basket", "Open forestry basket" }
+local EMPTY = "Empty"
+local EMPTY_FORESTRY = "Empty basket"
+local VIEW = "View"
+local FORESTRY_BASKETS: { number | string } = { "Forestry basket", "Open forestry basket" }
 local FLOWER_RETRY_MS = 15000
+local SKIP_GONE_MS = 30000
 
 type Sapling = {
 	known: { [number]: string },
 	wrong: { [number]: { [string]: boolean } },
 	order: { string },
 	seq: { string },
+	full: boolean,
 }
 
 type Flowering = {
-	source: number?,
 	active: { number },
 	held_from: { [number]: boolean },
 	refused: { [number]: number },
@@ -140,7 +154,6 @@ type State = {
 	acted_at: number,
 	chat_uid: number,
 	rainbows: { [string]: boolean },
-	rainbows_seen: { [string]: boolean },
 	sapling: Sapling,
 	ent: { [number]: Entling },
 	flowering: Flowering,
@@ -148,6 +161,7 @@ type State = {
 	done: { [number]: boolean },
 	open_since: { [string]: number },
 	stunned_until: number,
+	basket_tried_at: number,
 }
 
 local function new_sapling(): Sapling
@@ -159,7 +173,7 @@ local function new_sapling(): Sapling
 		local j = Random.int(1, i)
 		order[i], order[j] = order[j], order[i]
 	end
-	return { known = {}, wrong = { {}, {}, {} }, order = order, seq = {} }
+	return { known = {}, wrong = { {}, {}, {} }, order = order, seq = {}, full = false }
 end
 
 local S: State = {
@@ -168,7 +182,6 @@ local S: State = {
 	acted_at = 0,
 	chat_uid = -1,
 	rainbows = {},
-	rainbows_seen = {},
 	sapling = new_sapling(),
 	ent = {},
 	flowering = { refused = {}, held_from = {}, active = {} },
@@ -176,6 +189,7 @@ local S: State = {
 	done = {},
 	open_since = {},
 	stunned_until = 0,
+	basket_tried_at = 0,
 }
 
 local Events = {}
@@ -236,6 +250,7 @@ local function busy_with(key: string): boolean
 end
 
 local function acted(key: string)
+	Biometrics.sleep(0, ACTION_DELAY_MS)
 	S.target, S.acted_at = key, time()
 end
 
@@ -255,7 +270,10 @@ local function use_loc(loc: Loc, option: string, me: Tile, still_wanted: (() -> 
 end
 
 local function use_npc(npc: Npc, option: string, me: Tile): boolean
-	local ok = if Npcs.distance(npc, me) > FAR then Npcs.approach(npc, option) else Npcs.interact(npc, option)
+	local ok = Npcs.distance(npc, me) <= FAR and Npcs.interact(npc, option)
+	if not ok then
+		ok = Npcs.approach(npc, option)
+	end
 	if not ok then
 		local click = Host.menu_click()
 		Log.log(
@@ -287,7 +305,7 @@ end
 
 function Events.reset()
 	S.kind, S.target, S.acted_at = nil, nil, 0
-	S.rainbows, S.rainbows_seen, S.ent = {}, {}, {}
+	S.rainbows, S.ent = {}, {}
 	S.flowering = { refused = {}, held_from = {}, active = {} }
 	S.clicked, S.done = nil, {}
 	S.open_since, S.stunned_until = {}, 0
@@ -376,7 +394,7 @@ function Events.trace(me: Tile)
 	end
 end
 
-local SKIP = { kinds = {} :: { [Kind]: boolean }, uid = -1 }
+local SKIP = { kinds = {} :: { [Kind]: number }, uid = -1 }
 
 local function skip_ineligible()
 	if SKIP.uid < 0 then
@@ -388,13 +406,13 @@ local function skip_ineligible()
 		local kind = S.kind
 		if kind and string.find(m.text, INELIGIBLE, 1, true) then
 			Log.log(NAME, `Not eligible for this {kind} event, leaving it`)
-			SKIP.kinds[kind] = true
+			SKIP.kinds[kind] = time()
 		end
 	end
 end
 
 function Events.skipped(kind: Kind): boolean
-	return SKIP.kinds[kind] == true
+	return SKIP.kinds[kind] ~= nil
 end
 
 function Events.find(trees: { Tile }): Active?
@@ -421,8 +439,10 @@ function Events.find(trees: { Tile }): Active?
 	for _, loc in Host.locs() or {} do
 		consider(LOC_KIND[loc.id], loc.x, loc.y)
 	end
-	for kind in SKIP.kinds do
-		if not present[kind] then
+	for kind, seen_at in SKIP.kinds do
+		if present[kind] then
+			SKIP.kinds[kind] = time()
+		elseif time() - seen_at > SKIP_GONE_MS then
 			SKIP.kinds[kind] = nil
 		end
 	end
@@ -487,10 +507,6 @@ local function stand_in_rainbow(me: Tile): boolean
 				S.target = key
 				return true
 			end
-			if not S.rainbows_seen[key] then
-				S.rainbows_seen[key] = true
-				Biometrics.sleep(0, RAINBOW_DELAY_MS)
-			end
 			if busy_with(key) then
 				return true
 			end
@@ -509,6 +525,35 @@ local function stand_in_rainbow(me: Tile): boolean
 	return false
 end
 
+function Events.use_basket(names: { number | string }, option: string, parent: string, sub_option: string): boolean
+	if not Inventory.contains_any(names) then
+		return Wornitems.interact(names, option)
+	end
+	if Inventory.contains_any(FORESTRY_BASKETS) then
+		return Inventory.hover(names) and Minimenu.select_submenu(sub_option, nil, parent)
+	end
+	return Inventory.interact(names, option)
+end
+
+local function take_logs_from_basket(logs: string): boolean
+	if not Inventory.contains_any(OPEN_BASKETS) or time() - S.basket_tried_at < BASKET_RETRY_MS then
+		return false
+	end
+	S.basket_tried_at = time()
+	Log.log(NAME, "Taking logs out of the log basket for the beehive")
+	if not Events.use_basket(OPEN_BASKETS, EMPTY, VIEW, EMPTY_FORESTRY) then
+		return false
+	end
+	local t0 = time()
+	while time() - t0 < BASKET_EMPTY_MS do
+		if (Inventory.count(logs) or 0) > 0 then
+			return true
+		end
+		Host.sleep(150)
+	end
+	return false
+end
+
 local function build_beehive(me: Tile, logs: string): boolean
 	for _, m in new_chat() do
 		local hive = S.clicked
@@ -516,7 +561,7 @@ local function build_beehive(me: Tile, logs: string): boolean
 			S.done[hive] = true
 		end
 	end
-	if (Inventory.count(logs) or 0) == 0 then
+	if (Inventory.count(logs) or 0) == 0 and not take_logs_from_basket(logs) then
 		return false
 	end
 	local boxes = {}
@@ -537,7 +582,33 @@ local function build_beehive(me: Tile, logs: string): boolean
 	acted(key)
 	S.clicked = box.index
 	local before = Inventory.count(logs) or 0
-	if use_npc(box, "Build", me) then
+	local opcodes: { number | Host.PacketName } = {}
+	for op = 0, 255 do
+		table.insert(opcodes, op)
+	end
+	local sent: { string } = {}
+	local watch = Host.on_packet(opcodes, function(packet)
+		table.insert(sent, `{packet.opcode}:{packet.length}`)
+	end, true)
+	local clicked = use_npc(box, "Build", me)
+	if clicked and Make.wait_open(MAKE_OPEN_MS) then
+		local pick = Make.option(logs) or (Make.options() or {})[1]
+		if pick then
+			Log.log(NAME, `Choosing {pick.name} in the make menu`)
+			Make.make(pick.name, "All")
+		end
+	end
+	Host.sleep(600)
+	Host.off_packet(watch)
+	local click = Host.menu_click()
+	Log.log(
+		NAME,
+		`TRACE Build clicked {click and click.entry.option} {click and click.entry.target} with {before} {logs}, sent {table.concat(
+			sent,
+			" "
+		)}`
+	)
+	if clicked then
 		local t0 = time()
 		local animated = false
 		while time() - t0 < BUILD_MS or (animated and Player.is_animating()) do
@@ -661,9 +732,8 @@ local function pheasant_eggs(me: Tile): boolean
 			return true
 		end
 		Log.log(NAME, "Handing the egg to the Freaky Forester")
-		if use_npc(forester, "Talk-to", me) then
-			acted(key)
-		end
+		acted(key)
+		use_npc(forester, "Talk-to", me)
 		return true
 	end
 	local best: Loc? = nil
@@ -803,6 +873,9 @@ local function sapling_feedback(): number?
 				end
 			end
 		end
+		if string.find(text, "ready to add to the sapling", 1, true) then
+			sap.full = true
+		end
 		local percent = string.match(text, "nutritional value of the mulch to be (%d+)%%")
 		if percent then
 			value = tonumber(percent)
@@ -837,33 +910,35 @@ local function tend_sapling(me: Tile): boolean
 		return false
 	end
 	local has_mulch = (Inventory.count(ID.MULCH) or 0) > 0
-	if #sap.seq >= 3 and has_mulch then
+	if (#sap.seq >= 3 or sap.full) and has_mulch then
 		local key = key_of(sapling.x, sapling.y, sapling.id)
 		if busy_with(key) then
 			return true
 		end
 		Log.log(NAME, `Adding mulch: {table.concat(sap.seq, ", ")}`)
+		acted(key)
 		if use_loc(sapling, "Add-mulch", me) then
-			acted(key)
 			local t0 = time()
 			local value: number? = nil
 			while value == nil and time() - t0 < FEEDBACK_MS do
 				Host.sleep(100)
 				value = sapling_feedback()
 			end
-			for pos, name in sap.seq do
-				if value == 100 then
-					sap.known[pos] = name
-				elseif value and sap.known[pos] ~= name then
-					sap.wrong[pos][name] = true
+			if #sap.seq == 3 then
+				for pos, name in sap.seq do
+					if value == 100 then
+						sap.known[pos] = name
+					elseif value and sap.known[pos] ~= name then
+						sap.wrong[pos][name] = true
+					end
 				end
 			end
-			sap.seq = {}
+			sap.seq, sap.full = {}, false
 		end
 		return true
 	end
-	if #sap.seq > 0 and not has_mulch then
-		sap.seq = {}
+	if not has_mulch then
+		sap.seq, sap.full = {}, false
 	end
 	local want = sapling_plan()[#sap.seq + 1]
 	local ids = {}
@@ -932,7 +1007,7 @@ local function flowering_feedback(): boolean
 				or string.find(text, "Anima-infused bark", 1, true)
 			then
 				mark_active(bush)
-				f.source, f.held_from, answered = bush, {}, true
+				f.held_from, answered = { [bush] = true }, true
 			elseif string.find(text, "You took the pollen from this bush", 1, true) then
 				f.held_from[bush], answered = true, true
 			elseif refused then
@@ -944,7 +1019,7 @@ local function flowering_feedback(): boolean
 			end
 		end
 		if string.find(text, "started producing fruit", 1, true) then
-			f.source, f.active, f.held_from, f.refused = nil, {}, {}, {}
+			f.active, f.held_from, f.refused = {}, {}, {}
 		end
 	end
 	return answered
@@ -969,6 +1044,23 @@ local function watch_tenders(bushes: { Npc })
 	end
 end
 
+local function stand_beside(npc: Npc, me: Tile): Tile
+	local best: Tile = { x = npc.x, y = npc.y }
+	local best_d = math.huge
+	for dx = -1, 1 do
+		for dy = -1, 1 do
+			if dx ~= 0 or dy ~= 0 then
+				local tile = { x = npc.x + dx, y = npc.y + dy }
+				local d = Walker.distance(me, tile)
+				if d < best_d then
+					best, best_d = tile, d
+				end
+			end
+		end
+	end
+	return best
+end
+
 local function pollinate(me: Tile): boolean
 	local bushes = npcs_of(ID.FLOWER_BUSHES)
 	if #bushes == 0 then
@@ -977,24 +1069,15 @@ local function pollinate(me: Tile): boolean
 	flowering_feedback()
 	watch_tenders(bushes)
 	local f = S.flowering
-	local holding = (Inventory.count(ID.POLLEN) or 0) > 0
+	local holding = (Inventory.count(ID.POLLEN) or 0) > 0 or next(f.held_from) ~= nil
 	local function usable(index: number): boolean
-		return not (holding and (f.source == index or f.held_from[index]))
+		return not f.held_from[index]
 	end
 	local target: Npc? = nil
 	for _, wanted in f.active do
 		for _, bush in bushes do
 			if target == nil and bush.index == wanted and usable(wanted) then
 				target = bush
-			end
-		end
-	end
-	if target == nil and #f.active == 2 then
-		for _, wanted in f.active do
-			for _, bush in bushes do
-				if target == nil and bush.index == wanted and not f.held_from[wanted] then
-					target = bush
-				end
 			end
 		end
 	end
@@ -1023,7 +1106,30 @@ local function pollinate(me: Tile): boolean
 	)
 	acted(key_of(0, 0, target.index))
 	f.clicked = target.index
-	if use_npc(target, "Tend-to", me) then
+	local other: Npc? = nil
+	if known and #f.active == 2 then
+		for _, bush in bushes do
+			if bush.index ~= target.index and table.find(f.active, bush.index) then
+				other = bush
+			end
+		end
+	end
+	if Npcs.distance(target, me) == 0 then
+		local toward: Tile = if other then { x = other.x, y = other.y } else me
+		Log.log(NAME, "Stepping off the bush so it can be clicked")
+		Walker.walk_tile(stand_beside(target, toward))
+		return true
+	end
+	local clicked = false
+	if other then
+		clicked = Npcs.interact(target, "Tend-to", false)
+		if clicked then
+			Npcs.hover_async(other, stand_beside(target, me))
+		end
+	else
+		clicked = use_npc(target, "Tend-to", me)
+	end
+	if clicked then
 		local t0 = time()
 		while not flowering_feedback() and time() - t0 < FEEDBACK_MS do
 			Host.sleep(100)
@@ -1033,11 +1139,139 @@ local function pollinate(me: Tile): boolean
 	return true
 end
 
+local PILE_LETTERS: { [string]: string } = {
+	["Rotting leaves"] = "R",
+	["Green leaves"] = "G",
+	["Droppings"] = "D",
+	["Wild mushrooms"] = "M",
+	["Splintered bark"] = "B",
+}
+
+local PILE_COLOURS: { [string]: Draw.Color } = {
+	R = Draw.color(179, 0, 0),
+	G = Draw.color(0, 179, 0),
+	D = Draw.color(120, 88, 76),
+	M = Draw.color(220, 220, 220),
+	B = Draw.color(0, 0, 179),
+}
+
+local ORANGE = Draw.color(255, 200, 0)
+local LINE_PX = 2
+local TEXT_PX = 16
+
+local function footprint(loc: Loc): { Tile }
+	local tiles = {}
+	for dx = 0, loc.size_x - 1 do
+		for dy = 0, loc.size_y - 1 do
+			table.insert(tiles, { x = loc.x + dx, y = loc.y + dy })
+		end
+	end
+	return tiles
+end
+
+local function outline_locs(locs: { Loc }, colour: Draw.Color)
+	for _, loc in locs do
+		DebugDraw.outline(footprint(loc), colour, LINE_PX)
+	end
+end
+
+local function outline_npcs(npcs: { Npc }, colour: Draw.Color)
+	for _, npc in npcs do
+		DebugDraw.outline({ { x = npc.x, y = npc.y } }, colour, LINE_PX)
+	end
+end
+
+local function label(tile: Tile, text: string)
+	local quad = Projection.tile(tile)
+	if quad == nil then
+		return
+	end
+	local x = (quad.top.x + quad.right.x + quad.bottom.x + quad.left.x) / 4
+	local y = (quad.top.y + quad.right.y + quad.bottom.y + quad.left.y) / 4
+	Draw.text(text, x - #text * TEXT_PX * 0.4, y - TEXT_PX / 2, TEXT_PX, Draw.WHITE)
+end
+
+local function paint_sapling()
+	local known = S.sapling.known
+	local solved = known[1] ~= nil and known[2] ~= nil and known[3] ~= nil
+	for _, ingredient in INGREDIENTS do
+		local letter = PILE_LETTERS[ingredient.name]
+		local slots = {}
+		for pos = 1, 3 do
+			if known[pos] == ingredient.name then
+				table.insert(slots, tostring(pos))
+			end
+		end
+		if not solved or #slots > 0 then
+			local text = if #slots > 0 then `{letter} - {table.concat(slots, " ")}` else letter
+			for _, pile in locs_of(ingredient.ids) do
+				DebugDraw.outline(footprint(pile), PILE_COLOURS[letter], LINE_PX)
+				label({ x = pile.x, y = pile.y }, text)
+			end
+		end
+	end
+end
+
+local function paint_flowers()
+	local active = S.flowering.active
+	local shown = {}
+	for _, bush in npcs_of(ID.FLOWER_BUSHES) do
+		if #active < 2 or table.find(active, bush.index) then
+			table.insert(shown, bush)
+		end
+	end
+	outline_npcs(shown, Draw.YELLOW)
+end
+
+local function paint_ritual()
+	local circle = ritual_circle()
+	if circle then
+		outline_npcs({ circle }, Draw.GREEN)
+	end
+end
+
+local PAINTERS: { [Kind]: () -> () } = {
+	ROOTS = function()
+		outline_locs(locs_of({ ID.ANIMA_ROOT }), Draw.GREEN)
+	end,
+	SAPLING = paint_sapling,
+	FLOWERING = paint_flowers,
+	POACHERS = function()
+		outline_npcs(npcs_of({ ID.TRAP }), Draw.RED)
+	end,
+	PHEASANT = function()
+		outline_locs(locs_of({ ID.OPEN_NEST }), Draw.GREEN)
+		outline_npcs(npcs_of({ ID.FORESTER }), Draw.GREEN)
+	end,
+	BEEHIVE = function()
+		outline_npcs(npcs_of(ID.BEEBOXES), ORANGE)
+	end,
+	RITUAL = paint_ritual,
+	LEPRECHAUN = function()
+		outline_locs(locs_of({ ID.RAINBOW }), Draw.GREEN)
+	end,
+}
+
+local painted = false
+
+function Events.paint(kind: Kind?)
+	local painter = if kind and DebugDraw.on() then PAINTERS[kind] else nil
+	if painter == nil and not painted then
+		return
+	end
+	if (painter ~= nil) ~= painted then
+		Log.log(NAME, `TRACE highlights {if painter then `on for {kind}` else "off"}`)
+	end
+	painted = painter ~= nil
+	DebugDraw.set(NAME, painter)
+end
+
 function Events.step(active: Active, me: Tile, logs: string): boolean
 	if S.kind ~= active.kind then
 		Events.reset()
 		S.kind = active.kind
 		Log.log(NAME, `Event: {active.kind}`)
+		Biometrics.sleep(REACTION_MS[1], REACTION_MS[2])
 	end
 	local kind = active.kind
 	if kind == "ROOTS" then
