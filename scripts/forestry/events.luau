@@ -16,7 +16,6 @@ local Minimenu = require("@volcren/minimenu")
 local Npcs = require("@volcren/npcs")
 local Objects = require("@volcren/objects")
 local Player = require("@volcren/player")
-local Projection = require("@volcren/projection")
 local Random = require("@volcren/random")
 local Walker = require("@volcren/walker")
 local Wornitems = require("@volcren/wornitems")
@@ -269,7 +268,24 @@ local function use_loc(loc: Loc, option: string, me: Tile, still_wanted: (() -> 
 	return Objects.interact(loc, option)
 end
 
+local function step_off(npc: Npc, me: Tile)
+	if npc.x ~= me.x or npc.y ~= me.y then
+		return
+	end
+	local sides = { { x = 1, y = 0 }, { x = -1, y = 0 }, { x = 0, y = 1 }, { x = 0, y = -1 } }
+	for i = #sides, 2, -1 do
+		local j = Random.int(1, i)
+		sides[i], sides[j] = sides[j], sides[i]
+	end
+	for _, side in sides do
+		if Walker.walk_tile({ x = npc.x + side.x, y = npc.y + side.y }) then
+			return
+		end
+	end
+end
+
 local function use_npc(npc: Npc, option: string, me: Tile): boolean
+	step_off(npc, me)
 	local ok = Npcs.distance(npc, me) <= FAR and Npcs.interact(npc, option)
 	if not ok then
 		ok = Npcs.approach(npc, option)
@@ -1157,7 +1173,6 @@ local PILE_COLOURS: { [string]: Draw.Color } = {
 
 local ORANGE = Draw.color(255, 200, 0)
 local LINE_PX = 2
-local TEXT_PX = 16
 
 local function footprint(loc: Loc): { Tile }
 	local tiles = {}
@@ -1182,13 +1197,7 @@ local function outline_npcs(npcs: { Npc }, colour: Draw.Color)
 end
 
 local function label(tile: Tile, text: string)
-	local quad = Projection.tile(tile)
-	if quad == nil then
-		return
-	end
-	local x = (quad.top.x + quad.right.x + quad.bottom.x + quad.left.x) / 4
-	local y = (quad.top.y + quad.right.y + quad.bottom.y + quad.left.y) / 4
-	Draw.text(text, x - #text * TEXT_PX * 0.4, y - TEXT_PX / 2, TEXT_PX, Draw.WHITE)
+	DebugDraw.label(tile, text, Draw.WHITE)
 end
 
 local function paint_sapling()

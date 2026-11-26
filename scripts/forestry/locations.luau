@@ -7,8 +7,10 @@ export type Location = {
 	logs: string,
 	level: number,
 	trees: { Tile },
-	bank: Tile,
-	fires: Tile,
+	fallback: { Tile }?,
+	bank: Tile?,
+	fires: Tile?,
+	current: boolean?,
 }
 
 local Locations: { [string]: Location } = {
@@ -87,6 +89,35 @@ local Locations: { [string]: Location } = {
 		bank = { x = 1248, y = 3757 },
 		fires = { x = 1249, y = 3750 },
 	},
+	["Teak - Prifddinas"] = {
+		tree = "Teak tree",
+		logs = "Teak logs",
+		level = 35,
+		trees = { { x = 3309, y = 6124 }, { x = 3311, y = 6121 }, { x = 3311, y = 6123 } },
+		bank = { x = 3257, y = 6107 },
+	},
+	["Mahogany - Prifddinas"] = {
+		tree = "Mahogany tree",
+		logs = "Mahogany logs",
+		level = 50,
+		trees = { { x = 3301, y = 6128 }, { x = 3301, y = 6132 }, { x = 3304, y = 6127 } },
+		bank = { x = 3257, y = 6107 },
+	},
+	["Yew - Prifddinas"] = {
+		tree = "Yew tree",
+		logs = "Yew logs",
+		level = 60,
+		trees = { { x = 3287, y = 6061 }, { x = 3288, y = 6065 }, { x = 3292, y = 6067 } },
+		bank = { x = 3295, y = 6059 },
+	},
+	["Magic - Prifddinas"] = {
+		tree = "Magic tree",
+		logs = "Magic logs",
+		level = 75,
+		trees = { { x = 3235, y = 6095 }, { x = 3235, y = 6103 } },
+		fallback = { { x = 3227, y = 6095 }, { x = 3227, y = 6103 } },
+		bank = { x = 3257, y = 6107 },
+	},
 	["Yew - Seers' Village church"] = {
 		tree = "Yew tree",
 		logs = "Yew logs",
@@ -136,5 +167,22 @@ local Locations: { [string]: Location } = {
 		fires = { x = 2725, y = 3485 },
 	},
 }
+
+for _, kind in
+	{
+		{ tree = "Tree", logs = "Logs", level = 1 },
+		{ tree = "Oak tree", logs = "Oak logs", level = 15 },
+		{ tree = "Teak tree", logs = "Teak logs", level = 35 },
+		{ tree = "Willow tree", logs = "Willow logs", level = 30 },
+		{ tree = "Maple tree", logs = "Maple logs", level = 45 },
+		{ tree = "Mahogany tree", logs = "Mahogany logs", level = 50 },
+		{ tree = "Yew tree", logs = "Yew logs", level = 60 },
+		{ tree = "Magic tree", logs = "Magic logs", level = 75 },
+	}
+do
+	local label = if kind.tree == "Tree" then "Tree" else string.gsub(kind.tree, " tree$", "")
+	Locations[`{label} - Current location`] =
+		{ tree = kind.tree, logs = kind.logs, level = kind.level, trees = {}, current = true }
+end
 
 return Locations

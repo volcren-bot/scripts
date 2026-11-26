@@ -109,6 +109,9 @@ local CONST = {
 	NEST_REACH = 10,
 	FAR = 6,
 	BANK_NEAR = 1,
+	MAX_RADIUS = 30,
+	CHOP = "Chop down",
+	NEEDS_BANK = { Bank = true, ["Fletch and bank"] = true } :: { [string]: boolean },
 	NEST_SKIP_MS = 30000,
 	BANK_BOOTH = "Bank booth",
 	BANK = "Bank",
@@ -127,6 +130,7 @@ local CONFIG = {
 	mode = "Bank" :: Mode,
 	events = true,
 	max_logs = 0,
+	radius = 12,
 	timeouts = { idle_minutes = 5, max_failures = 4 },
 }
 
@@ -181,11 +185,13 @@ function Game.apply_settings(values: { [string]: any })
 	if values.location and Locations[values.location] then
 		CONFIG.location = values.location
 	end
-	CONFIG.mode = values.mode or CONFIG.mode
+	local current = Locations[CONFIG.location].current
+	CONFIG.mode = (if current then values.local_mode else values.mode) or CONFIG.mode
 	if values.events ~= nil then
 		CONFIG.events = values.events
 	end
 	CONFIG.max_logs = values.max_logs or CONFIG.max_logs
+	CONFIG.radius = math.clamp(values.radius or CONFIG.radius, 1, CONST.MAX_RADIUS)
 	spot = Locations[CONFIG.location]
 end
 
@@ -248,14 +254,32 @@ function Read.refresh_snapshot(state: ClientState): boolean
 	return true
 end
 
-function Read.trees(): { Loc }
+function Read.trees_at(locs: { Loc }, tiles: { Tile }): { Loc }
 	local out = {}
-	for _, loc in Objects.find(spot.tree) or {} do
-		for _, t in spot.trees do
+	for _, loc in locs do
+		for _, t in tiles do
 			if loc.x == t.x and loc.y == t.y then
 				table.insert(out, loc)
 			end
 		end
+	end
+	return out
+end
+
+function Read.trees(): { Loc }
+	local locs = Objects.find(spot.tree) or {}
+	if spot.current then
+		local out = {}
+		for _, loc in locs do
+			if Objects.distance(loc, spot.trees[1]) <= CONFIG.radius and Read.choppable(loc.id) then
+				table.insert(out, loc)
+			end
+		end
+		return out
+	end
+	local out = Read.trees_at(locs, spot.trees)
+	if #out == 0 and spot.fallback then
+		return Read.trees_at(locs, spot.fallback)
 	end
 	return out
 end
@@ -308,9 +332,12 @@ function Read.near_trees(me: Tile): boolean
 	if not snap.ground then
 		return false
 	end
-	for _, t in spot.trees do
-		if Walker.distance(me, t) <= CONST.TREE_REACH then
-			return true
+	local reach = if spot.current then math.max(CONST.TREE_REACH, CONFIG.radius + 2) else CONST.TREE_REACH
+	for _, tiles in { spot.trees, spot.fallback or {} } do
+		for _, t in tiles do
+			if Walker.distance(me, t) <= reach then
+				return true
+			end
 		end
 	end
 	return false
@@ -351,7 +378,7 @@ function Read.fire_lane(): Tile?
 	local me = snap.me
 	local best: Tile? = nil
 	local best_score = -math.huge
-	local anchor, w, h = spot.fires, CONST.LANE.WIDTH, CONST.LANE.HEIGHT
+	local anchor, w, h = assert(spot.fires), CONST.LANE.WIDTH, CONST.LANE.HEIGHT
 	local c = Host.collision({ x1 = anchor.x - w, y1 = anchor.y - h, x2 = anchor.x + w, y2 = anchor.y + h })
 	if c then
 		local function flag(x: number, y: number): number
@@ -405,6 +432,11 @@ function Read.nest(): GroundItem?
 	return nil
 end
 
+function Read.choppable(id: number): boolean
+	local view = (Host.loc_shown({ id }) or {})[1]
+	return view ~= nil and table.find(view.actions or {}, CONST.CHOP) ~= nil
+end
+
 function Read.banks(id: number): boolean
 	local view = (Host.loc_shown({ id }) or {})[1]
 	return view ~= nil and table.find(view.actions or {}, CONST.BANK) ~= nil
@@ -419,7 +451,7 @@ function Read.bank_booth(me: Tile): Loc?
 			usable[booth.id] = Read.banks(booth.id)
 		end
 		local d = Objects.distance(booth, me)
-		if usable[booth.id] and Walker.distance(booth, spot.bank) <= CONST.BOOTH_REACH and d < best_d then
+		if usable[booth.id] and Walker.distance(booth, assert(spot.bank)) <= CONST.BOOTH_REACH and d < best_d then
 			best, best_d = booth, d
 		end
 	end
@@ -531,6 +563,18 @@ function Game.check_requirements(): string?
 	if level < spot.level then
 		return `{spot.tree} needs {spot.level} Woodcutting`
 	end
+	if CONFIG.mode == "Tinderbox" and spot.fires == nil then
+		return `Tinderbox needs fire spots, which {CONFIG.location} doesn't have yet`
+	end
+	if spot.current then
+		if CONST.NEEDS_BANK[CONFIG.mode] then
+			return `{CONFIG.mode} needs a bank, which the current location doesn't have`
+		end
+		spot.trees = { snap.me }
+		if #Read.trees() == 0 then
+			return `no {spot.tree} within {CONFIG.radius} tiles`
+		end
+	end
 	if CONFIG.events and not Read.has_kit() then
 		return "events need a Forestry kit or Forestry basket worn or in the inventory"
 	end
@@ -587,9 +631,9 @@ end
 
 function Game.chop(tree: Loc)
 	Log.log(NAME, `Chopping the {spot.tree} at {tree.x}, {tree.y} with {plan.choppers} others`)
-	local clicked = Objects.distance(tree, snap.me) <= CONST.FAR and Objects.interact(tree, "Chop down")
+	local clicked = Objects.distance(tree, snap.me) <= CONST.FAR and Objects.interact(tree, CONST.CHOP)
 	if not clicked and Read.standing(tree) then
-		clicked = Objects.approach(tree, "Chop down")
+		clicked = Objects.approach(tree, CONST.CHOP)
 	end
 	if clicked and Game.wait_start(Player.is_animating) then
 		S.failures_in_row = 0
@@ -683,10 +727,11 @@ end
 
 function Game.bank()
 	local booth = if snap.ground then Read.bank_booth(snap.me) else nil
-	local at_bank = snap.ground and Walker.distance(snap.me, spot.bank) <= CONST.BANK_NEAR
+	local bank = assert(spot.bank)
+	local at_bank = snap.ground and Walker.distance(snap.me, bank) <= CONST.BANK_NEAR
 	if booth == nil and not at_bank then
 		Log.log(NAME, "Walking to the bank")
-		if not Walker.walk(spot.bank, { near = CONST.BANK_NEAR, plane = 0 }) then
+		if not Walker.walk(bank, { near = CONST.BANK_NEAR, plane = 0 }) then
 			S.failures_in_row += 1
 		end
 		return
