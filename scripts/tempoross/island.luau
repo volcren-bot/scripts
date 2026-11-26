@@ -2,12 +2,10 @@
 local Core = require("./core")
 local DebugDraw = require("@volcren/debug_draw")
 local Draw = require("@volcren/draw")
-local Geometry = require("@volcren/geometry")
 local Host = require("@volcren/host")
 local Inventory = require("@volcren/inventory")
 local Log = require("@volcren/log")
 local Player = require("@volcren/player")
-local Projection = require("@volcren/projection")
 local time = Host.time
 type Npc = Core.Npc
 type Loc = Core.Loc
@@ -1985,46 +1983,16 @@ function Island.text(text: string, center: Point, color: Draw.Color)
 	Draw.lines(strokes, color, CONST.ISLAND_DRAW.text_width)
 end
 
-function Island.center(quads: { Geometry.Quad? }, from: number, to: number): Point?
-	local sx, sy, n = 0, 0, 0
-	for i = from, to do
-		local quad = quads[i]
-		if quad then
-			for _, p in ipairs({ quad.top, quad.right, quad.bottom, quad.left }) do
-				sx += p.x
-				sy += p.y
-				n += 1
-			end
-		end
+function Island.center(tiles: { Tile }): Point?
+	if #tiles == 0 then
+		return nil
 	end
-	return if n > 0 then { x = sx / n, y = sy / n } else nil
-end
-
-function Island.outline(tiles: { Tile }, quads: { Geometry.Quad? }, from: number): { { Point } }
-	local inside: { [string]: boolean } = {}
+	local sx, sy = 0, 0
 	for _, t in ipairs(tiles) do
-		inside[`{t.x},{t.y}`] = true
+		sx += t.x
+		sy += t.y
 	end
-	local segments: { { Point } } = {}
-	for i, t in ipairs(tiles) do
-		local quad = quads[from + i - 1]
-		if quad then
-			local sw, nw, ne, se = quad.top, quad.right, quad.bottom, quad.left
-			if not inside[`{t.x - 1},{t.y}`] then
-				table.insert(segments, { sw, nw })
-			end
-			if not inside[`{t.x},{t.y + 1}`] then
-				table.insert(segments, { nw, ne })
-			end
-			if not inside[`{t.x + 1},{t.y}`] then
-				table.insert(segments, { ne, se })
-			end
-			if not inside[`{t.x},{t.y - 1}`] then
-				table.insert(segments, { se, sw })
-			end
-		end
-	end
-	return segments
+	return { x = sx / #tiles, y = sy / #tiles }
 end
 
 function Island.draw(items: { Item })
@@ -2045,15 +2013,6 @@ function Island.draw(items: { Item })
 				table.insert(live, item)
 			end
 		end
-		local all: { Tile } = {}
-		local starts: { number } = {}
-		for i, item in ipairs(live) do
-			starts[i] = #all + 1
-			if item.slots == nil then
-				table.move(item.tiles, 1, #item.tiles, #all + 1, all)
-			end
-		end
-		local quads = Projection.tiles(all)
 		for i, item in ipairs(live) do
 			local text_color = if i == 1 and item.score > 0
 				then CONST.ISLAND_DRAW.best_color
@@ -2061,14 +2020,13 @@ function Island.draw(items: { Item })
 			if item.slots then
 				Island.draw_slots(item, text_color)
 			else
-				local from = starts[i]
 				if item.kind ~= "fire" then
 					local color = colors[item.kind] or CONST.ISLAND_DRAW.default_color
-					Draw.lines(Island.outline(item.tiles, quads, from), color, CONST.ISLAND_DRAW.outline_width)
+					DebugDraw.outline(item.tiles, color, CONST.ISLAND_DRAW.outline_width)
 				end
-				local center = Island.center(quads, from, from + #item.tiles - 1)
+				local center = Island.center(item.tiles)
 				if center then
-					Island.text(string.format("%.2f", item.score), center, text_color)
+					DebugDraw.label(center, string.format("%.2f", item.score), text_color)
 				end
 			end
 		end
@@ -2095,14 +2053,10 @@ function Island.draw_waypoints()
 			at[key] = #tiles
 		end
 	end
-	local quads = Projection.tiles(tiles)
 	local color = (CONST.ISLAND_DRAW.colors :: { [string]: Draw.Color }).route
-	Draw.lines(Island.outline(tiles, quads, 1), color, CONST.ISLAND_DRAW.outline_width)
+	DebugDraw.outline(tiles, color, CONST.ISLAND_DRAW.outline_width)
 	for i, label in ipairs(labels) do
-		local center = Island.center(quads, i, i)
-		if center then
-			Island.text(label, center, color)
-		end
+		DebugDraw.label(tiles[i], label, color)
 	end
 end
 

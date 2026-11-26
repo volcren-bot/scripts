@@ -27,7 +27,6 @@ local Npcs = require("@volcren/npcs")
 local Objects = require("@volcren/objects")
 local Player = require("@volcren/player")
 local Position = require("@volcren/position")
-local Projection = require("@volcren/projection")
 local Random = require("@volcren/random")
 local Stats = require("@volcren/stats")
 local StatsReport = require("@volcren/stats_report")
@@ -714,10 +713,7 @@ function Loop.draw_citizens()
 	end
 	DebugDraw.set(CONST.DEBUG_LAYER, function()
 		for _, tile in plain do
-			local quad = Projection.tile(tile)
-			if quad then
-				Draw.quad(quad, Draw.YELLOW)
-			end
+			DebugDraw.outline({ tile }, Draw.YELLOW)
 		end
 		for _, mark in thick do
 			DebugDraw.outline({ mark.tile }, mark.color, CONST.DEBUG_THICK_PX)
