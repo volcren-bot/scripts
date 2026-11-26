@@ -116,6 +116,28 @@ local CREATURES: { [string]: Creature } = {
 			},
 		},
 	},
+	["grey chinchompa"] = {
+		name = "grey chinchompa",
+		npc = "Chinchompa",
+		part = 29221,
+		catch = "Chinchompa",
+		areas = {
+			{
+				name = "south of the Piscatoris Hunter area",
+				arrive = { x = 2352, y = 3544, plane = 0 },
+				clusters = {
+					{ { x = 2352, y = 3544, plane = 0 } },
+				},
+			},
+			{
+				name = "Kourend Woodland",
+				arrive = { x = 1484, y = 3506, plane = 0 },
+				clusters = {
+					{ { x = 1484, y = 3506, plane = 0 } },
+				},
+			},
+		},
+	},
 	["red chinchompa"] = {
 		name = "red chinchompa",
 		npc = "Carnivorous chinchompa",
@@ -128,6 +150,7 @@ local CREATURES: { [string]: Creature } = {
 				clusters = {
 					{ { x = 2558, y = 2932, plane = 0 } },
 					{ { x = 2497, y = 2901, plane = 0 } },
+					{ { x = 2558, y = 2915, plane = 0 } },
 				},
 			},
 		},
@@ -200,12 +223,19 @@ function Read.key(t: { x: number, y: number }): string
 end
 
 function Read.nearest_area(c: Creature, me: Host.Tile): Area?
-	local best, best_d = nil, math.huge
+	if #c.areas == 1 then
+		return c.areas[1]
+	end
+	local from: Tile = { x = me.x, y = me.y, plane = 0 }
+	local best, best_ticks = nil, math.huge
 	for _, area in ipairs(c.areas) do
-		local d = Walker.distance(me, area.arrive)
-		if d < best_d then
-			best, best_d = area, d
+		local ticks = Travel.ticks(from, area.arrive)
+		if ticks < best_ticks then
+			best, best_ticks = area, ticks
 		end
+	end
+	if best then
+		Log.log(NAME, `The {(best :: Area).name} is the quickest to reach ({best_ticks} ticks)`)
 	end
 	return best
 end

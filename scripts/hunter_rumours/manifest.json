@@ -8,6 +8,21 @@
 	"settings": {
 		"fields": [
 			{
+				"id": "master",
+				"kind": "choice",
+				"label": "Guild hunter",
+				"options": [
+					"Automatic",
+					"Gilman",
+					"Ornus",
+					"Cervus",
+					"Aco",
+					"Teco",
+					"Wolf"
+				],
+				"default": "Automatic"
+			},
+			{
 				"id": "max_rumours",
 				"kind": "number",
 				"label": "Max rumours (0 is unlimited)",
@@ -29,6 +44,12 @@
 				"id": "open_loot_sacks",
 				"kind": "check",
 				"label": "Open hunters' loot sacks and bank the loot",
+				"default": true
+			},
+			{
+				"id": "upgrade_whistle",
+				"kind": "check",
+				"label": "Upgrade the quetzal whistle when the blueprint, logs and a knife are available",
 				"default": true
 			},
 			{
@@ -56,6 +77,17 @@
 					"Drop"
 				],
 				"default": "Bank"
+			},
+			{
+				"id": "antlers",
+				"kind": "choice",
+				"label": "Antelope antlers",
+				"options": [
+					"Craft",
+					"Drop",
+					"Bank"
+				],
+				"default": "Craft"
 			},
 			{
 				"id": "catches",
@@ -97,6 +129,16 @@
 						"id": "10147",
 						"label": "Red salamander",
 						"default": "release"
+					},
+					{
+						"id": "28831",
+						"label": "Immature tecu salamander",
+						"default": "release"
+					},
+					{
+						"id": "28834",
+						"label": "Tecu salamander",
+						"default": "bank"
 					}
 				],
 				"default": "bank"

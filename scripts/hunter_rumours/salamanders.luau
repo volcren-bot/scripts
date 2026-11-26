@@ -5,6 +5,8 @@ local time = Host.time
 type GroundItem = Host.GroundItem
 type Loc = Host.Loc
 local Biometrics = require("@volcren/biometrics")
+local DebugDraw = require("@volcren/debug_draw")
+local Draw = require("@volcren/draw")
 local GroundItems = require("@volcren/ground_items")
 local Hop = require("./hop")
 local Idle = require("./idle")
@@ -21,7 +23,7 @@ local Walker = require("@volcren/walker")
 local NAME = "Salamanders"
 
 export type Tile = { x: number, y: number, plane: number }
-export type Area = { name: string, arrive: Tile, trees: { Tile } }
+export type Area = { name: string, arrive: Tile, trees: { Tile }, max_traps: number? }
 export type Creature = { name: string, npc: string, part: number, catch: string, areas: { Area } }
 export type State = "BLOCKED" | "DONE" | "TRAVEL" | "HOP" | "SET" | "RESET" | "PICKUP" | "WAIT" | "PACK"
 export type Status = "empty" | "set" | "sprung" | "busy"
@@ -39,9 +41,22 @@ export type Task = {
 	claimed: boolean,
 	catches: number,
 	blocked: string?,
+	drawn: boolean?,
+	painted: string?,
 }
 
 local CONST = {
+	DRAW = {
+		LAYER = "salamanders",
+		WIDTH = 2,
+		COLORS = {
+			empty = Draw.color(170, 170, 170, 200),
+			set = Draw.color(60, 220, 90, 255),
+			busy = Draw.color(255, 220, 60, 255),
+			sprung = Draw.color(255, 140, 40, 255),
+		},
+		TARGET = Draw.color(255, 255, 255, 255),
+	},
 	ARRIVE_NEAR = 3,
 	LEASH = 12,
 	NEAR = 5,
@@ -61,6 +76,25 @@ local CONST = {
 }
 
 local CREATURES: { [string]: Creature } = {
+	["tecu salamander"] = {
+		name = "tecu salamander",
+		npc = "Tecu salamander",
+		part = 29238,
+		catch = "Immature tecu salamander",
+		areas = {
+			{
+				name = "south-east of Ralos' Rise",
+				arrive = { x = 1474, y = 3093, plane = 0 },
+				trees = {
+					{ x = 1469, y = 3095, plane = 0 },
+					{ x = 1470, y = 3087, plane = 0 },
+					{ x = 1473, y = 3100, plane = 0 },
+					{ x = 1476, y = 3093, plane = 0 },
+					{ x = 1479, y = 3099, plane = 0 },
+				},
+			},
+		},
+	},
 	["red salamander"] = {
 		name = "red salamander",
 		npc = "Red salamander",
@@ -99,6 +133,16 @@ local CREATURES: { [string]: Creature } = {
 		part = 29231,
 		catch = "Orange salamander",
 		areas = {
+			{
+				name = "north of the Uzer Hunter area",
+				arrive = { x = 3405, y = 3131, plane = 0 },
+				max_traps = 3,
+				trees = {
+					{ x = 3403, y = 3133, plane = 0 },
+					{ x = 3406, y = 3134, plane = 0 },
+					{ x = 3408, y = 3130, plane = 0 },
+				},
+			},
 			{
 				name = "Uzer Hunter area",
 				arrive = { x = 3405, y = 3088, plane = 0 },
@@ -204,12 +248,16 @@ function Read.limit(task: Task): number
 	return math.min(CONST.TRAPS.MAX, 1 + level // CONST.TRAPS.LEVELS_PER_TRAP)
 end
 
-function Read.nearest_area(c: Creature, me: Host.Tile): Area?
-	local best, best_d = nil, math.huge
-	for _, area in ipairs(c.areas) do
-		local d = Walker.distance(me, area.arrive)
-		if d < best_d then
-			best, best_d = area, d
+function Read.nearest_area(task: Task, me: Host.Tile): Area?
+	local limit = Read.limit(task)
+	local best, best_rank, best_d = nil, math.huge, math.huge
+	for _, area in ipairs(task.creature.areas) do
+		if area.max_traps == nil or limit <= area.max_traps then
+			local rank = if area.max_traps then 0 else 1
+			local d = Walker.distance(me, area.arrive)
+			if rank < best_rank or (rank == best_rank and d < best_d) then
+				best, best_rank, best_d = area, rank, d
+			end
 		end
 	end
 	return best
@@ -400,7 +448,67 @@ function Read.trap_state(task: Task, me: Host.Tile): State
 	return "WAIT"
 end
 
+function Read.signature(task: Task): string
+	local parts: { string } = {}
+	for _, tree in ipairs(if task.area then (task.area :: Area).trees else {}) do
+		local status = Read.tree_at(tree)
+		table.insert(parts, `{status}{if task.traps[Read.key(tree)] then "*" else ""}`)
+	end
+	local target = task.target
+	table.insert(parts, if target then Read.key(target) else "-")
+	return table.concat(parts, ",")
+end
+
+function Game.paint(task: Task)
+	local area = task.area
+	if area == nil then
+		return
+	end
+	for _, tree in ipairs((area :: Area).trees) do
+		local status = Read.tree_at(tree)
+		local ours = task.traps[Read.key(tree)] ~= nil
+		local color = CONST.DRAW.COLORS[status]
+		local _, loc = Read.tree_at(tree)
+		if loc and ours then
+			DebugDraw.loc(loc :: Loc, nil, color)
+		else
+			DebugDraw.outline({ tree } :: any, color, CONST.DRAW.WIDTH)
+		end
+		local target = task.target
+		local aimed = target ~= nil and target.x == tree.x and target.y == tree.y
+		local label = `{status}{if ours then " (ours)" else ""}`
+		DebugDraw.label(tree, label, if aimed then CONST.DRAW.TARGET else color, aimed)
+	end
+end
+
+function Game.draw(task: Task, state: State)
+	if state == "DONE" or state == "BLOCKED" then
+		task.drawn = false
+		DebugDraw.set(CONST.DRAW.LAYER, nil)
+		return
+	end
+	if not DebugDraw.on() then
+		return
+	end
+	local signature = Read.signature(task)
+	if not task.drawn then
+		task.drawn, task.painted = true, signature
+		DebugDraw.set(CONST.DRAW.LAYER, function()
+			Game.paint(task)
+		end)
+	elseif signature ~= task.painted then
+		task.painted = signature
+		DebugDraw.render()
+	end
+end
+
 function Salamanders.state(task: Task): State
+	local state = Read.state(task)
+	Game.draw(task, state)
+	return state
+end
+
+function Read.state(task: Task): State
 	if task.blocked then
 		return "BLOCKED"
 	end
@@ -423,7 +531,7 @@ function Salamanders.state(task: Task): State
 		return "DONE"
 	end
 	if task.area == nil then
-		task.area = Read.nearest_area(task.creature, me)
+		task.area = Read.nearest_area(task, me)
 		if task.area == nil then
 			task.blocked = `no known {task.creature.npc} areas`
 			return "BLOCKED"

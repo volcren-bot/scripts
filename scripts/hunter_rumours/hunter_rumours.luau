@@ -14,19 +14,23 @@ local Boxing = require("./boxing")
 local Chat = require("@volcren/chat")
 local ChatOptions = require("@volcren/chat_options")
 local Deadfall = require("./deadfall")
+local Diaries = require("@volcren/diaries")
 local Falconry = require("./falconry")
 local GameState = require("@volcren/game_state")
 local Handoff = require("@volcren/handoff")
+local Herbiboar = require("./herbiboar")
 local HuntsmansKit = require("@volcren/huntsmans_kit")
 local Inventory = require("@volcren/inventory")
 local Item = require("@volcren/item")
 local Log = require("@volcren/log")
 local Login = require("@volcren/login")
+local Make = require("@volcren/make")
 local Netting = require("./netting")
 local Npcs = require("@volcren/npcs")
 local Pitfall = require("./pitfall")
 local Player = require("@volcren/player")
 local Position = require("@volcren/position")
+local Quests = require("@volcren/quests")
 local Quetzal = require("@volcren/quetzal")
 local Random = require("@volcren/random")
 local RumourLocations = require("./rumour_locations")
@@ -35,6 +39,7 @@ local Shopmain = require("@volcren/shopmain")
 local Stats = require("@volcren/stats")
 local StatsReport = require("@volcren/stats_report")
 local Toplevel = require("@volcren/toplevel")
+local Tracking = require("./tracking")
 local Travel = require("./travel")
 local Walker = require("@volcren/walker")
 local Wornitems = require("@volcren/wornitems")
@@ -42,6 +47,8 @@ local Wornitems = require("@volcren/wornitems")
 local NAME = "Hunter Rumours"
 
 local MEAT_POUCHES = { "Large meat pouch (open)", "Large meat pouch", "Small meat pouch (open)", "Small meat pouch" }
+local HERB_SACKS = { "Open silklined herb sack", "Open herb sack", "Silklined herb sack", "Herb sack" }
+local CLOSED_HERB_SACKS = { "Silklined herb sack", "Herb sack" }
 local FUR_POUCHES = {
 	"Large fur pouch (open)",
 	"Large fur pouch",
@@ -68,7 +75,7 @@ local CONST = {
 	OPEN_TIMEOUT_MS = 2400,
 	RELEASE = "Release",
 	PROGRESS_TILES = 10,
-	RELEASE_GAP_MS = { 120, 380 },
+	RELEASE_BATCH = { 1, 6 },
 	SACK_FREE_SLOTS = 8,
 	LOOT_SACKS = {
 		"Hunters' loot sack (basic)",
@@ -80,8 +87,29 @@ local CONST = {
 	EQUIP_TIMEOUT_MS = 2400,
 	RESTOCK_MS = { 4000, 8000 },
 	KIT = "Huntsman's kit",
+	UPGRADES = {
+		["Basic quetzal whistle"] = {
+			into = "Enhanced quetzal whistle",
+			blueprints = { "Torn enhanced quetzal whistle blueprint", "Enhanced quetzal whistle blueprint" },
+			logs = "Yew logs",
+		},
+		["Enhanced quetzal whistle"] = {
+			into = "Perfected quetzal whistle",
+			blueprints = { "Torn perfected quetzal whistle blueprint", "Perfected quetzal whistle blueprint" },
+			logs = "Redwood logs",
+		},
+	} :: { [string]: { into: string, blueprints: { string }, logs: string } },
+	KNIVES = { "Knife", "Fletching knife" },
+	ANTLERS = {
+		{ name = "Sunlight antelope antler", bolts = "Sunlight antler bolts", level = 62 },
+		{ name = "Moonlight antelope antler", bolts = "Moonlight antler bolts", level = 72 },
+	},
+	CHISEL = "Chisel",
+	FLETCH = { OPEN_MS = 1800, PER_ANTLER_MS = 2400, AMOUNT = "All" },
+	CRAFT = { OPTION = "Craft", TIMEOUT_MS = 3000 },
 	COINS = { name = "Coins", amount = 20000 },
 	STAFFS = { "Dramen staff", "Lunar staff" },
+	RUNE_POUCHES = { "Divine rune pouch", "Divine rune pouch (l)", "Rune pouch", "Rune pouch (l)" },
 	OUTFIT = { "Guild hunter headwear", "Guild hunter top", "Guild hunter legs", "Guild hunter boots" },
 	WHISTLES = {
 		{ name = "Perfected quetzal whistle(i)" },
@@ -104,12 +132,23 @@ local CONST = {
 			{ items = MEAT_POUCHES, want = 1, need = 0, shop = false },
 			{ items = FUR_POUCHES, want = 1, need = 0, shop = false },
 		},
+		["noose"] = {
+			{ items = { "Noose wand" }, want = 1, need = 1, shop = true },
+			{ items = MEAT_POUCHES, want = 1, need = 0, shop = false },
+			{ items = FUR_POUCHES, want = 1, need = 0, shop = false },
+		},
 		["falconry"] = {
 			{ items = MEAT_POUCHES, want = 1, need = 1, shop = false },
 			{ items = FUR_POUCHES, want = 1, need = 1, shop = false },
 		},
 	} :: { [string]: { { items: { string }, want: number, need: number, shop: boolean } } },
 	PREY_GEAR = {
+		herbiboar = {
+			{ items = HERB_SACKS, want = 1, need = 0, shop = false },
+			{ items = { "Magic secateurs" }, want = 1, need = 0, shop = false },
+		},
+		["swamp lizard"] = { { items = { "Ectophial" }, want = 1, need = 0, shop = false } },
+		["tecu salamander"] = { { items = { "Irit tar" }, want = 100, need = 0, shop = false } },
 		["orange salamander"] = {
 			{
 				items = { "Waterskin(4)", "Waterskin(3)", "Waterskin(2)", "Waterskin(1)" },
@@ -137,6 +176,8 @@ local CONST = {
 		deadfall = 3,
 		pitfall = 4,
 		falconry = 2,
+		noose = 3,
+		herbiboar = 4,
 		["box trap"] = 1,
 		["net trap"] = 1,
 		["butterfly net"] = 0,
@@ -144,8 +185,17 @@ local CONST = {
 	AXE_TRAPS = { pitfall = true, deadfall = true },
 	POUCH = { OPEN = "Open", OPENED = "(open)", EMPTY = "Empty" },
 	LOOT = { BURY = "Bury", BONES = { "Bones", "Big bones" }, HIDES = { " fur$", " hide$" }, MEAT = { "^Raw " } },
-	CHORE_STATES = { WAIT = true, CATCH = true, TEASE = true, CHOP = true },
-	MID_CATCH_STATES = { JUMP = true, RETRIEVE = true, LURE = true },
+	CHORE_STATES = { WAIT = true, CATCH = true, TEASE = true, CHOP = true, START = true },
+	MID_CATCH_STATES = {
+		JUMP = true,
+		RETRIEVE = true,
+		LURE = true,
+		INSPECT = true,
+		ATTACK = true,
+		SEARCH = true,
+		TUNNEL = true,
+		HARVEST = true,
+	},
 	EAT_AT = { 0.4, 0.55 },
 	EAT_OPTION = "Eat",
 	RUMOUR = {
@@ -153,19 +203,21 @@ local CONST = {
 		CURRENT = "^Your current rumour target is an? (.-)%. You'll need to bring back (.-)%. (.-) was the source of the rumour%.",
 		ASSIGNED = "rumours of an? rare (.-) coming in%. Once you find it, bring back (.-)%.$",
 		ANOTHER = { YES = "Yes.", NO = "No." },
+		ASK = "Can I get a rumour?",
+		SWITCH = "Switch to",
 		TIMEOUT_MS = 2400,
 		READ_ATTEMPTS = 3,
 		DIALOGUE_TIMEOUT_MS = 8000,
 		CONTINUES = 3,
 	},
 	MASTERS = {
-		{ npc = 13121, name = "Gilman", tier = "novice" },
-		{ npc = 13122, name = "Ornus", tier = "adept" },
-		{ npc = 13123, name = "Cervus", tier = "adept" },
-		{ npc = 13124, name = "Aco", tier = "expert" },
-		{ npc = 13125, name = "Teco", tier = "expert" },
-		{ npc = 13126, name = "Wolf", tier = "master" },
-	},
+		{ npc = 13121, name = "Gilman", level = 46 },
+		{ npc = 13122, name = "Ornus", level = 57 },
+		{ npc = 13123, name = "Cervus", level = 57 },
+		{ npc = 13124, name = "Aco", level = 72 },
+		{ npc = 13125, name = "Teco", level = 72 },
+		{ npc = 13126, name = "Wolf", level = 91, quest = "At First Light" },
+	} :: { Master },
 	RUMOURS = {
 		{ prey = "tropical wagtail", part = 29222, trap = "snare", level = 19 },
 		{ prey = "wild kebbit", part = 29223, trap = "deadfall", level = 23 },
@@ -215,18 +267,23 @@ local CONST = {
 local Read, Game, Loop, Handler = {}, {}, {}, {}
 
 local CONFIG = {
+	master = "Automatic",
 	max_rumours = 0,
 	stop_level = 0,
 	open_sacks = true,
+	upgrade_whistle = true,
 	bury_bones = true,
 	hides = "Bank",
 	meat = "Bank",
+	antlers = "Craft",
 	catches = {
 		[10033] = "bank",
 		[10034] = "bank",
 		[10146] = "release",
 		[10147] = "release",
 		[10149] = "release",
+		[28831] = "release",
+		[28834] = "bank",
 	} :: { [number]: string },
 	food = "Bass",
 	food_count = 6,
@@ -248,18 +305,22 @@ type RunState = {
 	task: Task?,
 	prep: Prep,
 	recharge_at: number?,
+	release_at: number,
 	eat_at: number?,
 	start_worn: { string },
 	skip: { [string]: boolean },
 }
 
 function Game.apply_settings(values: { [string]: any })
+	CONFIG.master = values.master or CONFIG.master
 	CONFIG.max_rumours = values.max_rumours or CONFIG.max_rumours
 	CONFIG.stop_level = values.stop_level or CONFIG.stop_level
 	CONFIG.open_sacks = values.open_loot_sacks ~= false
+	CONFIG.upgrade_whistle = values.upgrade_whistle ~= false
 	CONFIG.bury_bones = values.bury_bones ~= false
 	CONFIG.hides = values.hides or CONFIG.hides
 	CONFIG.meat = values.meat or CONFIG.meat
+	CONFIG.antlers = values.antlers or CONFIG.antlers
 	CONFIG.food = values.food or CONFIG.food
 	CONFIG.food_count = values.food_count or CONFIG.food_count
 	for id, column in pairs(values.catches or {}) do
@@ -296,8 +357,16 @@ type Solver = {
 }
 type Task = { solver: Solver, job: { catches: number, blocked: string? } }
 
-local SOLVERS: { Solver } =
-	{ Netting :: any, Boxing :: any, Falconry :: any, Salamanders :: any, Pitfall :: any, Deadfall :: any }
+local SOLVERS: { Solver } = {
+	Netting :: any,
+	Boxing :: any,
+	Falconry :: any,
+	Salamanders :: any,
+	Pitfall :: any,
+	Deadfall :: any,
+	Tracking :: any,
+	Herbiboar :: any,
+}
 
 function Read.new_task(prey: string): Task?
 	for _, solver in ipairs(SOLVERS) do
@@ -336,6 +405,7 @@ local S: RunState = {
 	task = nil,
 	prep = Read.new_prep(),
 	recharge_at = nil,
+	release_at = 1,
 	eat_at = nil,
 	start_worn = {},
 	skip = {},
@@ -363,17 +433,20 @@ type State =
 	"LOADING"
 	| "LOGIN"
 	| "NO_RUMOUR"
+	| "SWITCH"
 	| "HAND_IN"
 	| "BANK"
 	| "KIT"
 	| "SHOP"
 	| "EQUIP"
 	| "RECHARGE"
+	| "UPGRADE"
 	| "OPEN_SACK"
 	| "OPEN_POUCH"
 	| "BURY"
 	| "RELEASE"
 	| "DROP"
+	| "FLETCH"
 	| "BANK_LOOT"
 	| "HUNT"
 	| "NO_SOLVER"
@@ -540,12 +613,19 @@ function Read.has_recharge_items(): boolean
 	return false
 end
 
+function Read.needs_staff(): boolean
+	return Diaries.tier("lumbridge", "elite") ~= true
+end
+
 function Read.wants(): { Want }
 	local list: { Want } = {
 		{ items = { CONST.KIT }, want = 1, need = 0, kit = false, shop = false },
-		{ items = CONST.STAFFS, want = 1, need = 0, kit = false, shop = false },
+		{ items = CONST.RUNE_POUCHES, want = 1, need = 0, kit = false, shop = false },
 		{ items = { CONST.COINS.name }, want = CONST.COINS.amount, need = 0, kit = false, shop = false },
 	}
+	if Read.needs_staff() then
+		table.insert(list, { items = CONST.STAFFS, want = 1, need = 0, kit = false, shop = false })
+	end
 	for _, piece in ipairs(CONST.OUTFIT) do
 		table.insert(list, { items = { piece }, want = 1, need = 0, kit = true, shop = false })
 	end
@@ -565,6 +645,9 @@ function Read.rumour_gear(): { { items: { string }, want: number, need: number, 
 	local list = {}
 	local trap = S.rumour and S.rumour.trap
 	local prey = S.rumour and S.rumour.prey
+	if CONFIG.antlers == "Craft" and prey and string.find(prey, "antelope", 1, true) then
+		table.insert(list, { items = { CONST.CHISEL }, want = 1, need = 0, shop = false })
+	end
 	for _, gear in ipairs(if trap then CONST.GEAR[trap] or {} else {}) do
 		table.insert(list, gear)
 	end
@@ -653,6 +736,11 @@ function Read.closed_pouch(): string?
 			end
 		end
 	end
+	for _, name in ipairs(CLOSED_HERB_SACKS) do
+		if Inventory.contains(name) then
+			return name
+		end
+	end
 	return nil
 end
 
@@ -690,16 +778,48 @@ function Read.to_drop(): { string }
 	if #patterns > 0 then
 		drop = Read.loot(patterns)
 	end
+	if CONFIG.antlers == "Drop" then
+		for _, antler in ipairs(CONST.ANTLERS) do
+			if Inventory.contains(antler.name) then
+				table.insert(drop, antler.name)
+			end
+		end
+	end
 	return drop
 end
 
-function Read.to_release(): string?
-	for _, item in ipairs(Inventory.items() or {}) do
-		if CONFIG.catches[item.id] == "release" and item.name then
-			return item.name
+function Read.antler_to_fletch(): { name: string, bolts: string, level: number }?
+	if CONFIG.antlers ~= "Craft" or not Inventory.contains(CONST.CHISEL) then
+		return nil
+	end
+	local fletching = Stats.real_level("Fletching") or 1
+	for _, antler in ipairs(CONST.ANTLERS) do
+		if fletching >= antler.level and Inventory.contains(antler.name) then
+			return antler
 		end
 	end
 	return nil
+end
+
+function Read.release_slots(): { number }
+	local slots: { number } = {}
+	for _, item in ipairs(Inventory.items() or {}) do
+		if CONFIG.catches[item.id] == "release" then
+			table.insert(slots, item.slot)
+		end
+	end
+	return slots
+end
+
+function Read.release_goal(): number
+	local low, high = CONST.RELEASE_BATCH[1], CONST.RELEASE_BATCH[2]
+	local mode = low + (high - low) * Biometrics.get_probability(Biometrics.LIKES)
+	return Biometrics.random_mode_integer(mode, low, high)
+end
+
+function Read.to_release(all: boolean): boolean
+	local held = #Read.release_slots()
+	return held > 0 and (all or held >= S.release_at or Read.loot_full())
 end
 
 function Read.loot_full(): boolean
@@ -718,11 +838,14 @@ function Read.loot_full(): boolean
 end
 
 function Read.chore(bank: boolean): State?
-	if Read.to_release() then
+	if Read.to_release(not bank) then
 		return "RELEASE"
 	end
 	if CONFIG.bury_bones and Read.bones() then
 		return "BURY"
+	end
+	if Read.antler_to_fletch() then
+		return "FLETCH"
 	end
 	if #Read.to_drop() > 0 then
 		return "DROP"
@@ -826,6 +949,9 @@ function Read.keep_items(): { Item.Item }
 	for _, name in ipairs(CONST.STAFFS) do
 		table.insert(keep, name)
 	end
+	for _, name in ipairs(CONST.RUNE_POUCHES) do
+		table.insert(keep, name)
+	end
 	for _, whistle in ipairs(CONST.WHISTLES) do
 		table.insert(keep, whistle.name)
 	end
@@ -901,6 +1027,9 @@ function Read.prep_state(): State?
 	if not p.rebanked and Read.bank_short() then
 		return "BANK"
 	end
+	if Read.upgrade_ready() then
+		return "UPGRADE"
+	end
 	if not p.shopped and Read.shop_short() then
 		return "SHOP"
 	end
@@ -961,6 +1090,78 @@ function Game.bank_whistle()
 	end
 end
 
+function Read.upgrade(): { into: string, blueprints: { string }, logs: string }?
+	if not CONFIG.upgrade_whistle then
+		return nil
+	end
+	local rank = Read.held_whistle()
+	return if rank then CONST.UPGRADES[CONST.WHISTLES[rank].name] else nil
+end
+
+function Read.upgrade_parts(): { { string } }?
+	local up = Read.upgrade()
+	return if up then { up.blueprints, { up.logs }, CONST.KNIVES } else nil
+end
+
+function Read.upgrade_ready(): boolean
+	local parts = Read.upgrade_parts()
+	if parts == nil then
+		return false
+	end
+	for _, items in ipairs(parts) do
+		if Read.carried(items) == 0 then
+			return false
+		end
+	end
+	return true
+end
+
+function Game.bank_upgrade()
+	local up, parts = Read.upgrade(), Read.upgrade_parts()
+	if up == nil or parts == nil then
+		return
+	end
+	for _, items in ipairs(parts) do
+		if Read.carried(items) == 0 and not Read.in_bank(items) then
+			return
+		end
+	end
+	Log.log(NAME, `Taking out what the {up.into} needs`)
+	for _, items in ipairs(parts) do
+		if Read.carried(items) == 0 then
+			Game.withdraw(items, 1)
+		end
+	end
+end
+
+function Game.upgrade(): boolean
+	local up = Read.upgrade() :: { into: string, blueprints: { string }, logs: string }
+	local blueprint: string? = nil
+	for _, name in ipairs(up.blueprints) do
+		if blueprint == nil and Inventory.contains(name) then
+			blueprint = name
+		end
+	end
+	if blueprint == nil then
+		return false
+	end
+	Log.log(NAME, `Crafting the {up.into} from the {blueprint}`)
+	if not Inventory.interact(blueprint :: string, CONST.CRAFT.OPTION) then
+		return false
+	end
+	local deadline = time() + CONST.CRAFT.TIMEOUT_MS
+	repeat
+		if Inventory.contains(up.into) then
+			S.recharge_at = nil
+			local charges = Quetzal.charges()
+			Log.log(NAME, `Upgraded to the {up.into} ({charges or "unknown"} charges)`)
+			return true
+		end
+		sleep(100)
+	until time() >= deadline
+	return false
+end
+
 function Game.bank_recharge_items()
 	local needed = Read.missing_charges()
 	if needed == 0 or Read.has_recharge_items() then
@@ -1016,6 +1217,7 @@ function Game.bank(): boolean
 	end
 	local kit_too = S.prep.kit_seen or not (HuntsmansKit.held() or Read.in_bank({ CONST.KIT }))
 	Game.bank_whistle()
+	Game.bank_upgrade()
 	for _, w in ipairs(Read.wants()) do
 		local short = Read.short(w)
 		if short > 0 and (kit_too or not w.kit) and Read.in_bank(w.items) then
@@ -1123,37 +1325,38 @@ function Game.bury(): boolean
 end
 
 function Game.release(): boolean
-	local slots: { number } = {}
-	for _, item in ipairs(Inventory.items() or {}) do
-		if CONFIG.catches[item.id] == "release" then
-			table.insert(slots, item.slot)
-		end
-	end
+	local slots = Read.release_slots()
 	Log.log(NAME, `Releasing {#slots} caught creatures`)
 	local settle = time() + CONST.OPEN_TIMEOUT_MS
 	while Player.animation() ~= -1 and time() < settle do
 		sleep(100)
 	end
-	for _, slot in ipairs(slots) do
-		if not Inventory.interact_slot(slot, CONST.RELEASE) then
-			return false
-		end
-		Random.sleep(CONST.RELEASE_GAP_MS[1], CONST.RELEASE_GAP_MS[2])
+	local order = Inventory.pattern(slots)
+	if not Inventory.shift_drop_slots(order, { option = CONST.RELEASE }) then
+		return false
 	end
-	local deadline = time() + CONST.OPEN_TIMEOUT_MS
+	S.release_at = Read.release_goal()
+	return true
+end
+
+function Game.fletch(): boolean
+	local antler = Read.antler_to_fletch() :: { name: string, bolts: string, level: number }
+	local held = Inventory.count_ex(antler.name) or 0
+	Log.log(NAME, `Fletching {held} {antler.name} into bolts`)
+	if not Inventory.combine(CONST.CHISEL, antler.name) then
+		return false
+	end
+	if Make.wait_open(CONST.FLETCH.OPEN_MS) and not Make.make(antler.bolts, CONST.FLETCH.AMOUNT) then
+		return false
+	end
+	local deadline = time() + CONST.FLETCH.PER_ANTLER_MS * held
 	repeat
-		local left = 0
-		for _, item in ipairs(Inventory.items() or {}) do
-			if CONFIG.catches[item.id] == "release" then
-				left += 1
-			end
-		end
-		if left == 0 then
+		if not Inventory.contains(antler.name) then
 			return true
 		end
 		sleep(100)
 	until time() >= deadline
-	return false
+	return (Inventory.count_ex(antler.name) or 0) < held
 end
 
 function Game.drop(): boolean
@@ -1259,13 +1462,60 @@ function Read.make_rumour(prey: string, part_word: string, master: string): Rumo
 			break
 		end
 	end
-	for _, m in ipairs(CONST.MASTERS) do
-		if string.lower(m.name) == string.lower(master) then
-			rumour.master_npc = m.npc
-			break
-		end
+	local known = Read.master(master)
+	if known then
+		rumour.master, rumour.master_npc = known.name, known.npc
 	end
 	return rumour
+end
+
+type Master = { npc: number, name: string, level: number, quest: string? }
+
+function Read.master(name: string): Master?
+	local lower = string.lower(name)
+	for _, m in ipairs(CONST.MASTERS) do
+		if string.find(lower, string.lower(m.name), 1, true) then
+			return m
+		end
+	end
+	return nil
+end
+
+function Read.pick_master(current: string?): Master?
+	if CONFIG.master ~= "Automatic" then
+		return Read.master(CONFIG.master)
+	end
+	local level = Stats.real_level("Hunter") or 0
+	local best: { Master } = {}
+	for _, m in ipairs(CONST.MASTERS) do
+		if m.level <= level and (m.quest == nil or Quests.is_complete(m.quest)) then
+			if best[1] and m.level > best[1].level then
+				best = {}
+			end
+			if best[1] == nil or m.level == best[1].level then
+				table.insert(best, m)
+			end
+		end
+	end
+	for _, m in ipairs(best) do
+		if m.name == current then
+			return m
+		end
+	end
+	return if #best > 0 then best[Random.int(1, #best)] else nil
+end
+
+function Read.wants_switch(): boolean
+	local rumour = S.rumour
+	if rumour == nil or S.prep.ready or Read.holds_part() then
+		return false
+	end
+	local target = Read.pick_master(rumour.master)
+	if target == nil or target.name == rumour.master then
+		return false
+	end
+	local current = Read.master(rumour.master)
+	return CONFIG.master ~= "Automatic" or (current ~= nil and current.level < target.level)
 end
 
 function Game.adopt_rumour(rumour: Rumour, text: string)
@@ -1339,6 +1589,85 @@ function Read.holds_part(): boolean
 	return part ~= nil and Inventory.contains(part)
 end
 
+function Game.find_master(name: string, npc: number, what: string): (Host.Npc?, boolean)
+	local inside = Read.in_burrow()
+	if inside then
+		local deadline = time() + CONST.BURROW_LOAD_MS
+		repeat
+			local me = Walker.position()
+			local master = if me then Npcs.nearest(npc, me) else nil
+			if master then
+				return master, true
+			end
+			sleep(100)
+		until time() >= deadline
+		local middle = CONST.TILE.BURROW
+		local r = CONST.BURROW_SPREAD
+		local tile = { x = middle.x + Random.int(-r, r), y = middle.y + Random.int(-r, r), plane = middle.plane }
+		Log.log(NAME, `Can't see {name}, walking into the middle of the room`)
+		return nil, (Travel.walk(tile, 1))
+	end
+	Log.log(NAME, `Walking to {what}`)
+	local walked, why = Travel.walk(CONST.TILE.BURROW, 3, Read.in_burrow)
+	if why then
+		Log.log(NAME, `No way to {what}: {why}`)
+	end
+	return nil, walked
+end
+
+function Game.ask_master(master: Master, switching: boolean): boolean
+	local npc, ok = Game.find_master(master.name, master.npc, `{master.name} for a rumour`)
+	if npc == nil then
+		return ok
+	end
+	if not Npcs.approach(npc, CONST.RUMOUR.OPTION) then
+		return false
+	end
+	local deadline = time() + CONST.RUMOUR.DIALOGUE_TIMEOUT_MS
+	local switched, opened = false, false
+	while time() < deadline do
+		local open = ChatOptions.get() ~= nil or ChatOptions.contains_continue()
+		opened = opened or open
+		local title = ChatOptions.title()
+		if title and string.find(title, CONST.RUMOUR.SWITCH, 1, true) then
+			local answer = if switching then CONST.RUMOUR.ANOTHER.YES else CONST.RUMOUR.ANOTHER.NO
+			if not ChatOptions.select(answer) then
+				return false
+			end
+			switched = switching
+			if not switching then
+				break
+			end
+		elseif ChatOptions.contains(CONST.RUMOUR.ASK) then
+			ChatOptions.select(CONST.RUMOUR.ASK)
+		elseif ChatOptions.contains_continue() then
+			ChatOptions.continue_chat()
+		elseif opened and not open then
+			break
+		else
+			sleep(Quetzal.POLL_MS)
+		end
+	end
+	Toplevel.escape_clear()
+	local before = S.rumour
+	S.rumour, S.task = nil, nil
+	local rumour = Game.read_rumour()
+	if rumour == nil then
+		S.rumour = before
+		return false
+	end
+	if rumour.master ~= master.name then
+		Log.log(
+			NAME,
+			`The rumour is still from {rumour.master}{if switching and not switched
+				then ", no switch was offered"
+				else ""}`
+		)
+		return false
+	end
+	return true
+end
+
 function Game.hand_in(): boolean
 	local rumour = S.rumour :: Rumour
 	local part = rumour.part :: number
@@ -1347,39 +1676,22 @@ function Game.hand_in(): boolean
 		S.finished = true
 		return false
 	end
-	local inside = Read.in_burrow()
-	local master: Host.Npc? = nil
-	if inside then
-		local deadline = time() + CONST.BURROW_LOAD_MS
-		repeat
-			local me = Walker.position()
-			master = if me then Npcs.nearest(rumour.master_npc, me) else nil
-			if master == nil then
-				sleep(100)
-			end
-		until master ~= nil or time() >= deadline
-	end
+	local master, ok = Game.find_master(
+		rumour.master,
+		rumour.master_npc :: number,
+		`{rumour.master} with the {Item.name(part) or "rumour part"}`
+	)
 	if master == nil then
-		local what = `{rumour.master} with the {Item.name(part) or "rumour part"}`
-		if inside then
-			local middle = CONST.TILE.BURROW
-			local r = CONST.BURROW_SPREAD
-			local tile = { x = middle.x + Random.int(-r, r), y = middle.y + Random.int(-r, r), plane = middle.plane }
-			Log.log(NAME, `Can't see {rumour.master}, walking into the middle of the room`)
-			return (Travel.walk(tile, 1))
-		end
-		Log.log(NAME, `Walking to {what}`)
-		local walked, why = Travel.walk(CONST.TILE.BURROW, 3, Read.in_burrow)
-		if why then
-			Log.log(NAME, `No way to {what}: {why}`)
-		end
-		return walked
+		return ok
 	end
 	if not Npcs.approach(master, CONST.RUMOUR.OPTION) then
+		Log.log(NAME, `Couldn't click {CONST.RUMOUR.OPTION} on {rumour.master} at {master.x}, {master.y}`)
 		return false
 	end
 	local more = CONFIG.max_rumours == 0 or stats.rumours + 1 < CONFIG.max_rumours
-	local answer = if more then CONST.RUMOUR.ANOTHER.YES else CONST.RUMOUR.ANOTHER.NO
+	local next_master = Read.pick_master(rumour.master)
+	local again = more and next_master ~= nil and next_master.name == rumour.master
+	local answer = if again then CONST.RUMOUR.ANOTHER.YES else CONST.RUMOUR.ANOTHER.NO
 	local last = Chat.last_message()
 	local seen = if last then last.uid else -1
 	if not ChatOptions.continue_until_option(answer, CONST.RUMOUR.DIALOGUE_TIMEOUT_MS) then
@@ -1399,7 +1711,8 @@ function Game.hand_in(): boolean
 		end
 		ChatOptions.continue_chat()
 	end
-	if not more then
+	if not again then
+		Toplevel.escape_clear()
 		return true
 	end
 	if Game.assigned_rumour(rumour.master, seen) == nil and Game.read_rumour() == nil then
@@ -1420,6 +1733,7 @@ function Game.setup()
 	end
 
 	Game.setup_antiban()
+	S.release_at = Read.release_goal()
 	Toplevel.escape_clear()
 	for _, item in pairs(Wornitems.worn() or {}) do
 		local name = Item.name(item.id)
@@ -1492,14 +1806,14 @@ function Loop.restart_hunt(): boolean
 	return true
 end
 
-function Loop.check_timeouts()
+function Loop.check_timeouts(state: State)
 	local t = CONFIG.timeouts
 	local idle = time() - S.last_progress_at
 	local reason: string? = nil
 	if idle >= t.idle_minutes * 60000 then
 		reason = `no xp for {t.idle_minutes} minutes`
 	elseif S.failures_in_row >= t.max_failures then
-		if Loop.restart_hunt() then
+		if state == "HUNT" and Loop.restart_hunt() then
 			return
 		end
 		reason = `{S.failures_in_row} failures in a row`
@@ -1550,6 +1864,7 @@ function Loop.get_state(): State
 	local state: State = if S.rumour == nil
 		then "NO_RUMOUR"
 		elseif Read.holds_part() then (if Read.packing() then "HUNT" else Read.chore(false) or "HAND_IN")
+		elseif Read.wants_switch() then "SWITCH"
 		else Read.prep_state() or (if S.task then "HUNT" else "NO_SOLVER")
 	if skipped[state] then
 		return "LOADING"
@@ -1622,6 +1937,9 @@ Handler.states = {
 	RECHARGE = function()
 		Handler.outcome(Game.recharge())
 	end,
+	UPGRADE = function()
+		Handler.outcome(Game.upgrade())
+	end,
 	OPEN_SACK = function()
 		Handler.outcome(Game.open_sack())
 	end,
@@ -1634,6 +1952,9 @@ Handler.states = {
 	RELEASE = function()
 		Handler.outcome(Game.release())
 	end,
+	FLETCH = function()
+		Handler.outcome(Game.fletch())
+	end,
 	DROP = function()
 		Handler.outcome(Game.drop())
 	end,
@@ -1641,9 +1962,19 @@ Handler.states = {
 		Handler.outcome(Game.bank_loot())
 	end,
 	NO_RUMOUR = function()
-		Log.log(NAME, "No rumour to work on, stopping the script")
-		S.blocked = "no rumour to work on"
-		S.finished = true
+		local master = Read.pick_master(nil)
+		if master == nil then
+			Log.log(NAME, "No guild hunter gives rumours at this Hunter level, stopping the script")
+			S.blocked = "no guild hunter to get a rumour from"
+			S.finished = true
+			return
+		end
+		Handler.outcome(Game.ask_master(master, false))
+	end,
+	SWITCH = function()
+		local master = Read.pick_master((S.rumour :: Rumour).master) :: Master
+		Log.log(NAME, `Switching from {(S.rumour :: Rumour).master}'s rumour to {master.name}'s`)
+		Handler.outcome(Game.ask_master(master, true))
 	end,
 	NO_SOLVER = function()
 		local prey = S.rumour and S.rumour.prey or "this rumour"
@@ -1690,7 +2021,7 @@ function Loop.run()
 		end
 		Game.poll_settings()
 		local state: State = Loop.get_state()
-		Loop.check_timeouts()
+		Loop.check_timeouts(state)
 		if S.finished then
 			break
 		end

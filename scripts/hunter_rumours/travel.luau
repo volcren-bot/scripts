@@ -1,5 +1,6 @@
 --!strict
 local Random = require("@volcren/random")
+local Transports = require("@volcren/transports")
 local Walker = require("@volcren/walker")
 
 export type Tile = { x: number, y: number, plane: number }
@@ -22,6 +23,14 @@ function Travel.spread(base: Tile): Tile
 		end
 	end
 	return base
+end
+
+function Travel.ticks(from: Tile, goal: Tile): number
+	local choice = Transports.choose(from, goal, { min_saving_ticks = 0 })
+	if choice then
+		return choice.ticks
+	end
+	return Transports.walk_ticks(from, goal)
 end
 
 function Travel.walk(goal: Tile, near: number, arrived: (() -> boolean)?): (boolean, string?)

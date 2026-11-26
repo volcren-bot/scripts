@@ -1,4 +1,5 @@
 --!strict
+local Chat = require("@volcren/chat")
 local Host = require("@volcren/host")
 local sleep = Host.sleep
 local time = Host.time
@@ -14,6 +15,7 @@ local Objects = require("@volcren/objects")
 local Player = require("@volcren/player")
 local Players = require("@volcren/players")
 local Random = require("@volcren/random")
+local Stats = require("@volcren/stats")
 local Travel = require("./travel")
 local Walker = require("@volcren/walker")
 
@@ -65,7 +67,11 @@ local CONST = {
 	TEASE = "Tease",
 	SIZE = 2,
 	NEAR = 3,
-	PIT_IDS = { FIRST = 19253, LAST = 19268, FIRST_VARBIT = 2958 },
+	TRAPS = { MAX = 5, LEVELS_PER_TRAP = 20 },
+	PIT_IDS = {
+		{ first = 19253, last = 19268, varbit = 2958 },
+		{ first = 51673, last = 51681, varbit = 9767 },
+	},
 	CHASE_LOST_MS = 6000,
 	TEASE_GRACE_MS = 3000,
 	TEASE_TIMEOUT_MS = 8000,
@@ -82,6 +88,60 @@ local CONST = {
 }
 
 local CREATURES: { [string]: Creature } = {
+	["sunlight antelope"] = {
+		name = "sunlight antelope",
+		npc = "Sunlight antelope",
+		part = 29236,
+		areas = {
+			{
+				name = "Avium Savannah, east of the Locus Oasis",
+				arrive = { x = 1746, y = 3006, plane = 0 },
+				pits = {
+					{ x = 1749, y = 3014, plane = 0, rotation = 3 },
+					{ x = 1744, y = 3010, plane = 0, rotation = 3 },
+					{ x = 1751, y = 3009, plane = 0, rotation = 0 },
+					{ x = 1738, y = 3000, plane = 0, rotation = 1 },
+					{ x = 1749, y = 2999, plane = 0, rotation = 1 },
+				},
+			},
+		},
+	},
+	["moonlight antelope"] = {
+		name = "moonlight antelope",
+		npc = "Moonlight antelope",
+		part = 29241,
+		areas = {
+			{
+				name = "Hunter Guild basement",
+				arrive = { x = 1560, y = 9420, plane = 0 },
+				pits = {
+					{ x = 1563, y = 9424, plane = 0, rotation = 0 },
+					{ x = 1555, y = 9419, plane = 0, rotation = 3 },
+					{ x = 1560, y = 9415, plane = 0, rotation = 0 },
+					{ x = 1564, y = 9417, plane = 0, rotation = 1 },
+				},
+			},
+		},
+	},
+	["sabre-toothed kyatt"] = {
+		name = "sabre-toothed kyatt",
+		npc = "Sabre-toothed kyatt",
+		part = 29232,
+		areas = {
+			{
+				name = "Rellekka Hunter area",
+				arrive = { x = 2718, y = 3788, plane = 0 },
+				pits = {
+					{ x = 2700, y = 3795, plane = 0, rotation = 3 },
+					{ x = 2700, y = 3785, plane = 0, rotation = 2 },
+					{ x = 2706, y = 3789, plane = 0, rotation = 2 },
+					{ x = 2730, y = 3791, plane = 0, rotation = 3 },
+					{ x = 2730, y = 3780, plane = 0, rotation = 2 },
+					{ x = 2737, y = 3784, plane = 0, rotation = 3 },
+				},
+			},
+		},
+	},
 	["spined larupia"] = {
 		name = "spined larupia",
 		npc = "Spined larupia",
@@ -150,17 +210,20 @@ function Read.nearest_area(c: Creature, me: Host.Tile): Area?
 	return best
 end
 
+function Read.pit_varbit(id: number): number?
+	for _, range in ipairs(CONST.PIT_IDS) do
+		if id >= range.first and id <= range.last then
+			return range.varbit + id - range.first
+		end
+	end
+	return nil
+end
+
 function Read.pit_at(pit: Pit): (PitState, Loc?)
 	for _, loc in ipairs(Objects.find() or {}) do
-		local index = loc.id - CONST.PIT_IDS.FIRST
-		if
-			index >= 0
-			and loc.id <= CONST.PIT_IDS.LAST
-			and loc.x == pit.x
-			and loc.y == pit.y
-			and loc.plane == pit.plane
-		then
-			local value = Host.varbit(CONST.PIT_IDS.FIRST_VARBIT + index)
+		local varbit = Read.pit_varbit(loc.id)
+		if varbit and loc.x == pit.x and loc.y == pit.y and loc.plane == pit.plane then
+			local value = Host.varbit(varbit)
 			return (if value then PIT_STATES[value] else nil) or "unknown", loc
 		end
 	end
@@ -247,14 +310,35 @@ function Read.collapsed(task: Task): (Pit?, PitState?)
 	return nil, nil
 end
 
+function Read.limit(): number
+	local level = Stats.real_level("Hunter") or 1
+	return math.min(CONST.TRAPS.MAX, 1 + level // CONST.TRAPS.LEVELS_PER_TRAP)
+end
+
+function Read.set_count(task: Task): number
+	local n = 0
+	for _, pit in ipairs((task.area :: Area).pits) do
+		local status = Read.pit_at(pit)
+		if status ~= "Pit" and status ~= "unknown" then
+			n += 1
+		end
+	end
+	return n
+end
+
 function Read.lure_pit(task: Task, from: Host.Tile): Pit?
+	local full = Read.set_count(task) >= Read.limit()
+	local fallback: Pit? = nil
 	for _, pit in ipairs(Read.pits_by(task, from)) do
 		local jumped = task.jumped ~= nil and pit.x == (task.jumped :: Pit).x and pit.y == (task.jumped :: Pit).y
 		if not jumped and not task.avoid[`{pit.x},{pit.y}`] then
-			return pit
+			if not full or Read.pit_at(pit) ~= "Pit" then
+				return pit
+			end
+			fallback = fallback or pit
 		end
 	end
-	return nil
+	return fallback
 end
 
 export type Grid = { collision: Host.Collision, tiles: { [string]: boolean } }
@@ -553,9 +637,14 @@ function Game.set(task: Task): boolean
 	if not Game.use(loc :: Loc, CONST.PIT.SET) then
 		return false
 	end
-	return Game.wait_until(function(): boolean
+	local set = Game.wait_until(function(): boolean
 		return Read.pit_at(pit) == "Spiked pit"
 	end, CONST.ACT_TIMEOUT_MS)
+	if not set then
+		local last = Chat.last_message()
+		Log.log(NAME, `The pit at {pit.x}, {pit.y} wasn't set; last message: {last and last.text or "none"}`)
+	end
+	return set
 end
 
 function Game.tease(task: Task): boolean

@@ -5,7 +5,7 @@ local Idle = require("./idle")
 local Inventory = require("@volcren/inventory")
 local Log = require("@volcren/log")
 local Npcs = require("@volcren/npcs")
-local Position = require("@volcren/position")
+local Random = require("@volcren/random")
 local Travel = require("./travel")
 local Walker = require("@volcren/walker")
 local Wornitems = require("@volcren/wornitems")
@@ -13,7 +13,8 @@ local Wornitems = require("@volcren/wornitems")
 local NAME = "Falconry"
 
 export type Tile = { x: number, y: number, plane: number }
-export type Area = { name: string, mapsquare: { x: number, y: number }, arrive: Tile }
+export type Box = { x1: number, y1: number, x2: number, y2: number }
+export type Area = { name: string, anchor: Tile, box: Box }
 export type Creature = { name: string, npc: string, part: number, fur: string, areas: { Area } }
 export type State = "BLOCKED" | "DONE" | "TRAVEL" | "GET_FALCON" | "CATCH" | "RETRIEVE" | "WAIT"
 export type Task = {
@@ -31,11 +32,17 @@ local CONST = {
 	MISSED_MS = 6000,
 	MISSES = 6,
 	ARRIVE_NEAR = 3,
-	FENCE_Y = 3620,
-	FALCONER = { NPC = "Matthias", OPTION = "Quick-falcon", FEE = 500 },
+	ANCHOR_NEAR = 4,
+	FALCONER = {
+		NPC = "Matthias",
+		OPTION = "Quick-falcon",
+		FEE = 500,
+		BOX = { x1 = 2370, y1 = 3600, x2 = 2381, y2 = 3612 },
+		SEEN = 10,
+	},
 	GLOVE = "Falconer's glove",
 	GLOVE_READY = 10024,
-	FALCON = { NPC = 1342, OPTION = "Retrieve" },
+	FALCON = { NPCS = { [1342] = true, [1343] = true, [1344] = true }, OPTION = "Retrieve" },
 	CATCH_OPTION = "Catch",
 	CAUGHT = "captures the kebbit",
 	RETRIEVED = "You retrieve the falcon",
@@ -56,8 +63,21 @@ local CREATURES: { [string]: Creature } = {
 		areas = {
 			{
 				name = "Piscatoris falconry area",
-				mapsquare = { x = 37, y = 56 },
-				arrive = { x = 2375, y = 3604, plane = 0 },
+				anchor = { x = 2375, y = 3587, plane = 0 },
+				box = { x1 = 2364, y1 = 3573, x2 = 2393, y2 = 3597 },
+			},
+		},
+	},
+	["dashing kebbit"] = {
+		name = "dashing kebbit",
+		npc = "Dashing kebbit",
+		part = 29223,
+		fur = "Dashing kebbit fur",
+		areas = {
+			{
+				name = "Piscatoris falconry area",
+				anchor = { x = 2375, y = 3587, plane = 0 },
+				box = { x1 = 2364, y1 = 3573, x2 = 2393, y2 = 3597 },
 			},
 		},
 	},
@@ -69,8 +89,8 @@ local CREATURES: { [string]: Creature } = {
 		areas = {
 			{
 				name = "Piscatoris falconry area",
-				mapsquare = { x = 37, y = 56 },
-				arrive = { x = 2375, y = 3604, plane = 0 },
+				anchor = { x = 2375, y = 3587, plane = 0 },
+				box = { x1 = 2364, y1 = 3573, x2 = 2393, y2 = 3597 },
 			},
 		},
 	},
@@ -93,19 +113,47 @@ function Falconry.new(prey: string): Task?
 	return { creature = creature, sent_at = 0, catches = 0, missed = {}, misses = 0 }
 end
 
+function Read.in_box(b: Box, p: { x: number, y: number }): boolean
+	return p.x >= b.x1 and p.x <= b.x2 and p.y >= b.y1 and p.y <= b.y2
+end
+
+function Read.target(task: Task): Host.Npc?
+	local me = Walker.position()
+	local area = task.area
+	if me == nil or area == nil then
+		return nil
+	end
+	local now, best, best_d = Host.time(), nil, math.huge
+	for _, npc in ipairs(Npcs.find(task.creature.npc) or {}) do
+		local d = Walker.distance(me, npc)
+		if Read.in_box((area :: Area).box, npc) and (task.missed[npc.index] or 0) < now and d < best_d then
+			best, best_d = npc, d
+		end
+	end
+	return best
+end
+
+function Read.falconer(): Host.Npc?
+	local me = Walker.position()
+	if me == nil then
+		return nil
+	end
+	local falconer = Npcs.nearest(CONST.FALCONER.NPC, me)
+	if falconer and Walker.distance(me, falconer) <= CONST.FALCONER.SEEN then
+		return falconer
+	end
+	return nil
+end
+
 function Read.inside(area: Area, state: ClientState): boolean
 	local p = state.position
-	if p == nil or p.plane ~= area.arrive.plane or p.y >= CONST.FENCE_Y then
-		return false
-	end
-	local chunk = Position.new(p.local_x, p.local_y, p.x, p.y, p.plane):chunk()
-	return chunk.x == area.mapsquare.x and chunk.y == area.mapsquare.y
+	return p ~= nil and p.plane == area.anchor.plane and Read.in_box(area.box, p)
 end
 
 function Read.nearest_area(c: Creature, me: Host.Tile): Area?
 	local best, best_d = nil, math.huge
 	for _, area in ipairs(c.areas) do
-		local d = Walker.distance(me, area.arrive)
+		local d = Walker.distance(me, area.anchor)
 		if d < best_d then
 			best, best_d = area, d
 		end
@@ -132,9 +180,6 @@ function Falconry.state(task: Task): State
 		end
 		Log.log(NAME, `Hunting {task.creature.npc} in the {(task.area :: Area).name}`)
 	end
-	if not Read.inside(task.area :: Area, Host.game_state()) then
-		return "TRAVEL"
-	end
 	if not Read.has_falcon() then
 		return "GET_FALCON"
 	end
@@ -142,10 +187,17 @@ function Falconry.state(task: Task): State
 		return "RETRIEVE"
 	end
 	if not Read.falcon_ready() then
-		return "WAIT"
+		return if task.prey == nil then "GET_FALCON" else "WAIT"
 	end
 	task.prey = nil
-	return "CATCH"
+	if Read.target(task) then
+		return "CATCH"
+	end
+	local area = task.area :: Area
+	if not Read.inside(area, Host.game_state()) or Walker.distance(me, area.anchor) > CONST.ANCHOR_NEAR then
+		return "TRAVEL"
+	end
+	return "WAIT"
 end
 
 function Read.falcon_ready(): boolean
@@ -156,8 +208,8 @@ function Read.our_falcon(task: Task): Host.Npc?
 	if task.prey == nil then
 		return nil
 	end
-	for _, npc in ipairs(Npcs.find(CONST.FALCON.NPC) or {}) do
-		if npc.index == task.prey then
+	for _, npc in ipairs(Npcs.find() or {}) do
+		if npc.index == task.prey and CONST.FALCON.NPCS[npc.id] then
 			return npc
 		end
 	end
@@ -181,9 +233,10 @@ end
 
 function Game.travel(task: Task): boolean
 	local area = task.area :: Area
-	local goal = Travel.spread(area.arrive)
-	Log.log(NAME, `Travelling to the {area.name}`)
-	local walked, why = Travel.walk(goal, CONST.ARRIVE_NEAR)
+	local goal = Travel.spread(area.anchor)
+	local walked, why = Travel.walk(goal, CONST.ARRIVE_NEAR, function(): boolean
+		return Read.falcon_ready() and Read.target(task) ~= nil
+	end)
 	if why then
 		task.blocked = `no way to the {area.name}: {why}`
 	end
@@ -200,39 +253,37 @@ function Game.get_falcon(task: Task): boolean
 		task.blocked = "no inventory space for the gear the falcon glove replaces"
 		return false
 	end
-	local me = Walker.position()
-	local falconer = if me then Npcs.nearest(CONST.FALCONER.NPC, me) else nil
+	local falconer = Read.falconer()
 	if falconer == nil then
-		return (Travel.walk((task.area :: Area).arrive, CONST.ARRIVE_NEAR))
+		local b = CONST.FALCONER.BOX
+		local goal = { x = math.round(Random.mean(b.x1, b.x2)), y = math.round(Random.mean(b.y1, b.y2)), plane = 0 }
+		Log.log(NAME, `Walking to {CONST.FALCONER.NPC} for a falcon`)
+		Travel.walk(goal, 0, function(): boolean
+			return Read.falconer() ~= nil
+		end)
+		falconer = Read.falconer()
+		if falconer == nil then
+			return false
+		end
 	end
 	Log.log(NAME, `Hiring a falcon from {CONST.FALCONER.NPC} for {fee} coins`)
-	if not Npcs.approach(falconer, CONST.FALCONER.OPTION) then
+	if not Npcs.approach(falconer :: Host.Npc, CONST.FALCONER.OPTION) then
 		return false
 	end
 	local deadline = Host.time() + CONST.GLOVE_TIMEOUT_MS
 	repeat
-		if Read.has_falcon() then
+		if Read.falcon_ready() then
 			return true
 		end
 		Host.sleep(CONST.POLL_MS)
 	until Host.time() >= deadline
-	return Read.has_falcon()
+	return Read.falcon_ready()
 end
 
 function Game.catch(task: Task): boolean
-	local me = Walker.position()
-	local kebbit: Host.Npc? = nil
-	if me then
-		local now, best_d = Host.time(), math.huge
-		for _, npc in ipairs(Npcs.find() or {}) do
-			local d = Walker.distance(me, npc)
-			if npc.name == task.creature.npc and (task.missed[npc.index] or 0) < now and d < best_d then
-				kebbit, best_d = npc, d
-			end
-		end
-	end
+	local kebbit = Read.target(task)
 	if kebbit == nil then
-		return (Travel.walk((task.area :: Area).arrive, CONST.ARRIVE_NEAR))
+		return true
 	end
 	local target = kebbit :: Host.Npc
 	if not Npcs.interact(target, CONST.CATCH_OPTION, false) then
