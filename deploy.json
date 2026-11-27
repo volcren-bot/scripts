@@ -7,6 +7,10 @@
     "id": "024793df-9dc9-4652-8a4d-d0060c2403ed",
     "entry": "cooker.luau"
   },
+  "smelter": {
+    "id": "f6450eb3-f942-4654-9bfa-3430f6b28615",
+    "entry": "smelter.luau"
+  },
   "stall_thiever": {
     "id": "ab73f393-f509-48d1-8393-1f58e1cce1dd",
     "entry": "stall_thiever.luau"

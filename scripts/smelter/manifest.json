@@ -1,0 +1,57 @@
+{
+	"queueable": true,
+	"goals": [
+		{
+			"id": "made",
+			"label": "Made"
+		}
+	],
+	"finish_grace_minutes": 2,
+	"settings": {
+		"fields": [
+			{
+				"kind": "label",
+				"text": "Start anywhere with the ores, or soda ash and buckets of sand, in the bank. Fastest picks the quickest to reach of Edgeville, Al Kharid and Falador, favouring Edgeville, whose bank is closest to its furnace."
+			},
+			{
+				"id": "bar",
+				"kind": "choice",
+				"label": "Bar",
+				"options": [
+					"Bronze bar",
+					"Iron bar",
+					"Silver bar",
+					"Steel bar",
+					"Gold bar",
+					"Mithril bar",
+					"Adamantite bar",
+					"Runite bar",
+					"Molten glass"
+				],
+				"default": "Gold bar"
+			},
+			{
+				"id": "furnace",
+				"kind": "choice",
+				"label": "Furnace",
+				"options": [
+					"Fastest",
+					"Al Kharid",
+					"Edgeville",
+					"Falador",
+					"Prifddinas"
+				],
+				"default": "Fastest"
+			},
+			{
+				"id": "max_made",
+				"kind": "number",
+				"label": "Max made (0 is unlimited)",
+				"default": 0,
+				"min": 0,
+				"max": 1000000,
+				"integer": true
+			}
+		]
+	}
+}
