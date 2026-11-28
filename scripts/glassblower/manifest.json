@@ -1,0 +1,41 @@
+{
+	"queueable": true,
+	"goals": [
+		{
+			"id": "made",
+			"label": "Made"
+		}
+	],
+	"finish_grace_minutes": 2,
+	"settings": {
+		"fields": [
+			{
+				"id": "product",
+				"kind": "choice",
+				"label": "Item",
+				"options": [
+					"Best available",
+					"Beer glass",
+					"Empty candle lantern",
+					"Empty oil lamp",
+					"Vial",
+					"Empty fishbowl",
+					"Unpowered orb",
+					"Lantern lens",
+					"Empty light orb"
+				],
+				"default": "Best available"
+			},
+			{
+				"id": "max_made",
+				"kind": "number",
+				"label": "Max made (0 is unlimited)",
+				"stacked": true,
+				"default": 0,
+				"min": 0,
+				"max": 1000000,
+				"integer": true
+			}
+		]
+	}
+}

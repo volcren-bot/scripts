@@ -7,6 +7,14 @@
     "id": "024793df-9dc9-4652-8a4d-d0060c2403ed",
     "entry": "cooker.luau"
   },
+  "gem_cutter": {
+    "id": "c01e12c5-7037-4d4d-b824-c735629033fb",
+    "entry": "gem_cutter.luau"
+  },
+  "glassblower": {
+    "id": "f0e472ac-b20f-45eb-ac84-69e19d03dfc2",
+    "entry": "glassblower.luau"
+  },
   "smelter": {
     "id": "f6450eb3-f942-4654-9bfa-3430f6b28615",
     "entry": "smelter.luau"

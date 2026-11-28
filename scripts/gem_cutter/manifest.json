@@ -1,0 +1,52 @@
+{
+	"queueable": true,
+	"goals": [
+		{
+			"id": "gems",
+			"label": "Gems"
+		}
+	],
+	"finish_grace_minutes": 2,
+	"settings": {
+		"fields": [
+			{
+				"id": "gem",
+				"kind": "choice",
+				"label": "Gem",
+				"options": [
+					"Opal",
+					"Jade",
+					"Red topaz",
+					"Sapphire",
+					"Emerald",
+					"Ruby",
+					"Diamond",
+					"Dragonstone",
+					"Onyx"
+				],
+				"default": "Sapphire"
+			},
+			{
+				"id": "mode",
+				"kind": "choice",
+				"label": "Mode",
+				"options": [
+					"Uncut to cut",
+					"Uncut to bolt tips",
+					"Cut to bolt tips"
+				],
+				"default": "Uncut to cut"
+			},
+			{
+				"id": "max_gems",
+				"kind": "number",
+				"label": "Max gems (0 is unlimited)",
+				"stacked": true,
+				"default": 0,
+				"min": 0,
+				"max": 1000000,
+				"integer": true
+			}
+		]
+	}
+}

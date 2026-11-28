@@ -13,6 +13,7 @@
 				"id": "max_runs",
 				"kind": "number",
 				"label": "Max runs (0 is unlimited)",
+				"stacked": true,
 				"default": 0,
 				"min": 0,
 				"max": 100000,
